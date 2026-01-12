@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Bun
+bun.lockb
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Local config (Caddyfile is generated)
+# Note: Caddyfile in %LOCALAPPDATA%/caddy/ is managed by the app
+
+# Temp files
+tmpclaude-*

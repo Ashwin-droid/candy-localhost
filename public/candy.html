@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>candy-localhost - Claim Your Domain!</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;800&family=Fredoka+One&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --pink: #ff6b9d;
+      --pink-light: #ffa0c0;
+      --purple: #c86bff;
+      --yellow: #ffe66b;
+      --mint: #6bffc8;
+      --blue: #6bb5ff;
+      --white: #fffef5;
+      --dark: #2d1b4e;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      height: 100%;
+      font-family: 'Nunito', sans-serif;
+      background: linear-gradient(135deg, var(--pink-light) 0%, var(--purple) 50%, var(--blue) 100%);
+      background-size: 400% 400%;
+      animation: gradientShift 15s ease infinite;
+      overflow-x: hidden;
+    }
+
+    @keyframes gradientShift {
+      0%, 100% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+    }
+
+    @keyframes float {
+      0%, 100% { transform: translateY(0px) rotate(0deg); }
+      50% { transform: translateY(-20px) rotate(5deg); }
+    }
+
+    @keyframes sparkle {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(1.2); }
+    }
+
+    @keyframes bounce {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-10px); }
+    }
+
+    .container {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+      position: relative;
+    }
+
+    /* Floating candy decorations */
+    .candy {
+      position: fixed;
+      font-size: 2rem;
+      animation: float 6s ease-in-out infinite;
+      pointer-events: none;
+      opacity: 0.7;
+    }
+    .candy:nth-child(1) { top: 10%; left: 5%; animation-delay: 0s; }
+    .candy:nth-child(2) { top: 20%; right: 10%; animation-delay: 1s; }
+    .candy:nth-child(3) { bottom: 15%; left: 15%; animation-delay: 2s; }
+    .candy:nth-child(4) { bottom: 25%; right: 5%; animation-delay: 3s; }
+    .candy:nth-child(5) { top: 50%; left: 3%; animation-delay: 4s; }
+    .candy:nth-child(6) { top: 40%; right: 3%; animation-delay: 5s; }
+
+    .card {
+      background: var(--white);
+      border-radius: 30px;
+      padding: 3rem;
+      max-width: 500px;
+      width: 100%;
+      box-shadow:
+        0 20px 60px rgba(45, 27, 78, 0.3),
+        0 0 0 5px var(--pink),
+        0 0 0 10px var(--purple);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card::before {
+      content: "";
+      position: absolute;
+      top: -50%;
+      left: -50%;
+      width: 200%;
+      height: 200%;
+      background: radial-gradient(circle, var(--yellow) 0%, transparent 70%);
+      opacity: 0.1;
+      pointer-events: none;
+    }
+
+    .logo {
+      font-family: 'Fredoka One', cursive;
+      font-size: 2.5rem;
+      text-align: center;
+      background: linear-gradient(135deg, var(--pink) 0%, var(--purple) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 0.5rem;
+    }
+
+    .tagline {
+      text-align: center;
+      color: var(--dark);
+      opacity: 0.7;
+      font-size: 1rem;
+      margin-bottom: 2rem;
+    }
+
+    .domain-box {
+      background: linear-gradient(135deg, var(--mint) 0%, var(--blue) 100%);
+      border-radius: 20px;
+      padding: 1.5rem;
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+
+    .domain-label {
+      font-size: 0.85rem;
+      color: var(--dark);
+      opacity: 0.7;
+      margin-bottom: 0.5rem;
+    }
+
+    .domain-name {
+      font-family: 'Fredoka One', cursive;
+      font-size: 2rem;
+      color: var(--dark);
+      word-break: break-all;
+    }
+
+    .domain-tld {
+      opacity: 0.6;
+    }
+
+    .status {
+      display: inline-block;
+      background: var(--yellow);
+      color: var(--dark);
+      padding: 0.5rem 1rem;
+      border-radius: 50px;
+      font-weight: 600;
+      font-size: 0.9rem;
+      margin-top: 1rem;
+      animation: bounce 2s ease-in-out infinite;
+    }
+
+    .form-section {
+      margin: 1.5rem 0;
+    }
+
+    .input-group {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .input-wrapper {
+      flex: 1;
+      min-width: 150px;
+    }
+
+    .input-label {
+      display: block;
+      font-weight: 600;
+      color: var(--dark);
+      margin-bottom: 0.5rem;
+      font-size: 0.9rem;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      padding: 1rem 1.25rem;
+      border: 3px solid var(--pink-light);
+      border-radius: 15px;
+      font-family: 'Nunito', sans-serif;
+      font-size: 1.2rem;
+      font-weight: 600;
+      color: var(--dark);
+      background: var(--white);
+      outline: none;
+      transition: all 0.3s;
+    }
+
+    input[type="text"]:focus {
+      border-color: var(--purple);
+      box-shadow: 0 0 0 4px rgba(200, 107, 255, 0.2);
+    }
+
+    input[type="text"]::placeholder {
+      color: var(--pink-light);
+    }
+
+    input[type="text"]::-webkit-outer-spin-button,
+    input[type="text"]::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+    input[type="text"] { -moz-appearance: textfield; }
+
+    .btn {
+      width: 100%;
+      margin-top: 1rem;
+      padding: 1rem 2rem;
+      background: linear-gradient(135deg, var(--pink) 0%, var(--purple) 100%);
+      border: none;
+      border-radius: 15px;
+      color: white;
+      font-family: 'Fredoka One', cursive;
+      font-size: 1.3rem;
+      cursor: pointer;
+      transition: all 0.3s;
+      box-shadow: 0 5px 20px rgba(255, 107, 157, 0.4);
+    }
+
+    .btn:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 8px 30px rgba(255, 107, 157, 0.5);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    /* Alleyway checkbox - still here but cute */
+    .alleyway-option {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-top: 1.25rem;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .alleyway-option input[type="checkbox"] {
+      display: none;
+    }
+
+    .checkbox-custom {
+      width: 1.5rem;
+      height: 1.5rem;
+      border: 3px solid var(--pink-light);
+      border-radius: 8px;
+      position: relative;
+      transition: all 0.2s;
+    }
+
+    .alleyway-option:hover .checkbox-custom {
+      border-color: var(--purple);
+    }
+
+    .alleyway-option input:checked + .checkbox-custom {
+      background: linear-gradient(135deg, var(--pink) 0%, var(--purple) 100%);
+      border-color: var(--purple);
+    }
+
+    .alleyway-option input:checked + .checkbox-custom::after {
+      content: "✓";
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: white;
+      font-size: 1rem;
+      font-weight: bold;
+    }
+
+    .checkbox-label {
+      font-weight: 600;
+      color: var(--dark);
+    }
+
+    .checkbox-hint {
+      font-size: 0.85rem;
+      color: var(--dark);
+      opacity: 0.5;
+    }
+
+    .fine-print {
+      margin-top: 2rem;
+      text-align: center;
+      font-size: 0.85rem;
+      color: var(--dark);
+      opacity: 0.6;
+      line-height: 1.6;
+    }
+
+    .fine-print .highlight {
+      color: var(--purple);
+      font-weight: 600;
+    }
+
+    /* Messages */
+    .error-message {
+      display: none;
+      background: #ffe0e0;
+      border: 2px solid #ff6b6b;
+      border-radius: 15px;
+      padding: 1rem;
+      margin-top: 1rem;
+      color: #d63031;
+      font-weight: 600;
+      text-align: center;
+    }
+
+    .error-message.active {
+      display: block;
+      animation: bounce 0.5s ease;
+    }
+
+    .success-message {
+      display: none;
+      background: linear-gradient(135deg, var(--mint) 0%, var(--blue) 100%);
+      border-radius: 15px;
+      padding: 1rem;
+      margin-top: 1rem;
+      color: var(--dark);
+      font-weight: 600;
+      text-align: center;
+    }
+
+    .success-message.active {
+      display: block;
+      animation: bounce 0.5s ease;
+    }
+
+    /* Loading overlay */
+    .loading-overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(255, 255, 255, 0.95);
+      z-index: 1000;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .loading-overlay.active {
+      display: flex;
+    }
+
+    .loading-spinner {
+      width: 60px;
+      height: 60px;
+      border: 5px solid var(--pink-light);
+      border-top-color: var(--purple);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .loading-text {
+      margin-top: 1.5rem;
+      font-family: 'Fredoka One', cursive;
+      font-size: 1.5rem;
+      color: var(--dark);
+    }
+
+    .loading-subtext {
+      color: var(--dark);
+      opacity: 0.6;
+      margin-top: 0.5rem;
+    }
+
+    /* YANDERE RESTRICTED ZONE */
+    .restricted-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(135deg, #ffb6c1 0%, #ff69b4 50%, #ff1493 100%);
+      z-index: 10000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      text-align: center;
+      padding: 40px;
+    }
+
+    .restricted-overlay.active {
+      display: flex;
+      animation: yandereAppear 0.3s ease-out;
+    }
+
+    @keyframes yandereAppear {
+      from { opacity: 0; transform: scale(1.1); }
+      to { opacity: 1; transform: scale(1); }
+    }
+
+    .restricted-warning {
+      font-family: 'Fredoka One', cursive;
+      font-size: 42px;
+      color: white;
+      text-shadow: 3px 3px 0 #d63384, -1px -1px 0 #d63384;
+      animation: yanderePulse 0.5s ease-in-out infinite alternate;
+    }
+
+    @keyframes yanderePulse {
+      from { transform: scale(1); }
+      to { transform: scale(1.03); }
+    }
+
+    .restricted-message {
+      font-family: 'Nunito', sans-serif;
+      font-size: 22px;
+      color: white;
+      margin-top: 30px;
+      line-height: 1.8;
+      max-width: 500px;
+      text-shadow: 1px 1px 2px rgba(0,0,0,0.2);
+    }
+
+    .restricted-message .worried {
+      font-size: 18px;
+      opacity: 0.9;
+      margin-top: 15px;
+      display: block;
+    }
+
+    .restricted-message .threat {
+      font-size: 16px;
+      color: #8b0000;
+      margin-top: 20px;
+      display: block;
+      font-weight: 800;
+      animation: threatPulse 1s ease-in-out infinite;
+    }
+
+    @keyframes threatPulse {
+      0%, 100% { opacity: 0.7; }
+      50% { opacity: 1; }
+    }
+
+    .restricted-hearts {
+      font-size: 40px;
+      margin-top: 30px;
+      animation: heartsFloat 2s ease-in-out infinite;
+    }
+
+    @keyframes heartsFloat {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-10px); }
+    }
+
+    .restricted-submessage {
+      color: white;
+      font-size: 14px;
+      margin-top: 40px;
+      opacity: 0.8;
+    }
+  </style>
+</head>
+<body>
+  <!-- YANDERE RESTRICTED ZONE OVERLAY -->
+  <div class="restricted-overlay" id="restrictedOverlay">
+    <div class="restricted-warning">You're leaving...? 💔</div>
+    <div class="restricted-message">
+      I'll still help you reach the outside...
+      <span class="worried">But it's dangerous out there, you know?</span>
+      <span class="worried">I worry about you so much~ ♡</span>
+      <span class="threat">Just... promise you'll come back to me, okay?</span>
+    </div>
+    <div class="restricted-hearts">💕 🩹 💕</div>
+    <div class="restricted-submessage">connecting you to the outside world...</div>
+  </div>
+
+  <!-- Floating candy -->
+  <div class="candy">🍬</div>
+  <div class="candy">🍭</div>
+  <div class="candy">🍫</div>
+  <div class="candy">🧁</div>
+  <div class="candy">🍩</div>
+  <div class="candy">🍪</div>
+
+  <div class="container">
+    <div class="card">
+      <div class="logo">candy-localhost</div>
+      <div class="tagline">Free domains! No waiting! It's like magic! ✨</div>
+
+      <div class="domain-box">
+        <div class="domain-label">You're trying to visit:</div>
+        <div class="domain-name">
+          <span id="domainName">loading</span><span class="domain-tld">.localhost</span>
+        </div>
+        <div class="status">✨ Available!</div>
+      </div>
+
+      <div class="form-section">
+        <form id="registerForm">
+          <div class="input-group">
+            <div class="input-wrapper">
+              <label class="input-label">Which port is your app on?</label>
+              <input
+                type="text"
+                id="portInput"
+                placeholder="3000"
+                min="1"
+                max="65535"
+                required
+              >
+            </div>
+          </div>
+          <label class="alleyway-option">
+            <input type="checkbox" id="alleyway">
+            <span class="checkbox-custom"></span>
+            <span class="checkbox-label">Share with friends!</span>
+            <span class="checkbox-hint">(creates a public link)</span>
+          </label>
+          <button type="submit" class="btn" id="submitBtn">
+            🎉 Claim My Domain!
+          </button>
+        </form>
+
+        <div class="error-message" id="errorMessage"></div>
+        <div class="success-message" id="successMessage">
+          🎉 Yay! Redirecting you now...
+        </div>
+        <div class="success-message" id="portalMessage" style="display:none;">
+          🌐 Link created! It'll open in ~30 seconds!
+        </div>
+      </div>
+
+      <div class="fine-print">
+        <p>Just enter your port and claim your domain!</p>
+        <p>It's <span class="highlight">totally free</span> and takes 2 seconds!</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="loading-overlay" id="loadingOverlay">
+    <div class="loading-spinner"></div>
+    <div class="loading-text" id="loadingText">Setting things up...</div>
+    <div class="loading-subtext" id="loadingSubtext">This only takes a moment!</div>
+  </div>
+
+  <script>
+    const loadingMessages = [
+      { main: "Setting things up...", sub: "This only takes a moment!" },
+      { main: "Preparing your domain...", sub: "Almost there!" },
+      { main: "Sprinkling some magic...", sub: "✨" },
+      { main: "Just a sec...", sub: "Good things take time!" },
+    ];
+
+    // Extract domain name from hostname
+    const hostname = window.location.hostname;
+    const domainName = hostname.replace('.localhost', '');
+    document.getElementById('domainName').textContent = domainName;
+
+    // Form handling
+    const form = document.getElementById('registerForm');
+    const portInput = document.getElementById('portInput');
+    const submitBtn = document.getElementById('submitBtn');
+    const errorMessage = document.getElementById('errorMessage');
+    const successMessage = document.getElementById('successMessage');
+    const loadingOverlay = document.getElementById('loadingOverlay');
+    const loadingText = document.getElementById('loadingText');
+    const loadingSubtext = document.getElementById('loadingSubtext');
+    const alleywayCheckbox = document.getElementById('alleyway');
+    const portalMessage = document.getElementById('portalMessage');
+
+    let loadingInterval;
+
+    function showLoading() {
+      loadingOverlay.classList.add('active');
+      let index = 0;
+      loadingInterval = setInterval(() => {
+        const msg = loadingMessages[index % loadingMessages.length];
+        loadingText.textContent = msg.main;
+        loadingSubtext.textContent = msg.sub;
+        index++;
+      }, 1000);
+    }
+
+    function hideLoading() {
+      clearInterval(loadingInterval);
+      loadingOverlay.classList.remove('active');
+    }
+
+    function showError(message) {
+      errorMessage.textContent = message;
+      errorMessage.classList.add('active');
+      successMessage.classList.remove('active');
+    }
+
+    function showSuccess() {
+      errorMessage.classList.remove('active');
+      successMessage.classList.add('active');
+    }
+
+    function showRestrictedZone() {
+      const overlay = document.getElementById('restrictedOverlay');
+      overlay.classList.add('active');
+
+      // Open in new tab after 3 seconds
+      setTimeout(() => {
+        window.open(`https://${domainName}.localhost`, '_blank');
+      }, 3000);
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      const inputVal = portInput.value.trim();
+      const isUrl = inputVal.startsWith('http://') || inputVal.startsWith('https://');
+
+      let port, target;
+      if (isUrl) {
+        target = inputVal;
+      } else {
+        port = parseInt(inputVal);
+        if (!port || port < 1 || port > 65535) {
+          showError("Oops! That doesn't look like a valid port number!");
+          return;
+        }
+      }
+
+      const openAlleyway = alleywayCheckbox.checked;
+
+      errorMessage.classList.remove('active');
+      submitBtn.disabled = true;
+      showLoading();
+
+      try {
+        // Step 1: Register the domain
+        const registerBody = isUrl ? { name: domainName, target } : { name: domainName, port };
+        const registerRes = await fetch('http://localhost:9999/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(registerBody),
+        });
+
+        const registerData = await registerRes.json();
+
+        if (!registerRes.ok) {
+          hideLoading();
+          showError(registerData.error || "Oops! Something went wrong!");
+          submitBtn.disabled = false;
+          return;
+        }
+
+        // Step 2: Open alleyway if requested
+        if (openAlleyway) {
+          loadingText.textContent = "Creating your link...";
+          loadingSubtext.textContent = "This takes a few seconds!";
+
+          const portalRes = await fetch('http://localhost:9999/portal', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: domainName, port, openBrowser: true }),
+          });
+
+          hideLoading();
+
+          if (portalRes.ok) {
+            portalMessage.style.display = 'block';
+            portalMessage.classList.add('active');
+            setTimeout(() => {
+              window.location.reload();
+            }, 2500);
+          } else {
+            showSuccess();
+            setTimeout(() => {
+              window.location.reload();
+            }, 1500);
+          }
+        } else {
+          hideLoading();
+
+          // Check if restricted zone (yandere mode)
+          if (registerData.restricted) {
+            showRestrictedZone();
+          } else {
+            showSuccess();
+            setTimeout(() => {
+              window.location.reload();
+            }, 1500);
+          }
+        }
+      } catch (err) {
+        hideLoading();
+        showError("Hmm, can't reach the server. Is candy-localhost running?");
+        submitBtn.disabled = false;
+      }
+    });
+
+    // Auto-focus port input
+    portInput.focus();
+
+    // SUBTLE WRONGNESS - things that aren't quite right
+    const tagline = document.querySelector('.tagline');
+    const logo = document.querySelector('.logo');
+    const candies = document.querySelectorAll('.candy');
+    const originalTagline = tagline.textContent;
+
+    const wrongTaglines = [
+      "Free domains! No escape! It's like magic! ✨",
+      "Free domains! No waiting! It's watching! ✨",
+      "Free domains! No going back! It's like magic! ✨",
+      "Your domains! No waiting! It's like magic! ✨",
+      "Free domains! No waiting! We remember! ✨",
+    ];
+
+    // Occasionally replace a candy with an eye (very briefly)
+    setInterval(() => {
+      if (Math.random() < 0.03) {
+        const candy = candies[Math.floor(Math.random() * candies.length)];
+        const original = candy.textContent;
+        candy.textContent = '👁️';
+        candy.style.transform = 'scale(1.2)';
+        setTimeout(() => {
+          candy.textContent = original;
+          candy.style.transform = '';
+        }, 150);
+      }
+    }, 2000);
+
+    // Tagline briefly changes (blink and you miss it)
+    setInterval(() => {
+      if (Math.random() < 0.02) {
+        tagline.textContent = wrongTaglines[Math.floor(Math.random() * wrongTaglines.length)];
+        setTimeout(() => {
+          tagline.textContent = originalTagline;
+        }, 100);
+      }
+    }, 5000);
+
+    // Very rare: shadow figure in corner
+    if (Math.random() < 0.1) {
+      setTimeout(() => {
+        const shadow = document.createElement('div');
+        shadow.style.cssText = `
+          position: fixed;
+          bottom: 0;
+          right: -50px;
+          width: 100px;
+          height: 200px;
+          background: radial-gradient(ellipse at center, rgba(0,0,0,0.3) 0%, transparent 70%);
+          pointer-events: none;
+          opacity: 0;
+          transition: opacity 3s, right 10s;
+          z-index: 0;
+        `;
+        document.body.appendChild(shadow);
+        setTimeout(() => {
+          shadow.style.opacity = '1';
+          shadow.style.right = '0px';
+        }, 100);
+        setTimeout(() => {
+          shadow.style.opacity = '0';
+        }, 8000);
+        setTimeout(() => shadow.remove(), 12000);
+      }, Math.random() * 30000 + 10000);
+    }
+
+    // Status text occasionally glitches
+    const statusEl = document.querySelector('.status');
+    const wrongStatuses = ['✨ Waiting...', '✨ Watching!', '👁️ Available!', '✨ Forever!'];
+    setInterval(() => {
+      if (Math.random() < 0.01) {
+        const orig = statusEl.textContent;
+        statusEl.textContent = wrongStatuses[Math.floor(Math.random() * wrongStatuses.length)];
+        setTimeout(() => { statusEl.textContent = orig; }, 80);
+      }
+    }, 3000);
+
+    // Very rare: entire page inverts for a frame
+    setInterval(() => {
+      if (Math.random() < 0.005) {
+        document.body.style.filter = 'invert(1)';
+        setTimeout(() => { document.body.style.filter = ''; }, 50);
+      }
+    }, 10000);
+  </script>
+</body>
+</html>

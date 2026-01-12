@@ -1,0 +1,912 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DOMAIN ALLOCATION TERMINAL</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=VT323&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --phosphor: #33ff33;
+      --phosphor-dim: #1a8c1a;
+      --phosphor-glow: #33ff3344;
+      --amber: #ffb000;
+      --amber-dim: #8c6000;
+      --red: #ff3333;
+      --bg: #0a0a0a;
+      --bg-lighter: #141414;
+      --scanline: rgba(0, 0, 0, 0.15);
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--phosphor);
+      font-family: 'VT323', monospace;
+      overflow: hidden;
+    }
+
+    /* CRT Screen Effect */
+    body::before {
+      content: "";
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: repeating-linear-gradient(
+        0deg,
+        var(--scanline) 0px,
+        var(--scanline) 1px,
+        transparent 1px,
+        transparent 3px
+      );
+      pointer-events: none;
+      z-index: 1000;
+      animation: scanlines 0.1s linear infinite;
+    }
+
+    body::after {
+      content: "";
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: radial-gradient(ellipse at center, transparent 0%, rgba(0,0,0,0.4) 100%);
+      pointer-events: none;
+      z-index: 999;
+    }
+
+    @keyframes scanlines {
+      0% { background-position: 0 0; }
+      100% { background-position: 0 3px; }
+    }
+
+    @keyframes flicker {
+      0%, 100% { opacity: 1; }
+      92% { opacity: 1; }
+      93% { opacity: 0.8; }
+      94% { opacity: 1; }
+      97% { opacity: 0.9; }
+      98% { opacity: 1; }
+    }
+
+    @keyframes textGlow {
+      0%, 100% { text-shadow: 0 0 10px var(--phosphor-glow), 0 0 20px var(--phosphor-glow); }
+      50% { text-shadow: 0 0 15px var(--phosphor-glow), 0 0 30px var(--phosphor-glow), 0 0 40px var(--phosphor-glow); }
+    }
+
+    @keyframes blink {
+      0%, 50% { opacity: 1; }
+      51%, 100% { opacity: 0; }
+    }
+
+    @keyframes typewriter {
+      from { width: 0; }
+      to { width: 100%; }
+    }
+
+    @keyframes glitch {
+      0%, 100% { transform: translate(0); }
+      20% { transform: translate(-2px, 2px); }
+      40% { transform: translate(-2px, -2px); }
+      60% { transform: translate(2px, 2px); }
+      80% { transform: translate(2px, -2px); }
+    }
+
+    .container {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+      animation: flicker 4s infinite;
+    }
+
+    .terminal {
+      width: 100%;
+      max-width: 700px;
+      background: var(--bg-lighter);
+      border: 2px solid var(--phosphor-dim);
+      border-radius: 4px;
+      padding: 2rem;
+      position: relative;
+      box-shadow:
+        0 0 20px var(--phosphor-glow),
+        inset 0 0 60px rgba(0, 0, 0, 0.5);
+    }
+
+    .terminal::before {
+      content: "CANDY-LOCALHOST // DOMAIN ALLOCATION TERMINAL v0.2.0";
+      position: absolute;
+      top: -1.5rem;
+      left: 1rem;
+      background: var(--bg);
+      padding: 0 0.5rem;
+      font-size: 0.9rem;
+      color: var(--phosphor-dim);
+      letter-spacing: 2px;
+    }
+
+    .ascii-header {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.65rem;
+      line-height: 1.1;
+      color: var(--phosphor-dim);
+      text-align: center;
+      margin-bottom: 1.5rem;
+      white-space: pre;
+      animation: textGlow 3s ease-in-out infinite;
+    }
+
+    .warning-banner {
+      background: repeating-linear-gradient(
+        45deg,
+        var(--amber-dim),
+        var(--amber-dim) 10px,
+        transparent 10px,
+        transparent 20px
+      );
+      padding: 2px;
+      margin-bottom: 1.5rem;
+    }
+
+    .warning-banner-inner {
+      background: var(--bg);
+      padding: 0.75rem 1rem;
+      text-align: center;
+      font-size: 1.3rem;
+      color: var(--amber);
+      letter-spacing: 3px;
+    }
+
+    .domain-display {
+      text-align: center;
+      margin: 2rem 0;
+    }
+
+    .domain-label {
+      font-size: 1rem;
+      color: var(--phosphor-dim);
+      margin-bottom: 0.5rem;
+      letter-spacing: 2px;
+    }
+
+    .domain-name {
+      font-size: 2.5rem;
+      color: var(--phosphor);
+      text-shadow: 0 0 10px var(--phosphor-glow), 0 0 20px var(--phosphor-glow);
+      word-break: break-all;
+    }
+
+    .domain-tld {
+      color: var(--phosphor-dim);
+    }
+
+    .status-line {
+      font-size: 1.1rem;
+      color: var(--red);
+      text-align: center;
+      margin: 1rem 0;
+      animation: blink 1s step-end infinite;
+    }
+
+    .form-section {
+      margin: 2rem 0;
+    }
+
+    .input-group {
+      display: flex;
+      gap: 1rem;
+      align-items: stretch;
+      margin-bottom: 1rem;
+    }
+
+    .input-wrapper {
+      flex: 1;
+      position: relative;
+    }
+
+    .input-label {
+      position: absolute;
+      top: -0.6rem;
+      left: 0.75rem;
+      background: var(--bg-lighter);
+      padding: 0 0.5rem;
+      font-size: 0.85rem;
+      color: var(--phosphor-dim);
+      letter-spacing: 1px;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--phosphor-dim);
+      color: var(--phosphor);
+      font-family: 'VT323', monospace;
+      font-size: 1.5rem;
+      padding: 1rem;
+      outline: none;
+      transition: all 0.2s;
+    }
+
+    input[type="text"]:focus {
+      border-color: var(--phosphor);
+      box-shadow: 0 0 10px var(--phosphor-glow), inset 0 0 10px var(--phosphor-glow);
+    }
+
+    input[type="text"]::placeholder {
+      color: var(--phosphor-dim);
+    }
+
+    /* Hide number input spinners */
+    input[type="text"]::-webkit-outer-spin-button,
+    input[type="text"]::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+    input[type="text"] { -moz-appearance: textfield; }
+
+    .btn {
+      background: transparent;
+      border: 2px solid var(--phosphor);
+      color: var(--phosphor);
+      font-family: 'VT323', monospace;
+      font-size: 1.4rem;
+      padding: 1rem 2rem;
+      cursor: pointer;
+      position: relative;
+      overflow: hidden;
+      transition: all 0.2s;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+    }
+
+    .btn::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: var(--phosphor);
+      transition: left 0.3s;
+      z-index: -1;
+    }
+
+    .btn:hover {
+      color: var(--bg);
+      text-shadow: none;
+      box-shadow: 0 0 20px var(--phosphor-glow);
+    }
+
+    .btn:hover::before {
+      left: 0;
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn:disabled:hover::before {
+      left: -100%;
+    }
+
+    .btn:disabled:hover {
+      color: var(--phosphor);
+    }
+
+    .fine-print {
+      margin-top: 2rem;
+      padding-top: 1rem;
+      border-top: 1px dashed var(--phosphor-dim);
+      font-size: 0.95rem;
+      color: var(--phosphor-dim);
+      line-height: 1.6;
+    }
+
+    .fine-print p {
+      margin: 0.5rem 0;
+    }
+
+    .fine-print .highlight {
+      color: var(--amber);
+    }
+
+    /* Loading State */
+    .loading-overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(10, 10, 10, 0.95);
+      z-index: 2000;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .loading-overlay.active {
+      display: flex;
+    }
+
+    .loading-text {
+      font-size: 1.8rem;
+      color: var(--phosphor);
+      animation: textGlow 1s ease-in-out infinite;
+      margin-bottom: 1rem;
+    }
+
+    .loading-subtext {
+      font-size: 1.2rem;
+      color: var(--phosphor-dim);
+    }
+
+    .loading-dots::after {
+      content: '';
+      animation: dots 1.5s steps(4, end) infinite;
+    }
+
+    @keyframes dots {
+      0% { content: ''; }
+      25% { content: '.'; }
+      50% { content: '..'; }
+      75% { content: '...'; }
+      100% { content: ''; }
+    }
+
+    /* Error State */
+    .error-message {
+      display: none;
+      background: rgba(255, 51, 51, 0.1);
+      border: 1px solid var(--red);
+      padding: 1rem;
+      margin-top: 1rem;
+      color: var(--red);
+      font-size: 1.2rem;
+      animation: glitch 0.3s ease-in-out;
+    }
+
+    .error-message.active {
+      display: block;
+    }
+
+    /* Success State */
+    .success-message {
+      display: none;
+      background: rgba(51, 255, 51, 0.1);
+      border: 1px solid var(--phosphor);
+      padding: 1rem;
+      margin-top: 1rem;
+      color: var(--phosphor);
+      font-size: 1.2rem;
+      text-align: center;
+    }
+
+    .success-message.active {
+      display: block;
+    }
+
+    /* Footer stamp */
+    .stamp {
+      position: absolute;
+      bottom: -3rem;
+      right: 1rem;
+      font-size: 0.8rem;
+      color: var(--phosphor-dim);
+      opacity: 0.5;
+      transform: rotate(-5deg);
+    }
+
+    .cursor {
+      display: inline-block;
+      width: 0.6em;
+      height: 1.2em;
+      background: var(--phosphor);
+      animation: blink 1s step-end infinite;
+      vertical-align: middle;
+      margin-left: 2px;
+    }
+
+    /* Alleyway checkbox */
+    .alleyway-option {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-top: 1rem;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .alleyway-option input[type="checkbox"] {
+      display: none;
+    }
+
+    .checkbox-custom {
+      width: 1.2rem;
+      height: 1.2rem;
+      border: 2px solid var(--phosphor-dim);
+      position: relative;
+      transition: all 0.2s;
+    }
+
+    .alleyway-option:hover .checkbox-custom {
+      border-color: var(--phosphor);
+      box-shadow: 0 0 10px var(--phosphor-glow);
+    }
+
+    .alleyway-option input:checked + .checkbox-custom {
+      border-color: var(--amber);
+      background: var(--amber);
+    }
+
+    .alleyway-option input:checked + .checkbox-custom::after {
+      content: "✓";
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: var(--bg);
+      font-size: 1rem;
+      font-weight: bold;
+    }
+
+    .checkbox-label {
+      font-size: 1.2rem;
+      color: var(--phosphor);
+    }
+
+    .checkbox-hint {
+      font-size: 0.95rem;
+      color: var(--phosphor-dim);
+      font-style: italic;
+    }
+
+    .alleyway-option input:checked ~ .checkbox-label {
+      color: var(--amber);
+    }
+
+    /* RESTRICTED ZONE */
+    .restricted-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.95);
+      z-index: 10000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      animation: restrictedFlicker 0.1s infinite;
+    }
+
+    .restricted-overlay.active {
+      display: flex;
+    }
+
+    @keyframes restrictedFlicker {
+      0%, 100% { background: rgba(10, 0, 0, 0.95); }
+      50% { background: rgba(20, 0, 0, 0.97); }
+    }
+
+    .restricted-warning {
+      color: var(--red);
+      font-size: 48px;
+      font-family: 'VT323', monospace;
+      text-align: center;
+      animation: warningPulse 0.5s ease-in-out infinite alternate;
+      text-shadow: 0 0 20px var(--red), 0 0 40px var(--red);
+    }
+
+    @keyframes warningPulse {
+      from { opacity: 0.7; transform: scale(1); }
+      to { opacity: 1; transform: scale(1.02); }
+    }
+
+    .restricted-message {
+      color: #ff6666;
+      font-size: 24px;
+      font-family: 'IBM Plex Mono', monospace;
+      text-align: center;
+      margin-top: 30px;
+      max-width: 600px;
+      line-height: 1.6;
+      animation: fadeIn 0.5s ease-out 0.3s both;
+    }
+
+    .restricted-submessage {
+      color: #666;
+      font-size: 16px;
+      margin-top: 40px;
+      font-family: 'VT323', monospace;
+      animation: fadeIn 0.5s ease-out 0.8s both;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .restricted-border {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      right: 20px;
+      bottom: 20px;
+      border: 2px solid var(--red);
+      pointer-events: none;
+      animation: borderPulse 1s ease-in-out infinite;
+    }
+
+    @keyframes borderPulse {
+      0%, 100% { opacity: 0.3; }
+      50% { opacity: 0.8; }
+    }
+  </style>
+</head>
+<body>
+  <!-- RESTRICTED ZONE OVERLAY -->
+  <div class="restricted-overlay" id="restrictedOverlay">
+    <div class="restricted-border"></div>
+    <div class="restricted-warning">⚠ RESTRICTED ZONE ⚠</div>
+    <div class="restricted-message">
+      You've crossed beyond the safe perimeter.<br>
+      External routing established.<br>
+      <span style="color: #ff3333;">We are no longer responsible for what happens out there.</span>
+    </div>
+    <div class="restricted-submessage">[ CONNECTION WILL PROCEED IN 3 SECONDS ]</div>
+  </div>
+
+  <div class="container">
+    <div class="terminal">
+      <div class="ascii-header">
+ ██████╗ █████╗ ███╗   ██╗██████╗ ██╗   ██╗
+██╔════╝██╔══██╗████╗  ██║██╔══██╗╚██╗ ██╔╝
+██║     ███████║██╔██╗ ██║██║  ██║ ╚████╔╝
+██║     ██╔══██║██║╚██╗██║██║  ██║  ╚██╔╝
+╚██████╗██║  ██║██║ ╚████║██████╔╝   ██║
+ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═════╝    ╚═╝
+      </div>
+
+      <div class="warning-banner">
+        <div class="warning-banner-inner">
+          ⚠ UNREGISTERED DOMAIN DETECTED ⚠
+        </div>
+      </div>
+
+      <div class="domain-display">
+        <div class="domain-label">// REQUESTED ALLOCATION:</div>
+        <div class="domain-name">
+          <span id="domainName">loading</span><span class="domain-tld">.localhost</span>
+        </div>
+      </div>
+
+      <div class="status-line">
+        STATUS: NOT IN REGISTRY<span class="cursor"></span>
+      </div>
+
+      <div class="form-section">
+        <form id="registerForm">
+          <div class="input-group">
+            <div class="input-wrapper">
+              <span class="input-label">TARGET PORT</span>
+              <input
+                type="text"
+                id="portInput"
+                placeholder="3000"
+                min="1"
+                max="65535"
+                required
+              >
+            </div>
+            <button type="submit" class="btn" id="submitBtn">
+              CLAIM DOMAIN
+            </button>
+          </div>
+          <label class="alleyway-option">
+            <input type="checkbox" id="alleyway">
+            <span class="checkbox-custom"></span>
+            <span class="checkbox-label">open an alleyway</span>
+            <span class="checkbox-hint">( cloudflare tunnel - iykyk )</span>
+          </label>
+        </form>
+
+        <div class="error-message" id="errorMessage"></div>
+        <div class="success-message" id="successMessage">
+          ALLOCATION COMPLETE. REDIRECTING<span class="loading-dots"></span>
+        </div>
+        <div class="success-message" id="portalMessage" style="display:none;">
+          ALLEYWAY OPENED. IT'LL APPEAR IN ~30S<span class="loading-dots"></span>
+        </div>
+      </div>
+
+      <div class="fine-print">
+        <p>> This domain is currently <span class="highlight">unallocated</span>.</p>
+        <p>> Enter a port number to claim it. No forms. No waiting.</p>
+        <p>> <span class="highlight">IANA has no jurisdiction here.</span></p>
+        <p>> By proceeding you accept that this allocation is <span class="highlight">off the books</span>.</p>
+      </div>
+
+      <div class="stamp">
+        FORM 127-A // LOCALHOST ALLOCATION REQUEST<br>
+        PROCESSED BY: candy-localhost v0.2.0
+      </div>
+    </div>
+  </div>
+
+  <div class="loading-overlay" id="loadingOverlay">
+    <div class="loading-text" id="loadingText">PROCESSING REQUEST</div>
+    <div class="loading-subtext">
+      <span id="loadingSubtext">bypassing regulations</span><span class="loading-dots"></span>
+    </div>
+  </div>
+
+  <script>
+    const loadingMessages = [
+      { main: "PROCESSING REQUEST", sub: "bypassing regulations" },
+      { main: "ALLOCATING DOMAIN", sub: "no paperwork required" },
+      { main: "UPDATING REGISTRY", sub: "the auditors won't notice" },
+      { main: "RUBBER STAMPING", sub: "accountability is for the 2000s" },
+      { main: "ESTABLISHING CONNECTION", sub: "the ITU can't reach us here" },
+    ];
+
+    const errorMessages = [
+      "oof. that didn't work.",
+      "bestie no.",
+      "the void rejected your request.",
+      "even we have limits.",
+    ];
+
+    // Extract domain name from hostname
+    const hostname = window.location.hostname;
+    const domainName = hostname.replace('.localhost', '');
+    document.getElementById('domainName').textContent = domainName;
+
+    // Form handling
+    const form = document.getElementById('registerForm');
+    const portInput = document.getElementById('portInput');
+    const submitBtn = document.getElementById('submitBtn');
+    const errorMessage = document.getElementById('errorMessage');
+    const successMessage = document.getElementById('successMessage');
+    const loadingOverlay = document.getElementById('loadingOverlay');
+    const loadingText = document.getElementById('loadingText');
+    const loadingSubtext = document.getElementById('loadingSubtext');
+
+    let loadingInterval;
+
+    function showLoading() {
+      loadingOverlay.classList.add('active');
+      let index = 0;
+      loadingInterval = setInterval(() => {
+        const msg = loadingMessages[index % loadingMessages.length];
+        loadingText.textContent = msg.main;
+        loadingSubtext.textContent = msg.sub;
+        index++;
+      }, 800);
+    }
+
+    function hideLoading() {
+      clearInterval(loadingInterval);
+      loadingOverlay.classList.remove('active');
+    }
+
+    function showError(message) {
+      const prefix = errorMessages[Math.floor(Math.random() * errorMessages.length)];
+      errorMessage.textContent = `> ${prefix} ${message}`;
+      errorMessage.classList.add('active');
+      successMessage.classList.remove('active');
+    }
+
+    function showSuccess() {
+      errorMessage.classList.remove('active');
+      successMessage.classList.add('active');
+    }
+
+    function showRestrictedZone() {
+      const overlay = document.getElementById('restrictedOverlay');
+      overlay.classList.add('active');
+
+      // Open in new tab after 3 seconds
+      setTimeout(() => {
+        window.open(`https://${domainName}.localhost`, '_blank');
+      }, 3000);
+    }
+
+    const alleywayCheckbox = document.getElementById('alleyway');
+    const portalMessage = document.getElementById('portalMessage');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      const inputVal = portInput.value.trim();
+      const isUrl = inputVal.startsWith('http://') || inputVal.startsWith('https://');
+
+      let port, target;
+      if (isUrl) {
+        target = inputVal;
+      } else {
+        port = parseInt(inputVal);
+        if (!port || port < 1 || port > 65535) {
+          showError("that's not a valid port and you know it.");
+          return;
+        }
+      }
+
+      const openAlleyway = alleywayCheckbox.checked;
+
+      errorMessage.classList.remove('active');
+      submitBtn.disabled = true;
+      showLoading();
+
+      try {
+        // Step 1: Register the domain
+        const registerBody = isUrl ? { name: domainName, target } : { name: domainName, port };
+        const registerRes = await fetch('http://localhost:9999/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(registerBody),
+        });
+
+        const registerData = await registerRes.json();
+
+        if (!registerRes.ok) {
+          hideLoading();
+          showError(registerData.error || 'something went wrong in the back office.');
+          submitBtn.disabled = false;
+          return;
+        }
+
+        // Step 2: Open alleyway if requested
+        if (openAlleyway) {
+          loadingText.textContent = "OPENING ALLEYWAY";
+          loadingSubtext.textContent = "the ITU can't reach us here";
+
+          const portalRes = await fetch('http://localhost:9999/portal', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: domainName, port, openBrowser: true }),
+          });
+
+          const portalData = await portalRes.json();
+
+          hideLoading();
+
+          if (portalRes.ok) {
+            portalMessage.style.display = 'block';
+            portalMessage.classList.add('active');
+            // Wait longer before refresh since browser is opening
+            setTimeout(() => {
+              window.location.reload();
+            }, 2500);
+          } else {
+            // Domain registered but portal failed - still redirect
+            showSuccess();
+            setTimeout(() => {
+              window.location.reload();
+            }, 1500);
+          }
+        } else {
+          hideLoading();
+
+          // Check if restricted zone
+          if (registerData.restricted) {
+            showRestrictedZone();
+          } else {
+            showSuccess();
+            setTimeout(() => {
+              window.location.reload();
+            }, 1500);
+          }
+        }
+      } catch (err) {
+        hideLoading();
+        showError("couldn't reach the registry. is candy-localhost running?");
+        submitBtn.disabled = false;
+      }
+    });
+
+    // Auto-focus port input
+    portInput.focus();
+
+    // THE VOID GROWS STRONGER - progressive glitching
+    let timeOnPage = 0;
+    const terminal = document.querySelector('.terminal');
+    const container = document.querySelector('.container');
+
+    const glitchMessages = [
+      "Do you feel it watching?",
+      "The tunnels go deeper than you know.",
+      "IANA can't save you here.",
+      "You've been here too long.",
+      "The void remembers your face.",
+      "Some domains never come back.",
+      "Why are you still here?",
+      "It's not too late to leave. Or is it?",
+    ];
+
+    // Add glitch overlay element
+    const glitchOverlay = document.createElement('div');
+    glitchOverlay.style.cssText = `
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none; z-index: 10000; opacity: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        rgba(0, 0, 0, 0.1) 0px,
+        rgba(0, 0, 0, 0.1) 1px,
+        transparent 1px,
+        transparent 2px
+      );
+      mix-blend-mode: overlay;
+    `;
+    document.body.appendChild(glitchOverlay);
+
+    // Whisper element for creepy messages
+    const whisper = document.createElement('div');
+    whisper.style.cssText = `
+      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+      font-size: 0.9rem; color: var(--phosphor-dim); opacity: 0;
+      transition: opacity 2s; pointer-events: none; z-index: 10001;
+      text-align: center; max-width: 80%;
+    `;
+    document.body.appendChild(whisper);
+
+    setInterval(() => {
+      timeOnPage++;
+
+      // Level 1: After 30 seconds - subtle flicker increase
+      if (timeOnPage > 30) {
+        container.style.animation = `flicker ${Math.max(1, 4 - timeOnPage/60)}s infinite`;
+      }
+
+      // Level 2: After 60 seconds - chromatic aberration
+      if (timeOnPage > 60) {
+        const offset = Math.min((timeOnPage - 60) / 60, 3);
+        terminal.style.textShadow = `${offset}px 0 rgba(255,0,0,0.3), -${offset}px 0 rgba(0,255,255,0.3)`;
+      }
+
+      // Level 3: After 90 seconds - random glitch flashes
+      if (timeOnPage > 90 && Math.random() < 0.05) {
+        glitchOverlay.style.opacity = '1';
+        glitchOverlay.style.background = `rgba(${Math.random()*50}, ${Math.random()*255}, ${Math.random()*50}, 0.1)`;
+        setTimeout(() => { glitchOverlay.style.opacity = '0'; }, 50 + Math.random() * 100);
+      }
+
+      // Level 4: After 120 seconds - whispered messages
+      if (timeOnPage > 120 && timeOnPage % 30 === 0) {
+        whisper.textContent = glitchMessages[Math.floor(Math.random() * glitchMessages.length)];
+        whisper.style.opacity = '0.7';
+        setTimeout(() => { whisper.style.opacity = '0'; }, 5000);
+      }
+
+      // Level 5: After 180 seconds - screen shake
+      if (timeOnPage > 180 && Math.random() < 0.02) {
+        const shakeX = (Math.random() - 0.5) * 10;
+        const shakeY = (Math.random() - 0.5) * 10;
+        document.body.style.transform = `translate(${shakeX}px, ${shakeY}px)`;
+        setTimeout(() => { document.body.style.transform = ''; }, 50);
+      }
+
+      // Level 6: After 300 seconds (5 min) - the void fully manifests
+      if (timeOnPage > 300) {
+        document.body.style.filter = `hue-rotate(${(timeOnPage - 300) % 360}deg)`;
+      }
+    }, 1000);
+  </script>
+</body>
+</html>

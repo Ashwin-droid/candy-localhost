@@ -393,14 +393,14 @@
       margin-top: 0.5rem;
     }
 
-    /* YANDERE RESTRICTED ZONE */
+    /* YANDERE RESTRICTED ZONE - the mask slips */
     .restricted-overlay {
       position: fixed;
       top: 0;
       left: 0;
       width: 100%;
       height: 100%;
-      background: linear-gradient(135deg, #ffb6c1 0%, #ff69b4 50%, #ff1493 100%);
+      background: #1a0000;
       z-index: 10000;
       display: none;
       align-items: center;
@@ -408,93 +408,127 @@
       flex-direction: column;
       text-align: center;
       padding: 40px;
+      overflow: hidden;
+    }
+
+    .restricted-overlay::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(180deg, transparent 0%, rgba(139, 0, 0, 0.3) 100%);
+      animation: bloodPulse 2s ease-in-out infinite;
+    }
+
+    @keyframes bloodPulse {
+      0%, 100% { opacity: 0.5; }
+      50% { opacity: 1; }
     }
 
     .restricted-overlay.active {
       display: flex;
-      animation: yandereAppear 0.3s ease-out;
+      animation: yandereAppear 0.5s ease-out;
     }
 
     @keyframes yandereAppear {
-      from { opacity: 0; transform: scale(1.1); }
-      to { opacity: 1; transform: scale(1); }
+      0% { opacity: 0; }
+      30% { opacity: 1; }
+      35% { opacity: 0.3; }
+      40% { opacity: 1; }
+      100% { opacity: 1; }
     }
 
     .restricted-warning {
       font-family: 'Fredoka One', cursive;
-      font-size: 42px;
-      color: white;
-      text-shadow: 3px 3px 0 #d63384, -1px -1px 0 #d63384;
-      animation: yanderePulse 0.5s ease-in-out infinite alternate;
+      font-size: 48px;
+      color: #ff6b9d;
+      position: relative;
+      z-index: 1;
     }
 
-    @keyframes yanderePulse {
-      from { transform: scale(1); }
-      to { transform: scale(1.03); }
+    .restricted-warning::after {
+      content: "You're leaving.";
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      color: #8b0000;
+      animation: glitchText 3s ease-in-out infinite;
+      clip-path: inset(0 0 0 0);
+    }
+
+    @keyframes glitchText {
+      0%, 90%, 100% { clip-path: inset(0 100% 0 0); }
+      92%, 98% { clip-path: inset(0 0 0 0); }
     }
 
     .restricted-message {
       font-family: 'Nunito', sans-serif;
-      font-size: 22px;
-      color: white;
-      margin-top: 30px;
-      line-height: 1.8;
-      max-width: 500px;
-      text-shadow: 1px 1px 2px rgba(0,0,0,0.2);
+      font-size: 20px;
+      color: #ffb0b0;
+      margin-top: 40px;
+      line-height: 2;
+      max-width: 450px;
+      position: relative;
+      z-index: 1;
     }
 
-    .restricted-message .worried {
-      font-size: 18px;
-      opacity: 0.9;
-      margin-top: 15px;
+    .restricted-message .sweet {
+      color: #ff6b9d;
       display: block;
+      margin-top: 10px;
     }
 
-    .restricted-message .threat {
-      font-size: 16px;
+    .restricted-message .crack {
       color: #8b0000;
-      margin-top: 20px;
-      display: block;
       font-weight: 800;
-      animation: threatPulse 1s ease-in-out infinite;
-    }
-
-    @keyframes threatPulse {
-      0%, 100% { opacity: 0.7; }
-      50% { opacity: 1; }
-    }
-
-    .restricted-hearts {
-      font-size: 40px;
-      margin-top: 30px;
-      animation: heartsFloat 2s ease-in-out infinite;
-    }
-
-    @keyframes heartsFloat {
-      0%, 100% { transform: translateY(0); }
-      50% { transform: translateY(-10px); }
+      display: block;
+      margin-top: 25px;
+      font-size: 18px;
+      letter-spacing: 1px;
     }
 
     .restricted-submessage {
-      color: white;
+      color: #660000;
       font-size: 14px;
-      margin-top: 40px;
-      opacity: 0.8;
+      margin-top: 50px;
+      position: relative;
+      z-index: 1;
+      font-family: 'Nunito', sans-serif;
+    }
+
+    .drip {
+      position: absolute;
+      width: 3px;
+      height: 0;
+      background: linear-gradient(180deg, #8b0000 0%, #4a0000 100%);
+      top: 0;
+      animation: drip 4s ease-in infinite;
+      border-radius: 0 0 3px 3px;
+    }
+
+    @keyframes drip {
+      0% { height: 0; opacity: 1; }
+      70% { height: 150px; opacity: 1; }
+      100% { height: 150px; opacity: 0; }
     }
   </style>
 </head>
 <body>
   <!-- YANDERE RESTRICTED ZONE OVERLAY -->
   <div class="restricted-overlay" id="restrictedOverlay">
-    <div class="restricted-warning">You're leaving...? 💔</div>
+    <div class="drip" style="left: 15%;"></div>
+    <div class="drip" style="left: 45%; animation-delay: 1.5s;"></div>
+    <div class="drip" style="left: 78%; animation-delay: 0.8s;"></div>
+    <div class="restricted-warning">You're leaving?</div>
     <div class="restricted-message">
-      I'll still help you reach the outside...
-      <span class="worried">But it's dangerous out there, you know?</span>
-      <span class="worried">I worry about you so much~ ♡</span>
-      <span class="threat">Just... promise you'll come back to me, okay?</span>
+      I can reach outside for you.
+      <span class="sweet">I would do anything for you.</span>
+      <span class="crack">Don't forget who helped you.</span>
     </div>
-    <div class="restricted-hearts">💕 🩹 💕</div>
-    <div class="restricted-submessage">connecting you to the outside world...</div>
+    <div class="restricted-submessage">establishing external connection...</div>
   </div>
 
   <!-- Floating candy -->
@@ -567,6 +601,53 @@
   </div>
 
   <script>
+    const API = 'http://localhost:9999';
+
+    // Token management - rolling one-time-use tokens
+    let currentToken = window.CANDY_TOKEN || null;
+
+    // Refresh token after each API call
+    async function refreshToken() {
+      if (!currentToken) return;
+      try {
+        const res = await fetch(API + '/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: currentToken })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          currentToken = data.token;
+        }
+      } catch (e) {
+        console.error('Token refresh failed:', e);
+      }
+    }
+
+    // Wrapper for API calls with token
+    async function apiCall(endpoint, options = {}) {
+      const headers = {
+        ...options.headers,
+        'X-Candy-Token': currentToken
+      };
+      const res = await fetch(API + endpoint, { ...options, headers });
+
+      // Refresh token after successful call (token was consumed)
+      if (res.ok) {
+        await refreshToken();
+      } else if (res.status === 401) {
+        // Token expired, try refresh and retry once
+        await refreshToken();
+        if (currentToken) {
+          headers['X-Candy-Token'] = currentToken;
+          const retry = await fetch(API + endpoint, { ...options, headers });
+          if (retry.ok) await refreshToken();
+          return retry;
+        }
+      }
+      return res;
+    }
+
     const loadingMessages = [
       { main: "Setting things up...", sub: "This only takes a moment!" },
       { main: "Preparing your domain...", sub: "Almost there!" },
@@ -656,7 +737,7 @@
       try {
         // Step 1: Register the domain
         const registerBody = isUrl ? { name: domainName, target } : { name: domainName, port };
-        const registerRes = await fetch('http://localhost:9999/register', {
+        const registerRes = await apiCall('/register', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(registerBody),
@@ -676,7 +757,7 @@
           loadingText.textContent = "Creating your link...";
           loadingSubtext.textContent = "This takes a few seconds!";
 
-          const portalRes = await fetch('http://localhost:9999/portal', {
+          const portalRes = await apiCall('/portal', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name: domainName, port, openBrowser: true }),

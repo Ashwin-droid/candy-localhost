@@ -1,0 +1,1307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>candy portal</title>
+  <link rel="icon" href="/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-deep: #050508;
+      --bg-surface: #0a0a0f;
+      --bg-elevated: #12121a;
+      --bg-card: #16161f;
+      --border: #1e1e2a;
+      --border-bright: #2a2a3a;
+      --text: #e0e0e8;
+      --text-dim: #6a6a7a;
+      --text-muted: #4a4a5a;
+      --cyan: #00e5ff;
+      --cyan-dim: #00a0b0;
+      --cyan-glow: rgba(0, 229, 255, 0.15);
+      --magenta: #ff00aa;
+      --magenta-dim: #a0006a;
+      --magenta-glow: rgba(255, 0, 170, 0.15);
+      --green: #00ff6a;
+      --green-dim: #00a045;
+      --red: #ff3366;
+      --yellow: #ffcc00;
+      --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+      --font-sans: 'Space Grotesk', system-ui, sans-serif;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      height: 100%;
+      overflow: hidden;
+    }
+
+    body {
+      font-family: var(--font-mono);
+      background: var(--bg-deep);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Scanline effect */
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0, 0, 0, 0.1) 2px,
+        rgba(0, 0, 0, 0.1) 4px
+      );
+      pointer-events: none;
+      z-index: 9999;
+      opacity: 0.3;
+    }
+
+    /* Noise texture */
+    body::after {
+      content: '';
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+      opacity: 0.03;
+      pointer-events: none;
+      z-index: 9998;
+    }
+
+    /* Header */
+    header {
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 1.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+      position: relative;
+    }
+
+    header::after {
+      content: '';
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--cyan-dim), transparent);
+      opacity: 0.5;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .logo-text {
+      font-family: var(--font-sans);
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: var(--cyan);
+      text-shadow: 0 0 20px var(--cyan-glow);
+      letter-spacing: -0.02em;
+    }
+
+    .logo-sub {
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+    }
+
+    .mode-switch {
+      display: flex;
+      background: var(--bg-elevated);
+      border-radius: 6px;
+      padding: 3px;
+      border: 1px solid var(--border);
+    }
+
+    .mode-btn {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      padding: 0.5rem 1rem;
+      background: transparent;
+      border: none;
+      color: var(--text-dim);
+      cursor: pointer;
+      border-radius: 4px;
+      transition: all 0.2s ease;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    .mode-btn:hover {
+      color: var(--text);
+    }
+
+    .mode-btn.active {
+      background: var(--cyan);
+      color: var(--bg-deep);
+      box-shadow: 0 0 15px var(--cyan-glow);
+    }
+
+    .status-indicator {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.7rem;
+      color: var(--text-dim);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 10px var(--green);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    .status-dot.offline {
+      background: var(--red);
+      box-shadow: 0 0 10px var(--red);
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    /* Main content */
+    main {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    .panel {
+      display: none;
+      width: 100%;
+      height: 100%;
+    }
+
+    .panel.active {
+      display: flex;
+    }
+
+    /* CLI Panel */
+    #cli-panel {
+      flex-direction: column;
+      background: var(--bg-deep);
+    }
+
+    .terminal {
+      flex: 1;
+      padding: 1rem 1.5rem;
+      overflow-y: auto;
+      font-size: 0.875rem;
+      line-height: 1.6;
+    }
+
+    .terminal::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .terminal::-webkit-scrollbar-track {
+      background: var(--bg-surface);
+    }
+
+    .terminal::-webkit-scrollbar-thumb {
+      background: var(--border-bright);
+      border-radius: 4px;
+    }
+
+    .terminal-line {
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .terminal-line.input {
+      color: var(--cyan);
+    }
+
+    .terminal-line.output {
+      color: var(--text);
+    }
+
+    .terminal-line.error {
+      color: var(--red);
+    }
+
+    .terminal-line.success {
+      color: var(--green);
+    }
+
+    .terminal-line.portal {
+      color: var(--magenta);
+    }
+
+    .terminal-line.dim {
+      color: var(--text-dim);
+    }
+
+    .input-line {
+      display: flex;
+      align-items: center;
+      padding: 1rem 1.5rem;
+      background: var(--bg-surface);
+      border-top: 1px solid var(--border);
+      gap: 0.5rem;
+    }
+
+    .prompt {
+      color: var(--cyan);
+      font-weight: 500;
+      flex-shrink: 0;
+    }
+
+    #cli-input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 0.875rem;
+      outline: none;
+      caret-color: var(--cyan);
+    }
+
+    #cli-input::placeholder {
+      color: var(--text-muted);
+    }
+
+    /* GUI Panel */
+    #gui-panel {
+      flex-direction: column;
+      background: var(--bg-deep);
+      overflow: hidden;
+    }
+
+    .gui-content {
+      flex: 1;
+      padding: 1.5rem;
+      overflow-y: auto;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+      gap: 1.5rem;
+      align-content: start;
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1rem 1.25rem;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .card-title {
+      font-family: var(--font-sans);
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .card-title .icon {
+      color: var(--cyan);
+    }
+
+    .card-body {
+      padding: 1rem 1.25rem;
+    }
+
+    .card-body.empty {
+      color: var(--text-dim);
+      font-size: 0.8rem;
+      text-align: center;
+      padding: 2rem;
+    }
+
+    /* Routes list */
+    .route-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.75rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .route-item:last-child {
+      border-bottom: none;
+    }
+
+    .route-info {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .route-name {
+      color: var(--green);
+      font-weight: 500;
+    }
+
+    .route-arrow {
+      color: var(--text-muted);
+    }
+
+    .route-port {
+      color: var(--text-dim);
+    }
+
+    .route-actions {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .btn-icon {
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text-dim);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      font-size: 0.8rem;
+    }
+
+    .btn-icon:hover {
+      background: var(--border);
+      color: var(--text);
+    }
+
+    .btn-icon.danger:hover {
+      border-color: var(--red);
+      color: var(--red);
+    }
+
+    .btn-icon.portal:hover {
+      border-color: var(--magenta);
+      color: var(--magenta);
+    }
+
+    /* Portal items */
+    .portal-item {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      padding: 0.75rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .portal-item:last-child {
+      border-bottom: none;
+    }
+
+    .portal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .portal-name {
+      color: var(--magenta);
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .portal-name::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--magenta);
+      box-shadow: 0 0 10px var(--magenta);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    .portal-url {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      word-break: break-all;
+    }
+
+    .portal-url a {
+      color: var(--cyan-dim);
+      text-decoration: none;
+    }
+
+    .portal-url a:hover {
+      color: var(--cyan);
+      text-decoration: underline;
+    }
+
+    /* Add form */
+    .add-form {
+      display: flex;
+      gap: 0.75rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      margin-top: 0.5rem;
+    }
+
+    .input-field {
+      flex: 1;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 0.5rem 0.75rem;
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      outline: none;
+      transition: border-color 0.15s ease;
+    }
+
+    .input-field:focus {
+      border-color: var(--cyan-dim);
+    }
+
+    .input-field::placeholder {
+      color: var(--text-muted);
+    }
+
+    .input-field.small {
+      width: 80px;
+      flex: none;
+    }
+
+    .btn {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      padding: 0.5rem 1rem;
+      background: var(--cyan);
+      border: none;
+      border-radius: 4px;
+      color: var(--bg-deep);
+      cursor: pointer;
+      font-weight: 500;
+      transition: all 0.15s ease;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .btn:hover {
+      box-shadow: 0 0 20px var(--cyan-glow);
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn.secondary {
+      background: var(--bg-elevated);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    .btn.secondary:hover {
+      border-color: var(--text-dim);
+      box-shadow: none;
+    }
+
+    /* Stats card */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1rem;
+    }
+
+    .stat-item {
+      text-align: center;
+    }
+
+    .stat-value {
+      font-family: var(--font-sans);
+      font-size: 1.75rem;
+      font-weight: 700;
+      color: var(--cyan);
+      text-shadow: 0 0 20px var(--cyan-glow);
+    }
+
+    .stat-label {
+      font-size: 0.65rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-top: 0.25rem;
+    }
+
+    /* Welcome message in terminal */
+    .welcome {
+      margin-bottom: 1rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .ascii-logo {
+      color: var(--cyan);
+      text-shadow: 0 0 10px var(--cyan-glow);
+      margin-bottom: 0.5rem;
+    }
+
+    /* Toast notifications */
+    .toast-container {
+      position: fixed;
+      bottom: 1.5rem;
+      right: 1.5rem;
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .toast {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.75rem 1rem;
+      font-size: 0.8rem;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+      animation: slideIn 0.3s ease;
+      max-width: 300px;
+    }
+
+    .toast.success {
+      border-color: var(--green-dim);
+    }
+
+    .toast.error {
+      border-color: var(--red);
+    }
+
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translateX(20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateX(0);
+      }
+    }
+
+    /* Loading spinner */
+    .loading {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border: 2px solid var(--border);
+      border-top-color: var(--cyan);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <div>
+        <a href="candy://portal" class="logo-text" style="text-decoration: none; color: inherit;" title="Click to register candy:// protocol">candy://portal</a>
+        <div class="logo-sub">localhost registry control panel <span style="opacity: 0.5; font-size: 0.6rem;">(click logo to register protocol)</span></div>
+      </div>
+    </div>
+    <div class="mode-switch">
+      <button class="mode-btn active" data-mode="cli">CLI</button>
+      <button class="mode-btn" data-mode="gui">GUI</button>
+    </div>
+    <div class="status-indicator">
+      <div class="status-dot" id="status-dot"></div>
+      <span id="status-text">connecting...</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- CLI Panel -->
+    <div id="cli-panel" class="panel active">
+      <div class="terminal" id="terminal">
+        <div class="welcome">
+          <pre class="ascii-logo">░█▀▀░█▀█░█▀█░█▀▄░█░█
+░█░░░█▀█░█░█░█░█░░█░
+░▀▀▀░▀░▀░▀░▀░▀▀░░░▀░</pre>
+          <div class="terminal-line dim">"we hand out domains like it's 1980"</div>
+          <div class="terminal-line dim">type 'help' if lost. we don't judge.</div>
+        </div>
+      </div>
+      <div class="input-line">
+        <span class="prompt">&gt;</span>
+        <input type="text" id="cli-input" placeholder="enter command..." autocomplete="off" spellcheck="false">
+      </div>
+    </div>
+
+    <!-- GUI Panel -->
+    <div id="gui-panel" class="panel">
+      <div class="gui-content">
+        <!-- Stats Card -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><span class="icon">&#x25C8;</span> Status</div>
+          </div>
+          <div class="card-body">
+            <div class="stats-grid">
+              <div class="stat-item">
+                <div class="stat-value" id="stat-routes">-</div>
+                <div class="stat-label">Routes</div>
+              </div>
+              <div class="stat-item">
+                <div class="stat-value" id="stat-portals">-</div>
+                <div class="stat-label">Portals</div>
+              </div>
+              <div class="stat-item">
+                <div class="stat-value" id="stat-uptime">-</div>
+                <div class="stat-label">Uptime</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Routes Card -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><span class="icon">&#x25B8;</span> Routes</div>
+            <button class="btn" onclick="showAddRoute()">+ Add</button>
+          </div>
+          <div class="card-body" id="routes-list">
+            <div class="empty">Loading routes...</div>
+          </div>
+        </div>
+
+        <!-- Portals Card -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><span class="icon" style="color: var(--magenta)">&#x25C9;</span> Portals</div>
+          </div>
+          <div class="card-body" id="portals-list">
+            <div class="empty">Loading portals...</div>
+          </div>
+        </div>
+
+        <!-- Quick Actions Card -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><span class="icon">&#x26A1;</span> Quick Actions</div>
+          </div>
+          <div class="card-body">
+            <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+              <button class="btn secondary" onclick="refreshAll()">Refresh</button>
+              <button class="btn secondary" onclick="runCommand('stats')">Stats</button>
+              <button class="btn secondary" onclick="runCommand('logs')">Logs</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Add Route Modal (inline) -->
+  <div id="add-route-modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; display: none; align-items: center; justify-content: center;">
+    <div class="card" style="width: 400px;">
+      <div class="card-header">
+        <div class="card-title">Add Route</div>
+        <button class="btn-icon" onclick="hideAddRoute()">&times;</button>
+      </div>
+      <div class="card-body">
+        <form onsubmit="submitAddRoute(event)" style="display: flex; flex-direction: column; gap: 1rem;">
+          <div>
+            <label style="font-size: 0.75rem; color: var(--text-dim); display: block; margin-bottom: 0.5rem;">Domain Name</label>
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+              <input type="text" id="add-name" class="input-field" placeholder="myapp" required pattern="[a-zA-Z0-9-]+" style="flex: 1;">
+              <span style="color: var(--text-dim);">.localhost</span>
+            </div>
+          </div>
+          <div>
+            <label style="font-size: 0.75rem; color: var(--text-dim); display: block; margin-bottom: 0.5rem;">Port</label>
+            <input type="number" id="add-port" class="input-field" placeholder="3000" required min="1" max="65535" style="width: 100%;">
+          </div>
+          <div style="display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 0.5rem;">
+            <button type="button" class="btn secondary" onclick="hideAddRoute()">Cancel</button>
+            <button type="submit" class="btn">Add Route</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-container" id="toast-container"></div>
+
+  <script>
+    const API = 'http://localhost:9999';
+    const terminal = document.getElementById('terminal');
+    const cliInput = document.getElementById('cli-input');
+    const commandHistory = [];
+    let historyIndex = -1;
+
+    // Token management - rolling one-time-use tokens
+    let currentToken = window.CANDY_TOKEN || null;
+
+    // Refresh token after each API call
+    async function refreshToken() {
+      if (!currentToken) return;
+      try {
+        const res = await fetch(API + '/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: currentToken })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          currentToken = data.token;
+        }
+      } catch (e) {
+        console.error('Token refresh failed:', e);
+      }
+    }
+
+    // Wrapper for API calls with token
+    async function apiCall(endpoint, options = {}) {
+      const headers = {
+        ...options.headers,
+        'X-Candy-Token': currentToken
+      };
+      const res = await fetch(API + endpoint, { ...options, headers });
+
+      // Refresh token after successful call (token was consumed)
+      if (res.ok) {
+        await refreshToken();
+      } else if (res.status === 401) {
+        // Token expired, try refresh and retry once
+        await refreshToken();
+        if (currentToken) {
+          headers['X-Candy-Token'] = currentToken;
+          const retry = await fetch(API + endpoint, { ...options, headers });
+          if (retry.ok) await refreshToken();
+          return retry;
+        }
+      }
+      return res;
+    }
+
+    // Mode switching
+    document.querySelectorAll('.mode-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+        document.getElementById(btn.dataset.mode + '-panel').classList.add('active');
+        if (btn.dataset.mode === 'cli') {
+          cliInput.focus();
+        } else {
+          refreshAll();
+        }
+      });
+    });
+
+    // Status check
+    async function checkStatus() {
+      try {
+        const res = await apiCall('/status');
+        const data = await res.json();
+        document.getElementById('status-dot').classList.remove('offline');
+        document.getElementById('status-text').textContent = 'daemon online';
+        return data;
+      } catch {
+        document.getElementById('status-dot').classList.add('offline');
+        document.getElementById('status-text').textContent = 'daemon offline';
+        return null;
+      }
+    }
+
+    // Toast notifications
+    function toast(message, type = 'info') {
+      const container = document.getElementById('toast-container');
+      const t = document.createElement('div');
+      t.className = 'toast ' + type;
+      t.textContent = message;
+      container.appendChild(t);
+      setTimeout(() => t.remove(), 3000);
+    }
+
+    // CLI Terminal
+    function appendOutput(text, className = 'output') {
+      const line = document.createElement('div');
+      line.className = 'terminal-line ' + className;
+      line.textContent = text;
+      terminal.appendChild(line);
+      terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    function appendHtml(html) {
+      const div = document.createElement('div');
+      div.innerHTML = html;
+      terminal.appendChild(div);
+      terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    async function executeCommand(cmd) {
+      if (!cmd.trim()) return;
+
+      commandHistory.push(cmd);
+      historyIndex = commandHistory.length;
+      appendOutput('> ' + cmd, 'input');
+
+      const [command, ...args] = cmd.trim().split(/\s+/);
+
+      try {
+        switch (command) {
+          case 'help':
+          case 'h':
+          case '?':
+            appendOutput(`
+Daemon Control:
+  status                     Check daemon status.
+
+Domain Allocation Services:
+  add, a <name> <port>       Claim a domain.
+  rm, r <name>               Deallocate a domain.
+  rename, ren <old> <new>    Rename a domain.
+  ls, l                      List all routes.
+
+Tunneling:
+  portal, p [name] <port>    Open a tunnel.
+  portals, ps                List active portals.
+  close, c <name>            Close a portal.
+
+Surveillance:
+  logs [count]               View activity logs.
+  stats [name]               View traffic stats.
+
+Misc:
+  clear, cls                 Clear terminal.
+  help, h, ?                 Show this help.
+`, 'dim');
+            break;
+
+          case 'clear':
+          case 'cls':
+            terminal.innerHTML = '';
+            break;
+
+          case 'status':
+            const status = await checkStatus();
+            if (status) {
+              const h = Math.floor(status.uptime / 3600);
+              const m = Math.floor((status.uptime % 3600) / 60);
+              appendOutput(`Daemon: RUNNING (PID ${status.pid})`, 'success');
+              appendOutput(`Caddy: ${status.caddyRunning ? 'running' : 'stopped'}`, status.caddyRunning ? 'success' : 'error');
+              appendOutput(`Routes: ${status.routeCount}  Portals: ${status.portalCount}`, 'dim');
+              appendOutput(`Uptime: ${h}h ${m}m`, 'dim');
+            } else {
+              appendOutput('Daemon offline', 'error');
+            }
+            break;
+
+          case 'add':
+          case 'a':
+            if (args.length < 2) {
+              appendOutput('Usage: add <name> <port>', 'error');
+              break;
+            }
+            const addRes = await apiCall('/register', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: args[0], port: parseInt(args[1]) })
+            });
+            const addData = await addRes.json();
+            if (addData.error) {
+              appendOutput(addData.error + (addData.details ? ' (' + addData.details + ')' : ''), 'error');
+            } else {
+              appendOutput(`+ ${args[0]}.localhost -> :${args[1]}`, 'success');
+              appendOutput(addData.message, 'dim');
+            }
+            break;
+
+          case 'rm':
+          case 'r':
+          case 'remove':
+            if (!args[0]) {
+              appendOutput('Usage: rm <name>', 'error');
+              break;
+            }
+            const rmRes = await apiCall('/register/' + args[0], { method: 'DELETE' });
+            const rmData = await rmRes.json();
+            if (rmData.error) {
+              appendOutput(rmData.error, 'error');
+            } else {
+              appendOutput(`- ${args[0]}.localhost`, 'error');
+              appendOutput(rmData.message, 'dim');
+            }
+            break;
+
+          case 'rename':
+          case 'ren':
+            if (args.length < 2) {
+              appendOutput('Usage: rename <old> <new>', 'error');
+              break;
+            }
+            const renRes = await apiCall('/rename', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ oldName: args[0], newName: args[1] })
+            });
+            const renData = await renRes.json();
+            if (renData.error) {
+              appendOutput(renData.error, 'error');
+            } else {
+              appendOutput(`~ ${args[0]}.localhost -> ${args[1]}.localhost`, 'output');
+              appendOutput(renData.message, 'dim');
+            }
+            break;
+
+          case 'ls':
+          case 'l':
+          case 'list':
+            const routesRes = await apiCall('/routes');
+            const routes = await routesRes.json();
+            const routeNames = Object.keys(routes);
+            if (routeNames.length === 0) {
+              appendOutput('No routes registered.', 'dim');
+            } else {
+              routeNames.forEach(name => {
+                const r = routes[name];
+                const target = r.isRestricted ? r.target + ' [RESTRICTED]' : ':' + r.target;
+                appendOutput(`  ${name}.localhost -> ${target}`, r.isRestricted ? 'error' : 'success');
+              });
+            }
+            break;
+
+          case 'portal':
+          case 'p':
+            if (!args[0]) {
+              appendOutput('Usage: portal [name] <port>', 'error');
+              break;
+            }
+            let pName, pPort;
+            if (!isNaN(parseInt(args[0]))) {
+              pPort = parseInt(args[0]);
+            } else {
+              pName = args[0];
+              pPort = args[1] ? parseInt(args[1]) : undefined;
+            }
+            appendOutput('Opening tunnel...', 'portal');
+            const pRes = await apiCall('/portal', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: pName, port: pPort })
+            });
+            const pData = await pRes.json();
+            if (pData.error) {
+              appendOutput(pData.error, 'error');
+            } else {
+              appendOutput(`◉ ${pData.name} -> ${pData.url}`, 'portal');
+              appendOutput(pData.message, 'dim');
+            }
+            break;
+
+          case 'portals':
+          case 'ps':
+            const portalsRes = await apiCall('/portals');
+            const portals = await portalsRes.json();
+            const portalNames = Object.keys(portals);
+            if (portalNames.length === 0) {
+              appendOutput('No active portals.', 'dim');
+            } else {
+              portalNames.forEach(name => {
+                const p = portals[name];
+                appendOutput(`  ◉ ${name} (:${p.port}) -> ${p.url || '(connecting...)'}`, 'portal');
+              });
+            }
+            break;
+
+          case 'close':
+          case 'c':
+            if (!args[0]) {
+              appendOutput('Usage: close <name>', 'error');
+              break;
+            }
+            const closeRes = await apiCall('/portal/close/' + args[0], { method: 'POST' });
+            const closeData = await closeRes.json();
+            if (closeData.error) {
+              appendOutput(closeData.error, 'error');
+            } else {
+              appendOutput(`○ ${args[0]} closed`, 'portal');
+              appendOutput(closeData.message, 'dim');
+            }
+            break;
+
+          case 'logs':
+            const logsRes = await apiCall('/logs?count=' + (args[0] || 10));
+            const logsData = await logsRes.json();
+            if (logsData.logs.length === 0) {
+              appendOutput('No logs yet.', 'dim');
+            } else {
+              logsData.logs.forEach(l => {
+                const time = new Date(l.time).toLocaleTimeString();
+                appendOutput(`  ${time}  ${l.action.padEnd(10)}  ${l.details}`, 'dim');
+              });
+            }
+            break;
+
+          case 'stats':
+            if (args[0]) {
+              const sRes = await apiCall('/stats/' + args[0]);
+              const sData = await sRes.json();
+              appendOutput(`Domain: ${args[0]}.localhost`, 'output');
+              appendOutput(`Status: ${sData.isRegistered ? 'REGISTERED' : 'UNREGISTERED'}`, sData.isRegistered ? 'success' : 'error');
+              appendOutput(`Port: ${sData.port || '-'}`, 'dim');
+              appendOutput(`Requests: ${sData.totalRequests} (${sData.tunnelRequests} via tunnel)`, 'dim');
+            } else {
+              const sRes = await apiCall('/stats');
+              const sData = await sRes.json();
+              appendOutput(`Total requests: ${sData.totalRequests}`, 'output');
+              appendOutput(`Domains: ${sData.domainCount}`, 'dim');
+              sData.stats.slice(0, 10).forEach(s => {
+                appendOutput(`  ${s.domain.padEnd(15)} ${s.total} req`, s.isRegistered ? 'success' : 'error');
+              });
+            }
+            break;
+
+          default:
+            appendOutput(`Unknown command: ${command}`, 'error');
+            appendOutput("Type 'help' for available commands.", 'dim');
+        }
+      } catch (e) {
+        appendOutput('Error: ' + e.message, 'error');
+      }
+    }
+
+    cliInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        executeCommand(cliInput.value);
+        cliInput.value = '';
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (historyIndex > 0) {
+          historyIndex--;
+          cliInput.value = commandHistory[historyIndex];
+        }
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (historyIndex < commandHistory.length - 1) {
+          historyIndex++;
+          cliInput.value = commandHistory[historyIndex];
+        } else {
+          historyIndex = commandHistory.length;
+          cliInput.value = '';
+        }
+      }
+    });
+
+    // GUI Functions
+    async function refreshAll() {
+      await checkStatus().then(data => {
+        if (data) {
+          document.getElementById('stat-routes').textContent = data.routeCount;
+          document.getElementById('stat-portals').textContent = data.portalCount;
+          const m = Math.floor(data.uptime / 60);
+          document.getElementById('stat-uptime').textContent = m + 'm';
+        }
+      });
+      await refreshRoutes();
+      await refreshPortals();
+    }
+
+    async function refreshRoutes() {
+      try {
+        const res = await apiCall('/routes');
+        const routes = await res.json();
+        const list = document.getElementById('routes-list');
+        const names = Object.keys(routes);
+
+        if (names.length === 0) {
+          list.innerHTML = '<div class="empty">No routes registered yet.</div>';
+        } else {
+          list.innerHTML = names.map(name => {
+            const r = routes[name];
+            const target = r.isRestricted ? r.target : ':' + r.target;
+            return `
+              <div class="route-item">
+                <div class="route-info">
+                  <span class="route-name">${name}</span>
+                  <span class="route-arrow">→</span>
+                  <span class="route-port">${target}</span>
+                </div>
+                <div class="route-actions">
+                  <button class="btn-icon portal" onclick="openPortal('${name}', ${r.target})" title="Open Portal">◉</button>
+                  <button class="btn-icon danger" onclick="deleteRoute('${name}')" title="Delete">×</button>
+                </div>
+              </div>
+            `;
+          }).join('');
+        }
+      } catch (e) {
+        document.getElementById('routes-list').innerHTML = '<div class="empty">Failed to load routes.</div>';
+      }
+    }
+
+    async function refreshPortals() {
+      try {
+        const res = await apiCall('/portals');
+        const portals = await res.json();
+        const list = document.getElementById('portals-list');
+        const names = Object.keys(portals);
+
+        if (names.length === 0) {
+          list.innerHTML = '<div class="empty">No active portals.</div>';
+        } else {
+          list.innerHTML = names.map(name => {
+            const p = portals[name];
+            return `
+              <div class="portal-item">
+                <div class="portal-header">
+                  <span class="portal-name">${name} (:${p.port})</span>
+                  <button class="btn-icon danger" onclick="closePortal('${name}')" title="Close">×</button>
+                </div>
+                <div class="portal-url">
+                  ${p.url ? `<a href="${p.url}" target="_blank">${p.url}</a>` : 'connecting...'}
+                </div>
+              </div>
+            `;
+          }).join('');
+        }
+      } catch (e) {
+        document.getElementById('portals-list').innerHTML = '<div class="empty">Failed to load portals.</div>';
+      }
+    }
+
+    async function deleteRoute(name) {
+      if (!confirm(`Delete ${name}.localhost?`)) return;
+      try {
+        const res = await apiCall('/register/' + name, { method: 'DELETE' });
+        const data = await res.json();
+        toast(data.message || 'Route deleted', 'success');
+        refreshAll();
+      } catch (e) {
+        toast('Failed to delete route', 'error');
+      }
+    }
+
+    async function openPortal(name, port) {
+      try {
+        toast('Opening portal...', 'info');
+        const res = await apiCall('/portal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, port })
+        });
+        const data = await res.json();
+        if (data.error) {
+          toast(data.error, 'error');
+        } else {
+          toast('Portal opened: ' + data.url, 'success');
+          refreshAll();
+        }
+      } catch (e) {
+        toast('Failed to open portal', 'error');
+      }
+    }
+
+    async function closePortal(name) {
+      try {
+        const res = await apiCall('/portal/close/' + name, { method: 'POST' });
+        const data = await res.json();
+        toast(data.message || 'Portal closed', 'success');
+        refreshAll();
+      } catch (e) {
+        toast('Failed to close portal', 'error');
+      }
+    }
+
+    function showAddRoute() {
+      document.getElementById('add-route-modal').style.display = 'flex';
+      document.getElementById('add-name').focus();
+    }
+
+    function hideAddRoute() {
+      document.getElementById('add-route-modal').style.display = 'none';
+      document.getElementById('add-name').value = '';
+      document.getElementById('add-port').value = '';
+    }
+
+    async function submitAddRoute(e) {
+      e.preventDefault();
+      const name = document.getElementById('add-name').value;
+      const port = parseInt(document.getElementById('add-port').value);
+
+      try {
+        const res = await apiCall('/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, port })
+        });
+        const data = await res.json();
+        if (data.error) {
+          toast(data.error, 'error');
+        } else {
+          toast(data.message || 'Route added', 'success');
+          hideAddRoute();
+          refreshAll();
+        }
+      } catch (e) {
+        toast('Failed to add route', 'error');
+      }
+    }
+
+    function runCommand(cmd) {
+      document.querySelector('[data-mode="cli"]').click();
+      setTimeout(() => {
+        executeCommand(cmd);
+      }, 100);
+    }
+
+    // Init
+    checkStatus();
+    setInterval(checkStatus, 10000);
+    cliInput.focus();
+
+    // Click outside modal to close
+    document.getElementById('add-route-modal').addEventListener('click', (e) => {
+      if (e.target.id === 'add-route-modal') hideAddRoute();
+    });
+  </script>
+</body>
+</html>

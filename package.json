@@ -1,12 +1,17 @@
 {
   "name": "candy-localhost",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "We hand out domains like it's 1980",
   "type": "module",
   "main": "index.ts",
+  "bin": {
+    "candy": "./index.ts"
+  },
   "scripts": {
     "start": "bun run index.ts",
-    "dev": "bun run --watch index.ts"
+    "daemon": "bun run daemon.ts",
+    "dev": "bun run --watch daemon.ts",
+    "install-service": "sudo cp candy-localhost.service /etc/systemd/system/candy-localhost@.service && sudo systemctl daemon-reload && echo 'Service installed. Enable with: sudo systemctl enable --now candy-localhost@$USER'"
   },
   "devDependencies": {
     "@types/bun": "latest"

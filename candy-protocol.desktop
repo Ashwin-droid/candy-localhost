@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Candy Protocol Handler
+Comment=Handle candy:// URLs
+Exec=/home/ashwinmhaskar/Documents/projects/candy-localhost/candy-open.sh %u
+Type=Application
+Terminal=false
+NoDisplay=true
+MimeType=x-scheme-handler/candy;

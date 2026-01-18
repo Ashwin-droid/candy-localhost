@@ -1,0 +1,20 @@
+# candy-localhost systemd service
+# Install with: sudo cp candy-localhost.service /etc/systemd/system/candy-localhost@.service
+# Enable with: sudo systemctl enable --now candy-localhost@$USER
+
+[Unit]
+Description=candy-localhost daemon - We hand out domains like it's 1980
+After=network.target
+
+[Service]
+Type=simple
+User=%i
+Environment="HOME=/home/%i"
+Environment="PATH=/home/%i/.bun/bin:/usr/local/bin:/usr/bin:/bin"
+WorkingDirectory=/home/%i/Documents/projects/candy-localhost
+ExecStart=/home/%i/.bun/bin/bun run daemon.ts
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

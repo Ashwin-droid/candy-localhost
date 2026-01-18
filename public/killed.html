@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Process Stopped</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-deep: #050508;
+      --bg-surface: #0a0a0f;
+      --bg-elevated: #12121a;
+      --border: #1e1e2a;
+      --text: #e0e0e8;
+      --text-dim: #6a6a7a;
+      --text-muted: #4a4a5a;
+      --cyan: #00e5ff;
+      --cyan-dim: #00a0b0;
+      --cyan-glow: rgba(0, 229, 255, 0.15);
+      --magenta: #ff00aa;
+      --magenta-glow: rgba(255, 0, 170, 0.15);
+      --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+      --font-sans: 'Space Grotesk', system-ui, sans-serif;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      height: 100%;
+    }
+
+    body {
+      font-family: var(--font-mono);
+      background: var(--bg-deep);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* Scanline effect */
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0, 0, 0, 0.1) 2px,
+        rgba(0, 0, 0, 0.1) 4px
+      );
+      pointer-events: none;
+      z-index: 9999;
+      opacity: 0.3;
+    }
+
+    /* Ambient glow */
+    .glow {
+      position: fixed;
+      width: 500px;
+      height: 500px;
+      background: radial-gradient(ellipse, var(--cyan-glow) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: -1;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+    }
+
+    .container {
+      text-align: center;
+      max-width: 440px;
+      animation: fadeIn 0.5s ease;
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .icon-container {
+      width: 100px;
+      height: 100px;
+      margin: 0 auto 2rem;
+      position: relative;
+    }
+
+    .icon-ring {
+      position: absolute;
+      inset: 0;
+      border: 2px solid var(--border);
+      border-radius: 50%;
+      animation: ringPulse 2s ease-in-out infinite;
+    }
+
+    .icon-ring:nth-child(2) {
+      inset: 10px;
+      animation-delay: 0.3s;
+    }
+
+    .icon-ring:nth-child(3) {
+      inset: 20px;
+      animation-delay: 0.6s;
+    }
+
+    @keyframes ringPulse {
+      0%, 100% { opacity: 0.3; transform: scale(1); }
+      50% { opacity: 0.6; transform: scale(1.02); }
+    }
+
+    .icon-center {
+      position: absolute;
+      inset: 30px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .icon-center svg {
+      width: 24px;
+      height: 24px;
+      stroke: var(--text-dim);
+      stroke-width: 2;
+      fill: none;
+    }
+
+    h1 {
+      font-family: var(--font-sans);
+      font-size: 1.75rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 0.5rem;
+    }
+
+    .domain {
+      color: var(--magenta);
+      text-shadow: 0 0 20px var(--magenta-glow);
+    }
+
+    .subtitle {
+      font-size: 0.9rem;
+      color: var(--text-dim);
+      margin-bottom: 2.5rem;
+    }
+
+    .actions {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      padding: 1rem 1.5rem;
+      border-radius: 10px;
+      font-family: var(--font-sans);
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      text-decoration: none;
+      border: none;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--cyan) 0%, var(--cyan-dim) 100%);
+      color: var(--bg-deep);
+      box-shadow: 0 4px 20px var(--cyan-glow);
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 30px var(--cyan-glow);
+    }
+
+    .btn-primary svg {
+      width: 18px;
+      height: 18px;
+      stroke: currentColor;
+      stroke-width: 2;
+      fill: none;
+    }
+
+    .btn-secondary {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--cyan-dim);
+      color: var(--text);
+    }
+
+    .footer {
+      margin-top: 3rem;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .footer code {
+      background: var(--bg-elevated);
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      color: var(--cyan);
+    }
+  </style>
+</head>
+<body>
+  <div class="glow"></div>
+
+  <div class="container">
+    <div class="icon-container">
+      <div class="icon-ring"></div>
+      <div class="icon-ring"></div>
+      <div class="icon-ring"></div>
+      <div class="icon-center">
+        <svg viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+      </div>
+    </div>
+
+    <h1><span class="domain" id="serverName">server</span> stopped</h1>
+    <p class="subtitle">The process has been terminated successfully.</p>
+
+    <div class="actions">
+      <a href="#" class="btn btn-primary" id="restartBtn">
+        <svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        Start Again
+      </a>
+      <a href="http://portal.localhost" class="btn btn-secondary">Back to Portal</a>
+    </div>
+
+    <div class="footer">
+      <p>Tip: Visit <code id="domainLink">server.localhost</code> to restart</p>
+    </div>
+  </div>
+
+  <script>
+    const vars = window.CANDY_VARS || { name: 'unknown' };
+    const serverName = vars.name;
+
+    document.getElementById('serverName').textContent = serverName;
+    document.getElementById('domainLink').textContent = `${serverName}.localhost`;
+    document.getElementById('restartBtn').href = `http://${serverName}.localhost`;
+  </script>
+</body>
+</html>

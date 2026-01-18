@@ -636,6 +636,124 @@
     @keyframes spin {
       to { transform: rotate(360deg); }
     }
+
+    /* Process items */
+    .process-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.75rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .process-item:last-child {
+      border-bottom: none;
+    }
+
+    .process-info {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    .process-name {
+      color: var(--cyan);
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .process-status {
+      font-size: 0.65rem;
+      padding: 0.15rem 0.4rem;
+      border-radius: 3px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .process-status.running {
+      background: rgba(0, 255, 106, 0.15);
+      color: var(--green);
+    }
+
+    .process-status.starting {
+      background: rgba(255, 204, 0, 0.15);
+      color: var(--yellow);
+    }
+
+    .process-status.dead {
+      background: rgba(255, 51, 102, 0.15);
+      color: var(--red);
+    }
+
+    .process-status.errored {
+      background: rgba(255, 51, 102, 0.25);
+      color: var(--red);
+    }
+
+    .process-meta {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+    }
+
+    .process-actions {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .btn-icon.success:hover {
+      border-color: var(--green);
+      color: var(--green);
+    }
+
+    .btn-icon.warning:hover {
+      border-color: var(--yellow);
+      color: var(--yellow);
+    }
+
+    /* Config items */
+    .config-item {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      padding: 0.75rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .config-item:last-child {
+      border-bottom: none;
+    }
+
+    .config-info {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      flex: 1;
+      min-width: 0;
+    }
+
+    .config-name {
+      color: var(--cyan);
+      font-weight: 500;
+    }
+
+    .config-details {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      word-break: break-all;
+    }
+
+    .config-details .label {
+      color: var(--text-muted);
+    }
+
+    .config-actions {
+      display: flex;
+      gap: 0.5rem;
+      flex-shrink: 0;
+      margin-left: 0.5rem;
+    }
   </style>
 </head>
 <body>
@@ -721,6 +839,28 @@
           </div>
         </div>
 
+        <!-- Processes Card -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><span class="icon" style="color: var(--green)">&#x25B6;</span> Processes</div>
+            <button class="btn secondary" onclick="refreshProcesses()">Refresh</button>
+          </div>
+          <div class="card-body" id="processes-list">
+            <div class="empty">Loading processes...</div>
+          </div>
+        </div>
+
+        <!-- Configs Card -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><span class="icon">&#x2699;</span> Server Configs</div>
+            <button class="btn" onclick="showAddConfig()">+ Add</button>
+          </div>
+          <div class="card-body" id="configs-list">
+            <div class="empty">Loading configs...</div>
+          </div>
+        </div>
+
         <!-- Quick Actions Card -->
         <div class="card">
           <div class="card-header">
@@ -728,8 +868,8 @@
           </div>
           <div class="card-body">
             <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
-              <button class="btn secondary" onclick="refreshAll()">Refresh</button>
-              <button class="btn secondary" onclick="runCommand('stats')">Stats</button>
+              <button class="btn secondary" onclick="refreshAll()">Refresh All</button>
+              <button class="btn secondary" onclick="runCommand('status')">Status</button>
               <button class="btn secondary" onclick="runCommand('logs')">Logs</button>
             </div>
           </div>
@@ -738,8 +878,8 @@
     </div>
   </main>
 
-  <!-- Add Route Modal (inline) -->
-  <div id="add-route-modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; display: none; align-items: center; justify-content: center;">
+  <!-- Add Route Modal -->
+  <div id="add-route-modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; align-items: center; justify-content: center;">
     <div class="card" style="width: 400px;">
       <div class="card-header">
         <div class="card-title">Add Route</div>
@@ -763,6 +903,70 @@
             <button type="submit" class="btn">Add Route</button>
           </div>
         </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add Config Modal -->
+  <div id="add-config-modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; align-items: center; justify-content: center;">
+    <div class="card" style="width: 450px;">
+      <div class="card-header">
+        <div class="card-title">Add Server Config</div>
+        <button class="btn-icon" onclick="hideAddConfig()">&times;</button>
+      </div>
+      <div class="card-body">
+        <form onsubmit="submitAddConfig(event)" style="display: flex; flex-direction: column; gap: 1rem;">
+          <div>
+            <label style="font-size: 0.75rem; color: var(--text-dim); display: block; margin-bottom: 0.5rem;">Server Name</label>
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+              <input type="text" id="config-name" class="input-field" placeholder="myapp" required pattern="[a-zA-Z0-9-]+" style="flex: 1;">
+              <span style="color: var(--text-dim);">.localhost</span>
+            </div>
+          </div>
+          <div>
+            <label style="font-size: 0.75rem; color: var(--text-dim); display: block; margin-bottom: 0.5rem;">Project Path</label>
+            <input type="text" id="config-cwd" class="input-field" placeholder="~/projects/myapp" required style="width: 100%;">
+          </div>
+          <div>
+            <label style="font-size: 0.75rem; color: var(--text-dim); display: block; margin-bottom: 0.5rem;">Start Command</label>
+            <input type="text" id="config-cmd" class="input-field" placeholder="npm run dev" required style="width: 100%;">
+          </div>
+          <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+            <button type="button" class="btn secondary" style="font-size: 0.65rem; padding: 0.35rem 0.6rem;" onclick="document.getElementById('config-cmd').value='npm run dev'">npm run dev</button>
+            <button type="button" class="btn secondary" style="font-size: 0.65rem; padding: 0.35rem 0.6rem;" onclick="document.getElementById('config-cmd').value='bun dev'">bun dev</button>
+            <button type="button" class="btn secondary" style="font-size: 0.65rem; padding: 0.35rem 0.6rem;" onclick="document.getElementById('config-cmd').value='pnpm dev'">pnpm dev</button>
+            <button type="button" class="btn secondary" style="font-size: 0.65rem; padding: 0.35rem 0.6rem;" onclick="document.getElementById('config-cmd').value='yarn dev'">yarn dev</button>
+          </div>
+          <div style="display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 0.5rem;">
+            <button type="button" class="btn secondary" onclick="hideAddConfig()">Cancel</button>
+            <button type="submit" class="btn">Add Config</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Logs Modal -->
+  <div id="logs-modal" style="display: none; position: fixed; inset: 0; background: rgba(5,5,8,0.92); z-index: 100; align-items: center; justify-content: center; backdrop-filter: blur(4px);">
+    <div class="card" style="width: 85vw; max-width: 1000px; height: 75vh; display: flex; flex-direction: column; box-shadow: 0 0 60px rgba(0,229,255,0.08), 0 0 120px rgba(255,0,170,0.04);">
+      <div class="card-header" style="border-bottom: 1px solid var(--border-bright);">
+        <div class="card-title" style="display: flex; align-items: center; gap: 0.75rem;">
+          <span style="color: var(--cyan);">❯</span>
+          <span id="logs-modal-title">Logs</span>
+          <span id="logs-modal-status" class="process-status" style="margin-left: 0.25rem;"></span>
+        </div>
+        <div style="display: flex; gap: 0.75rem; align-items: center;">
+          <label style="font-size: 0.7rem; color: var(--text-dim); display: flex; align-items: center; gap: 0.35rem; cursor: pointer;">
+            <input type="checkbox" id="logs-autoscroll" checked style="margin: 0; accent-color: var(--cyan);">
+            Auto-scroll
+          </label>
+          <button class="btn-icon" onclick="clearLogsDisplay()" title="Clear display">⌀</button>
+          <button class="btn-icon" onclick="hideLogs()" title="Close (Esc)">✕</button>
+        </div>
+      </div>
+      <div class="card-body" style="flex: 1; overflow: hidden; padding: 0; position: relative;">
+        <div style="position: absolute; inset: 0; background: linear-gradient(180deg, var(--bg-deep) 0%, rgba(5,5,8,0.98) 100%);"></div>
+        <pre id="logs-content" style="position: relative; margin: 0; padding: 1.25rem; height: 100%; overflow-y: auto; font-family: var(--font-mono); font-size: 0.72rem; line-height: 1.6; color: var(--text); white-space: pre-wrap; word-break: break-all; scrollbar-width: thin; scrollbar-color: var(--border-bright) transparent;"></pre>
       </div>
     </div>
   </div>
@@ -1143,6 +1347,8 @@ Misc:
       });
       await refreshRoutes();
       await refreshPortals();
+      await refreshProcesses();
+      await refreshConfigs();
     }
 
     async function refreshRoutes() {
@@ -1302,6 +1508,257 @@ Misc:
     document.getElementById('add-route-modal').addEventListener('click', (e) => {
       if (e.target.id === 'add-route-modal') hideAddRoute();
     });
+    document.getElementById('add-config-modal').addEventListener('click', (e) => {
+      if (e.target.id === 'add-config-modal') hideAddConfig();
+    });
+
+    // Processes functions
+    async function refreshProcesses() {
+      try {
+        const res = await apiCall('/processes');
+        const data = await res.json();
+        const list = document.getElementById('processes-list');
+        const processesObj = data.processes || {};
+        const processes = Object.entries(processesObj).map(([name, p]) => ({ name, ...p }));
+
+        if (processes.length === 0) {
+          list.innerHTML = '<div class="empty">No managed processes.</div>';
+        } else {
+          list.innerHTML = processes.map(p => {
+            const statusClass = p.status;
+            const portInfo = p.port ? `:${p.port}` : '';
+            const pidInfo = p.pid ? `PID ${p.pid}` : '';
+            const meta = [portInfo, pidInfo].filter(Boolean).join(' • ');
+
+            return `
+              <div class="process-item">
+                <div class="process-info">
+                  <div class="process-name">
+                    ${p.name}
+                    <span class="process-status ${statusClass}">${p.status}</span>
+                  </div>
+                  <div class="process-meta">${meta || 'not started'}</div>
+                </div>
+                <div class="process-actions">
+                  <button class="btn-icon" onclick="showLogs('${p.name}')" title="Logs">📋</button>
+                  ${p.status === 'running' || p.status === 'starting' ? `
+                    <button class="btn-icon danger" onclick="stopProcess('${p.name}')" title="Stop">■</button>
+                  ` : `
+                    <button class="btn-icon success" onclick="startProcess('${p.name}')" title="Start">▶</button>
+                  `}
+                  <button class="btn-icon warning" onclick="restartProcess('${p.name}')" title="Restart">↻</button>
+                </div>
+              </div>
+            `;
+          }).join('');
+        }
+      } catch (e) {
+        document.getElementById('processes-list').innerHTML = '<div class="empty">Failed to load processes.</div>';
+      }
+    }
+
+    async function startProcess(name) {
+      try {
+        toast(`Starting ${name}...`, 'info');
+        const res = await apiCall(`/process/start/${name}`, { method: 'POST' });
+        const data = await res.json();
+        if (data.error) {
+          toast(data.error, 'error');
+        } else {
+          toast(data.message || `${name} started`, 'success');
+          refreshAll();
+        }
+      } catch (e) {
+        toast('Failed to start process', 'error');
+      }
+    }
+
+    async function stopProcess(name) {
+      try {
+        const res = await apiCall(`/process/stop/${name}`, { method: 'POST' });
+        const data = await res.json();
+        if (data.error) {
+          toast(data.error, 'error');
+        } else {
+          toast(data.message || `${name} stopped`, 'success');
+          refreshAll();
+        }
+      } catch (e) {
+        toast('Failed to stop process', 'error');
+      }
+    }
+
+    async function restartProcess(name) {
+      try {
+        toast(`Restarting ${name}...`, 'info');
+        const res = await apiCall(`/process/restart/${name}`, { method: 'POST' });
+        const data = await res.json();
+        if (data.error) {
+          toast(data.error, 'error');
+        } else {
+          toast(data.message || `${name} restarted`, 'success');
+          refreshAll();
+        }
+      } catch (e) {
+        toast('Failed to restart process', 'error');
+      }
+    }
+
+    // Configs functions
+    async function refreshConfigs() {
+      try {
+        const res = await apiCall('/configs');
+        const data = await res.json();
+        const configs = data.configs || data;
+        const list = document.getElementById('configs-list');
+        const names = Object.keys(configs).filter(k => k !== 'success');
+
+        if (names.length === 0) {
+          list.innerHTML = '<div class="empty">No server configs. Add one to get started.</div>';
+        } else {
+          list.innerHTML = names.map(name => {
+            const c = configs[name];
+            return `
+              <div class="config-item">
+                <div class="config-info">
+                  <div class="config-name">${name}.localhost</div>
+                  <div class="config-details">
+                    <span class="label">cwd:</span> ${c.cwd}<br>
+                    <span class="label">cmd:</span> ${c.cmd}
+                  </div>
+                </div>
+                <div class="config-actions">
+                  <button class="btn-icon success" onclick="startProcess('${name}')" title="Start">▶</button>
+                  <button class="btn-icon danger" onclick="deleteConfig('${name}')" title="Delete">×</button>
+                </div>
+              </div>
+            `;
+          }).join('');
+        }
+      } catch (e) {
+        document.getElementById('configs-list').innerHTML = '<div class="empty">Failed to load configs.</div>';
+      }
+    }
+
+    async function deleteConfig(name) {
+      if (!confirm(`Delete config for ${name}?`)) return;
+      try {
+        const res = await apiCall('/config/' + name, { method: 'DELETE' });
+        const data = await res.json();
+        if (data.error) {
+          toast(data.error, 'error');
+        } else {
+          toast(data.message || 'Config deleted', 'success');
+          refreshAll();
+        }
+      } catch (e) {
+        toast('Failed to delete config', 'error');
+      }
+    }
+
+    function showAddConfig() {
+      document.getElementById('add-config-modal').style.display = 'flex';
+      document.getElementById('config-name').focus();
+    }
+
+    function hideAddConfig() {
+      document.getElementById('add-config-modal').style.display = 'none';
+      document.getElementById('config-name').value = '';
+      document.getElementById('config-cwd').value = '';
+      document.getElementById('config-cmd').value = '';
+    }
+
+    // Logs modal
+    let logsEventSource = null;
+    let currentLogsProcess = null;
+
+    function showLogs(name) {
+      currentLogsProcess = name;
+      document.getElementById('logs-modal-title').textContent = `${name}.localhost`;
+      document.getElementById('logs-content').textContent = '';
+      document.getElementById('logs-modal').style.display = 'flex';
+
+      // Close any existing connection
+      if (logsEventSource) {
+        logsEventSource.close();
+      }
+
+      // Start SSE stream
+      logsEventSource = new EventSource(`${API}/stream/${name}`);
+
+      // Log messages come as plain strings
+      logsEventSource.onmessage = (event) => {
+        const content = document.getElementById('logs-content');
+        const logData = JSON.parse(event.data);
+        content.textContent += logData;
+        if (document.getElementById('logs-autoscroll').checked) {
+          content.scrollTop = content.scrollHeight;
+        }
+      };
+
+      // Status updates use named event
+      logsEventSource.addEventListener('status', (event) => {
+        const data = JSON.parse(event.data);
+        const statusEl = document.getElementById('logs-modal-status');
+        statusEl.textContent = data.status;
+        statusEl.className = `process-status ${data.status}`;
+      });
+
+      logsEventSource.onerror = () => {
+        // SSE auto-reconnects, just log it
+        console.log('SSE connection error, reconnecting...');
+      };
+    }
+
+    function hideLogs() {
+      document.getElementById('logs-modal').style.display = 'none';
+      if (logsEventSource) {
+        logsEventSource.close();
+        logsEventSource = null;
+      }
+      currentLogsProcess = null;
+    }
+
+    function clearLogsDisplay() {
+      document.getElementById('logs-content').textContent = '';
+    }
+
+    // Close logs modal on backdrop click
+    document.getElementById('logs-modal').addEventListener('click', (e) => {
+      if (e.target.id === 'logs-modal') hideLogs();
+    });
+
+    // Close logs modal on Escape
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && document.getElementById('logs-modal').style.display === 'flex') {
+        hideLogs();
+      }
+    });
+
+    async function submitAddConfig(e) {
+      e.preventDefault();
+      const name = document.getElementById('config-name').value;
+      const cwd = document.getElementById('config-cwd').value;
+      const cmd = document.getElementById('config-cmd').value;
+
+      try {
+        const res = await apiCall('/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, cwd, cmd })
+        });
+        const data = await res.json();
+        if (data.error) {
+          toast(data.error, 'error');
+        } else {
+          toast(data.message || 'Config added', 'success');
+          hideAddConfig();
+          refreshAll();
+        }
+      } catch (e) {
+        toast('Failed to add config', 'error');
+      }
+    }
   </script>
 </body>
 </html>

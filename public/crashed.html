@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Server Crashed</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-deep: #050508;
+      --bg-surface: #0a0a0f;
+      --bg-elevated: #12121a;
+      --bg-card: #16161f;
+      --border: #1e1e2a;
+      --border-bright: #2a2a3a;
+      --text: #e0e0e8;
+      --text-dim: #6a6a7a;
+      --text-muted: #4a4a5a;
+      --cyan: #00e5ff;
+      --cyan-dim: #00a0b0;
+      --cyan-glow: rgba(0, 229, 255, 0.15);
+      --magenta: #ff00aa;
+      --green: #00ff6a;
+      --red: #ff3366;
+      --red-dim: #cc2952;
+      --red-glow: rgba(255, 51, 102, 0.15);
+      --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+      --font-sans: 'Space Grotesk', system-ui, sans-serif;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      height: 100%;
+    }
+
+    body {
+      font-family: var(--font-mono);
+      background: var(--bg-deep);
+      color: var(--text);
+      padding: 1.5rem;
+      overflow-x: hidden;
+    }
+
+    /* Scanline effect */
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0, 0, 0, 0.1) 2px,
+        rgba(0, 0, 0, 0.1) 4px
+      );
+      pointer-events: none;
+      z-index: 9999;
+      opacity: 0.3;
+    }
+
+    /* Red ambient glow */
+    .glow {
+      position: fixed;
+      top: -200px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 600px;
+      height: 400px;
+      background: radial-gradient(ellipse, rgba(255, 51, 102, 0.15) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: -1;
+    }
+
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 1.5rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid rgba(255, 51, 102, 0.2);
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .error-icon {
+      width: 44px;
+      height: 44px;
+      background: linear-gradient(135deg, var(--red) 0%, var(--red-dim) 100%);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 30px var(--red-glow);
+      animation: errorPulse 2s ease-in-out infinite;
+    }
+
+    @keyframes errorPulse {
+      0%, 100% { box-shadow: 0 0 30px var(--red-glow); }
+      50% { box-shadow: 0 0 50px rgba(255, 51, 102, 0.3); }
+    }
+
+    .error-icon svg {
+      width: 24px;
+      height: 24px;
+      stroke: white;
+      stroke-width: 3;
+      fill: none;
+    }
+
+    h1 {
+      font-family: var(--font-sans);
+      font-size: 1.5rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .domain {
+      color: var(--red);
+    }
+
+    .exit-badge {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      padding: 0.5rem 1rem;
+      background: var(--red-glow);
+      border: 1px solid rgba(255, 51, 102, 0.3);
+      border-radius: 20px;
+      color: var(--red);
+    }
+
+    .logs-panel {
+      background: var(--bg-surface);
+      border: 1px solid rgba(255, 51, 102, 0.2);
+      border-radius: 12px;
+      overflow: hidden;
+      height: 50vh;
+      min-height: 300px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.875rem 1rem;
+      background: rgba(255, 51, 102, 0.05);
+      border-bottom: 1px solid rgba(255, 51, 102, 0.15);
+    }
+
+    .panel-title {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--red);
+    }
+
+    .panel-badge {
+      font-size: 0.65rem;
+      padding: 0.25rem 0.5rem;
+      background: var(--bg-card);
+      border-radius: 4px;
+      color: var(--text-muted);
+    }
+
+    .logs-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1rem;
+      font-size: 0.8rem;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      word-break: break-all;
+      color: var(--text-dim);
+    }
+
+    .logs-content::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .logs-content::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .logs-content::-webkit-scrollbar-thumb {
+      background: var(--border-bright);
+      border-radius: 3px;
+    }
+
+    .actions {
+      display: flex;
+      gap: 1rem;
+      margin-top: 1.5rem;
+    }
+
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      padding: 0.875rem 1.5rem;
+      border-radius: 8px;
+      font-family: var(--font-sans);
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      text-decoration: none;
+      border: none;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--cyan) 0%, var(--cyan-dim) 100%);
+      color: var(--bg-deep);
+      box-shadow: 0 4px 20px var(--cyan-glow);
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 30px var(--cyan-glow);
+    }
+
+    .btn-primary:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .btn-primary svg {
+      width: 18px;
+      height: 18px;
+      stroke: currentColor;
+      stroke-width: 2;
+      fill: none;
+    }
+
+    .btn-secondary {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--border-bright);
+      color: var(--text);
+    }
+
+    .tips {
+      margin-top: 2rem;
+      padding: 1.25rem;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+    }
+
+    .tips-title {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--text-muted);
+      margin-bottom: 1rem;
+    }
+
+    .tips-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 0.75rem;
+    }
+
+    .tip {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.75rem;
+      font-size: 0.8rem;
+      color: var(--text-dim);
+    }
+
+    .tip-icon {
+      flex-shrink: 0;
+      width: 20px;
+      height: 20px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.7rem;
+      color: var(--cyan);
+    }
+  </style>
+</head>
+<body>
+  <div class="glow"></div>
+
+  <div class="container">
+    <header>
+      <div class="header-left">
+        <div class="error-icon">
+          <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </div>
+        <h1><span class="domain" id="serverName">server</span>.localhost crashed</h1>
+      </div>
+      <div class="exit-badge" id="exitBadge">exit 1</div>
+    </header>
+
+    <div class="logs-panel">
+      <div class="panel-header">
+        <span class="panel-title">Error Logs</span>
+        <span class="panel-badge">LAST 100 LINES</span>
+      </div>
+      <div class="logs-content" id="logsContent">Loading logs...</div>
+    </div>
+
+    <div class="actions">
+      <button class="btn btn-primary" id="restartBtn" onclick="restartServer()">
+        <svg viewBox="0 0 24 24"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        Restart Server
+      </button>
+      <a href="http://portal.localhost" class="btn btn-secondary">Back to Portal</a>
+    </div>
+
+    <div class="tips">
+      <div class="tips-title">Common Issues</div>
+      <div class="tips-grid">
+        <div class="tip">
+          <div class="tip-icon">1</div>
+          <span>Port already in use by another process</span>
+        </div>
+        <div class="tip">
+          <div class="tip-icon">2</div>
+          <span>Missing dependencies (npm install)</span>
+        </div>
+        <div class="tip">
+          <div class="tip-icon">3</div>
+          <span>Invalid configuration or syntax errors</span>
+        </div>
+        <div class="tip">
+          <div class="tip-icon">4</div>
+          <span>Permission issues with files or directories</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API = 'http://localhost:9999';
+    const vars = window.CANDY_VARS || { name: 'unknown', exitCode: 1, status: 'errored' };
+    let currentToken = window.CANDY_TOKEN;
+    const serverName = vars.name;
+
+    // Token management - rolling one-time-use tokens
+    async function refreshToken() {
+      if (!currentToken) return;
+      try {
+        const res = await fetch(API + '/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: currentToken })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          currentToken = data.token;
+        }
+      } catch (e) {
+        console.error('Token refresh failed:', e);
+      }
+    }
+
+    // Wrapper for API calls with token
+    async function apiCall(endpoint, options = {}) {
+      const headers = {
+        ...options.headers,
+        'X-Candy-Token': currentToken
+      };
+      const res = await fetch(API + endpoint, { ...options, headers });
+
+      if (res.ok) {
+        await refreshToken();
+      } else if (res.status === 401) {
+        await refreshToken();
+        if (currentToken) {
+          headers['X-Candy-Token'] = currentToken;
+          const retry = await fetch(API + endpoint, { ...options, headers });
+          if (retry.ok) await refreshToken();
+          return retry;
+        }
+      }
+      return res;
+    }
+
+    document.getElementById('serverName').textContent = serverName;
+    document.getElementById('exitBadge').textContent = `exit ${vars.exitCode ?? '?'}`;
+
+    // Fetch logs via SSE
+    async function loadLogs() {
+      const logsEl = document.getElementById('logsContent');
+      try {
+        const eventSource = new EventSource(API + `/stream/${serverName}`);
+        let content = '';
+
+        eventSource.onmessage = (event) => {
+          content += JSON.parse(event.data);
+          const lines = content.split('\n');
+          logsEl.textContent = lines.slice(-100).join('\n');
+          logsEl.scrollTop = logsEl.scrollHeight;
+        };
+
+        // Close after 2 seconds (just get initial content)
+        setTimeout(() => eventSource.close(), 2000);
+      } catch (e) {
+        logsEl.textContent = 'Failed to load logs: ' + e.message;
+      }
+    }
+
+    loadLogs();
+
+    async function restartServer() {
+      const btn = document.getElementById('restartBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<span>Restarting...</span>';
+
+      try {
+        const res = await apiCall(`/process/restart/${serverName}`, {
+          method: 'POST'
+        });
+
+        if (res.ok) {
+          location.href = `http://${serverName}.localhost`;
+        } else {
+          const data = await res.json();
+          alert('Failed to restart: ' + (data.error || 'Unknown error'));
+          btn.disabled = false;
+          btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>Restart Server';
+        }
+      } catch (e) {
+        alert('Failed to restart: ' + e.message);
+        btn.disabled = false;
+        btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>Restart Server';
+      }
+    }
+  </script>
+</body>
+</html>

@@ -1,28 +1,28 @@
 # candy-localhost
 
-We hand out domains like it's 1980.
+Lazy dev server orchestrator with MCP integration.
 
 ```text
-App: "hey can I get a domain?"
-candy-localhost: "sure bestie, you're vite.localhost now"
+You: visit myapp.localhost
+candy: *spawns server* *detects port* here you go
 ```
 
-A tiny local "registry" that maps `name.localhost` → `localhost:port`.
+A lazy-loaded dev server manager that spawns servers on-demand when you visit their `.localhost` domain.
 
 ## What It Does
 
-- Runs a control plane on `http://localhost:9999`.
-- Uses Caddy as the reverse proxy so `http://<name>.localhost` forwards to your local port.
-- Provides a web UI (served via the same control plane) for claiming unallocated `*.localhost` names.
-- Optionally opens public tunnels for a domain (via `cloudflared`).
+- **Lazy Loading**: Configure servers once, start them by visiting `<name>.localhost`
+- **Auto Port Detection**: Scans server output for port numbers and auto-binds routes
+- **MCP Integration**: AI-accessible tools for managing servers, routes, and logs
+- **Public Tunnels**: Expose local servers via Cloudflare tunnels
+- **Process Management**: Start, stop, restart servers with crash recovery
 
 ## Requirements
 
-- Bun
-- Caddy
-- (Optional) `cloudflared` for tunnels
-- Port 80 available (Caddy binds HTTP)
-- A modern browser/OS (most environments resolve `*.localhost` automatically)
+- [Bun](https://bun.sh)
+- [Caddy](https://caddyserver.com)
+- (Optional) `cloudflared` for public tunnels
+- (Optional) `ripgrep` for log search
 
 ## Install
 
@@ -32,90 +32,184 @@ bun install
 
 ## Run
 
+Start the daemon:
+
 ```bash
-bun run start
+bun run daemon
 ```
 
-Or watch mode:
+Or with auto-reload:
 
 ```bash
 bun run dev
 ```
 
-When running, the app manages a Caddyfile in your local app data directory and reloads Caddy via its admin API.
+## Quick Start
 
-## Usage
+### 1. Configure a server
 
-### Web UI
+Create `~/.config/candy/servers.json`:
 
-- Open `http://anything.localhost`.
-- Enter the port you want to claim.
-- After registration, visit `http://<name>.localhost` and it should proxy to your app.
-
-### CLI (interactive)
-
-Run the app, then use the prompt:
-
-```text
-> add <name> <port>
-> rm <name>
-> rename <old> <new>
-> ls
-> portal [name] <port>
-> portals
-> close <name>
-> traffic <name> [count]
-> logs
-> detach
-> exit
+```json
+{
+  "myapp": {
+    "cwd": "~/projects/myapp",
+    "cmd": "npm run dev"
+  },
+  "api": {
+    "cwd": "~/projects/backend",
+    "cmd": "python -m flask run"
+  }
+}
 ```
 
-Type `help` in the app for the full command list.
+### 2. Visit the domain
 
-### HTTP API (automation)
+Open `http://myapp.localhost` in your browser. candy will:
 
-Register a route:
+1. Spawn the process
+2. Capture output and scan for ports
+3. Auto-bind the route when a port is detected
+4. Start proxying traffic
 
-```bash
-curl -X POST http://localhost:9999/register \
-  -H "Content-Type: application/json" \
-  -d '{"name":"vite","port":5173}'
+### 3. Manage via UI or MCP
+
+- **Portal UI**: `http://portal.localhost`
+- **Kill a server**: `http://kill.myapp.localhost` or `http://k.myapp.localhost`
+- **MCP**: Use AI tools to manage everything
+
+## MCP Setup
+
+Add to your MCP client configuration:
+
+```json
+{
+  "mcpServers": {
+    "candy": {
+      "command": "bun",
+      "args": ["run", "mcp"],
+      "cwd": "/path/to/candy-localhost"
+    }
+  }
+}
 ```
 
-List routes:
+### Available MCP Tools
 
-```bash
-curl http://localhost:9999/routes
+| Tool | Description |
+|------|-------------|
+| `candy_logs` | Read logs (tail, head, or search with pattern) |
+| `candy_processes` | List all managed processes |
+| `candy_start` | Start a server by name |
+| `candy_stop` | Stop a running server |
+| `candy_restart` | Restart a server |
+| `candy_routes` | List all routes |
+| `candy_route_add` | Add a route (name -> port) |
+| `candy_route_remove` | Remove a route |
+| `candy_portals` | List open tunnels |
+| `candy_portal_open` | Open a public tunnel |
+| `candy_portal_close` | Close a tunnel |
+| `candy_config_list` | List server configurations |
+| `candy_config_add` | Add a server configuration |
+| `candy_config_remove` | Remove a configuration |
+| `candy_status` | Get daemon status |
+
+### Example MCP Usage
+
+```
+You: What processes are running?
+AI: [calls candy_processes]
+
+You: Search for errors in myapp logs
+AI: [calls candy_logs with process="myapp", mode="search", pattern="error"]
+
+You: Restart the api server
+AI: [calls candy_restart with name="api"]
 ```
 
-Remove a route:
+## Configuration Methods
 
-```bash
-curl -X DELETE http://localhost:9999/register/vite
+### 1. servers.json (Recommended)
+
+Edit `~/.config/candy/servers.json` directly:
+
+```json
+{
+  "vite-app": {
+    "cwd": "~/projects/vite-app",
+    "cmd": "npm run dev"
+  }
+}
 ```
 
-Open a tunnel:
+### 2. Web UI
 
-```bash
-curl -X POST http://localhost:9999/portal \
-  -H "Content-Type: application/json" \
-  -d '{"name":"vite","port":5173,"openBrowser":true}'
+Visit an unconfigured domain (e.g., `http://newapp.localhost`) to see the configuration form.
+
+### 3. MCP
+
+```
+You: Add a server config for "frontend" at ~/projects/frontend with "pnpm dev"
+AI: [calls candy_config_add]
 ```
 
-List tunnels:
+## Process States
 
-```bash
-curl http://localhost:9999/portals
-```
+| State | Description |
+|-------|-------------|
+| `starting` | Process spawned, waiting for port detection |
+| `running` | Port detected, route active, proxying traffic |
+| `dead` | Process exited normally (exit code 0) |
+| `errored` | Process crashed (non-zero exit code) |
 
-## Files & Persistence
+## Port Detection
 
-- Routes persist to your Caddyfile (managed by the app).
-- Access logs are written by Caddy to an `access.log` in the same local app data directory.
+candy scans process output for 10 seconds using these patterns:
 
-## Notes
+- IPv4: `0.0.0.0:3000`, `127.0.0.1:5173`
+- IPv6: `[::]:3000`, `[::1]:5173`
+- URLs: `http://localhost:3000`, `http://127.0.0.1:5173`
 
-This is a local-dev toy with intentionally minimal guardrails: the control plane API is unauthenticated and built for convenience.
+If exactly one port is detected, it auto-binds. Multiple ports show a selection UI.
+
+## Kill Mechanism
+
+Stop a server instantly by visiting:
+
+- `http://kill.myapp.localhost`
+- `http://k.myapp.localhost`
+
+## Files
+
+| Path | Purpose |
+|------|---------|
+| `~/.config/candy/servers.json` | Server configurations |
+| `~/.config/caddy/Caddyfile` | Generated routes |
+| `/tmp/candy-logs/<name>.log` | Process logs (cleared on boot) |
+| `/tmp/candy-logs/_audit.log` | Operation audit log |
+
+## HTTP API
+
+All endpoints require `X-Candy-Token` header (obtained via `/session`).
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/session` | POST | Create session, get token |
+| `/processes` | GET | List managed processes |
+| `/process/start/:name` | POST | Start a process |
+| `/process/stop/:name` | POST | Stop a process |
+| `/process/restart/:name` | POST | Restart a process |
+| `/configs` | GET | List server configs |
+| `/config` | POST | Add server config |
+| `/config/:name` | DELETE | Remove config |
+| `/routes` | GET | List routes |
+| `/register` | POST | Add route |
+| `/register/:name` | DELETE | Remove route |
+| `/portals` | GET | List tunnels |
+| `/portal` | POST | Open tunnel |
+| `/portal/close/:name` | POST | Close tunnel |
+| `/stream/:name` | GET | SSE log stream |
+| `/status` | GET | Daemon status |
 
 ## License
 

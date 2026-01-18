@@ -480,6 +480,80 @@
       color: var(--amber);
     }
 
+    /* Mode Toggle */
+    .mode-toggle {
+      display: flex;
+      gap: 0;
+      margin-bottom: 1.5rem;
+      border: 1px solid var(--phosphor-dim);
+    }
+
+    .mode-btn {
+      flex: 1;
+      padding: 0.75rem 1rem;
+      border: none;
+      background: transparent;
+      font-family: 'VT323', monospace;
+      font-size: 1.2rem;
+      cursor: pointer;
+      transition: all 0.2s;
+      color: var(--phosphor-dim);
+      text-transform: uppercase;
+      letter-spacing: 2px;
+    }
+
+    .mode-btn:first-child {
+      border-right: 1px solid var(--phosphor-dim);
+    }
+
+    .mode-btn:hover:not(.active) {
+      color: var(--phosphor);
+      background: rgba(51, 255, 51, 0.05);
+    }
+
+    .mode-btn.active {
+      background: var(--phosphor);
+      color: var(--bg);
+      text-shadow: none;
+    }
+
+    .mode-content {
+      display: none;
+    }
+
+    .mode-content.active {
+      display: block;
+    }
+
+    /* Preset chips for lazy mode */
+    .preset-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+    }
+
+    .preset-chip {
+      padding: 0.4rem 0.8rem;
+      background: transparent;
+      border: 1px solid var(--amber-dim);
+      color: var(--amber);
+      font-family: 'VT323', monospace;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .preset-chip:hover {
+      background: var(--amber);
+      color: var(--bg);
+      box-shadow: 0 0 10px rgba(255, 176, 0, 0.3);
+    }
+
+    .lazy-input-wrapper {
+      margin-bottom: 1rem;
+    }
+
     /* RESTRICTED ZONE */
     .restricted-overlay {
       position: fixed;
@@ -602,23 +676,61 @@
       </div>
 
       <div class="form-section">
+        <!-- Mode Toggle -->
+        <div class="mode-toggle">
+          <button type="button" class="mode-btn active" data-mode="quick" id="quickModeBtn">⚡ QUICK</button>
+          <button type="button" class="mode-btn" data-mode="lazy" id="lazyModeBtn">🚀 LAZY SERVER</button>
+        </div>
+
         <form id="registerForm">
-          <div class="input-group">
-            <div class="input-wrapper">
-              <span class="input-label">TARGET PORT</span>
+          <!-- Quick Mode: Just port -->
+          <div id="quickMode" class="mode-content active">
+            <div class="input-group">
+              <div class="input-wrapper">
+                <span class="input-label">TARGET PORT</span>
+                <input
+                  type="text"
+                  id="portInput"
+                  placeholder="3000"
+                  min="1"
+                  max="65535"
+                >
+              </div>
+              <button type="submit" class="btn" id="submitBtn">
+                CLAIM DOMAIN
+              </button>
+            </div>
+          </div>
+
+          <!-- Lazy Mode: cwd + cmd -->
+          <div id="lazyMode" class="mode-content">
+            <div class="input-wrapper lazy-input-wrapper">
+              <span class="input-label">PROJECT PATH</span>
               <input
                 type="text"
-                id="portInput"
-                placeholder="3000"
-                min="1"
-                max="65535"
-                required
+                id="cwdInput"
+                placeholder="~/projects/myapp"
               >
             </div>
-            <button type="submit" class="btn" id="submitBtn">
-              CLAIM DOMAIN
+            <div class="input-wrapper lazy-input-wrapper">
+              <span class="input-label">START COMMAND</span>
+              <input
+                type="text"
+                id="cmdInput"
+                placeholder="npm run dev"
+              >
+            </div>
+            <div class="preset-chips">
+              <span class="preset-chip" data-cmd="npm run dev">npm run dev</span>
+              <span class="preset-chip" data-cmd="bun dev">bun dev</span>
+              <span class="preset-chip" data-cmd="pnpm dev">pnpm dev</span>
+              <span class="preset-chip" data-cmd="yarn dev">yarn dev</span>
+            </div>
+            <button type="submit" class="btn" style="width: 100%; margin-top: 1rem;">
+              SPAWN SERVER
             </button>
           </div>
+
           <label class="alleyway-option">
             <input type="checkbox" id="alleyway">
             <span class="checkbox-custom"></span>
@@ -728,14 +840,48 @@
     // Form handling
     const form = document.getElementById('registerForm');
     const portInput = document.getElementById('portInput');
+    const cwdInput = document.getElementById('cwdInput');
+    const cmdInput = document.getElementById('cmdInput');
     const submitBtn = document.getElementById('submitBtn');
     const errorMessage = document.getElementById('errorMessage');
     const successMessage = document.getElementById('successMessage');
     const loadingOverlay = document.getElementById('loadingOverlay');
     const loadingText = document.getElementById('loadingText');
     const loadingSubtext = document.getElementById('loadingSubtext');
+    const quickModeBtn = document.getElementById('quickModeBtn');
+    const lazyModeBtn = document.getElementById('lazyModeBtn');
+    const quickMode = document.getElementById('quickMode');
+    const lazyMode = document.getElementById('lazyMode');
+    const presetChips = document.querySelectorAll('.preset-chip');
 
+    let currentMode = 'quick';
     let loadingInterval;
+
+    // Mode switching
+    quickModeBtn.addEventListener('click', () => {
+      currentMode = 'quick';
+      quickModeBtn.classList.add('active');
+      lazyModeBtn.classList.remove('active');
+      quickMode.classList.add('active');
+      lazyMode.classList.remove('active');
+      portInput.focus();
+    });
+
+    lazyModeBtn.addEventListener('click', () => {
+      currentMode = 'lazy';
+      lazyModeBtn.classList.add('active');
+      quickModeBtn.classList.remove('active');
+      lazyMode.classList.add('active');
+      quickMode.classList.remove('active');
+      cwdInput.focus();
+    });
+
+    // Preset chip clicks
+    presetChips.forEach(chip => {
+      chip.addEventListener('click', () => {
+        cmdInput.value = chip.dataset.cmd;
+      });
+    });
 
     function showLoading() {
       loadingOverlay.classList.add('active');
@@ -780,91 +926,154 @@
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-
-      const inputVal = portInput.value.trim();
-      const isUrl = inputVal.startsWith('http://') || inputVal.startsWith('https://');
-
-      let port, target;
-      if (isUrl) {
-        target = inputVal;
-      } else {
-        port = parseInt(inputVal);
-        if (!port || port < 1 || port > 65535) {
-          showError("that's not a valid port and you know it.");
-          return;
-        }
-      }
-
-      const openAlleyway = alleywayCheckbox.checked;
-
       errorMessage.classList.remove('active');
       submitBtn.disabled = true;
-      showLoading();
 
-      try {
-        // Step 1: Register the domain
-        const registerBody = isUrl ? { name: domainName, target } : { name: domainName, port };
-        const registerRes = await apiCall('/register', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(registerBody),
-        });
+      if (currentMode === 'lazy') {
+        // Lazy Server Mode - submit to /config
+        const cwd = cwdInput.value.trim();
+        const cmd = cmdInput.value.trim();
 
-        const registerData = await registerRes.json();
-
-        if (!registerRes.ok) {
-          hideLoading();
-          showError(registerData.error || 'something went wrong in the back office.');
+        if (!cwd) {
+          showError("you need a project path. we're not mind readers.");
+          submitBtn.disabled = false;
+          return;
+        }
+        if (!cmd) {
+          showError("no start command? how's it supposed to run?");
           submitBtn.disabled = false;
           return;
         }
 
-        // Step 2: Open alleyway if requested
-        if (openAlleyway) {
-          loadingText.textContent = "OPENING ALLEYWAY";
-          loadingSubtext.textContent = "the ITU can't reach us here";
+        showLoading();
+        loadingText.textContent = "CONFIGURING SERVER";
+        loadingSubtext.textContent = "writing to the forbidden registry";
 
-          const portalRes = await apiCall('/portal', {
+        try {
+          const configRes = await apiCall('/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: domainName, port, openBrowser: true }),
+            body: JSON.stringify({ name: domainName, cwd, cmd }),
           });
 
-          const portalData = await portalRes.json();
-
-          hideLoading();
-
-          if (portalRes.ok) {
-            portalMessage.style.display = 'block';
-            portalMessage.classList.add('active');
-            // Wait longer before refresh since browser is opening
-            setTimeout(() => {
-              window.location.reload();
-            }, 2500);
-          } else {
-            // Domain registered but portal failed - still redirect
-            showSuccess();
-            setTimeout(() => {
-              window.location.reload();
-            }, 1500);
+          if (!configRes.ok) {
+            const data = await configRes.json();
+            hideLoading();
+            showError(data.error || "config write failed. the void rejected it.");
+            submitBtn.disabled = false;
+            return;
           }
-        } else {
+
+          // Now start the process
+          loadingText.textContent = "SPAWNING PROCESS";
+          loadingSubtext.textContent = "summoning your server from the depths";
+
+          const startRes = await apiCall(`/process/start/${domainName}`, {
+            method: 'POST',
+          });
+
           hideLoading();
 
-          // Check if restricted zone
-          if (registerData.restricted) {
-            showRestrictedZone();
-          } else {
+          if (startRes.ok) {
             showSuccess();
             setTimeout(() => {
               window.location.reload();
             }, 1500);
+          } else {
+            const data = await startRes.json();
+            showError(data.error || "spawn failed. the process refused to materialize.");
+            submitBtn.disabled = false;
+          }
+        } catch (err) {
+          hideLoading();
+          showError("couldn't reach the registry. is candy-localhost running?");
+          submitBtn.disabled = false;
+        }
+      } else {
+        // Quick Mode - existing port registration logic
+        const inputVal = portInput.value.trim();
+        const isUrl = inputVal.startsWith('http://') || inputVal.startsWith('https://');
+
+        let port, target;
+        if (isUrl) {
+          target = inputVal;
+        } else {
+          port = parseInt(inputVal);
+          if (!port || port < 1 || port > 65535) {
+            showError("that's not a valid port and you know it.");
+            submitBtn.disabled = false;
+            return;
           }
         }
-      } catch (err) {
-        hideLoading();
-        showError("couldn't reach the registry. is candy-localhost running?");
-        submitBtn.disabled = false;
+
+        const openAlleyway = alleywayCheckbox.checked;
+        showLoading();
+
+        try {
+          // Step 1: Register the domain
+          const registerBody = isUrl ? { name: domainName, target } : { name: domainName, port };
+          const registerRes = await apiCall('/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(registerBody),
+          });
+
+          const registerData = await registerRes.json();
+
+          if (!registerRes.ok) {
+            hideLoading();
+            showError(registerData.error || 'something went wrong in the back office.');
+            submitBtn.disabled = false;
+            return;
+          }
+
+          // Step 2: Open alleyway if requested
+          if (openAlleyway) {
+            loadingText.textContent = "OPENING ALLEYWAY";
+            loadingSubtext.textContent = "the ITU can't reach us here";
+
+            const portalRes = await apiCall('/portal', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: domainName, port, openBrowser: true }),
+            });
+
+            const portalData = await portalRes.json();
+
+            hideLoading();
+
+            if (portalRes.ok) {
+              portalMessage.style.display = 'block';
+              portalMessage.classList.add('active');
+              // Wait longer before refresh since browser is opening
+              setTimeout(() => {
+                window.location.reload();
+              }, 2500);
+            } else {
+              // Domain registered but portal failed - still redirect
+              showSuccess();
+              setTimeout(() => {
+                window.location.reload();
+              }, 1500);
+            }
+          } else {
+            hideLoading();
+
+            // Check if restricted zone
+            if (registerData.restricted) {
+              showRestrictedZone();
+            } else {
+              showSuccess();
+              setTimeout(() => {
+                window.location.reload();
+              }, 1500);
+            }
+          }
+        } catch (err) {
+          hideLoading();
+          showError("couldn't reach the registry. is candy-localhost running?");
+          submitBtn.disabled = false;
+        }
       }
     });
 

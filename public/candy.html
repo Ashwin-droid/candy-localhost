@@ -314,6 +314,72 @@
       font-weight: 600;
     }
 
+    /* Mode Toggle */
+    .mode-toggle {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1.5rem;
+      background: linear-gradient(135deg, var(--pink-light) 0%, var(--purple) 50%);
+      padding: 4px;
+      border-radius: 12px;
+    }
+
+    .mode-btn {
+      flex: 1;
+      padding: 0.75rem 1rem;
+      border: none;
+      border-radius: 10px;
+      font-family: 'Nunito', sans-serif;
+      font-weight: 600;
+      font-size: 0.95rem;
+      cursor: pointer;
+      transition: all 0.3s;
+      background: transparent;
+      color: var(--white);
+    }
+
+    .mode-btn:hover:not(.active) {
+      background: rgba(255, 255, 255, 0.2);
+    }
+
+    .mode-btn.active {
+      background: var(--white);
+      color: var(--dark);
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+    }
+
+    .mode-content {
+      display: none;
+    }
+
+    .mode-content.active {
+      display: block;
+    }
+
+    /* Preset chips for lazy mode */
+    .preset-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+    }
+
+    .preset-chip {
+      padding: 0.4rem 0.8rem;
+      background: linear-gradient(135deg, var(--mint) 0%, var(--blue) 100%);
+      border-radius: 20px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--dark);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .preset-chip:hover {
+      transform: scale(1.05);
+      box-shadow: 0 2px 10px rgba(107, 255, 200, 0.4);
+    }
+
     /* Messages */
     .error-message {
       display: none;
@@ -553,20 +619,55 @@
       </div>
 
       <div class="form-section">
+        <!-- Mode Toggle -->
+        <div class="mode-toggle">
+          <button type="button" class="mode-btn active" data-mode="quick" id="quickModeBtn">⚡ Quick</button>
+          <button type="button" class="mode-btn" data-mode="lazy" id="lazyModeBtn">🚀 Lazy Server</button>
+        </div>
+
         <form id="registerForm">
-          <div class="input-group">
-            <div class="input-wrapper">
-              <label class="input-label">Which port is your app on?</label>
-              <input
-                type="text"
-                id="portInput"
-                placeholder="3000"
-                min="1"
-                max="65535"
-                required
-              >
+          <!-- Quick Mode: Just port -->
+          <div id="quickMode" class="mode-content active">
+            <div class="input-group">
+              <div class="input-wrapper">
+                <label class="input-label">Which port is your app on?</label>
+                <input
+                  type="text"
+                  id="portInput"
+                  placeholder="3000"
+                  min="1"
+                  max="65535"
+                >
+              </div>
             </div>
           </div>
+
+          <!-- Lazy Mode: cwd + cmd -->
+          <div id="lazyMode" class="mode-content">
+            <div class="input-wrapper" style="margin-bottom: 1rem;">
+              <label class="input-label">📁 Project folder</label>
+              <input
+                type="text"
+                id="cwdInput"
+                placeholder="~/projects/myapp"
+              >
+            </div>
+            <div class="input-wrapper">
+              <label class="input-label">🖥️ Start command</label>
+              <input
+                type="text"
+                id="cmdInput"
+                placeholder="npm run dev"
+              >
+            </div>
+            <div class="preset-chips">
+              <span class="preset-chip" data-cmd="npm run dev">npm run dev</span>
+              <span class="preset-chip" data-cmd="bun dev">bun dev</span>
+              <span class="preset-chip" data-cmd="pnpm dev">pnpm dev</span>
+              <span class="preset-chip" data-cmd="yarn dev">yarn dev</span>
+            </div>
+          </div>
+
           <label class="alleyway-option">
             <input type="checkbox" id="alleyway">
             <span class="checkbox-custom"></span>
@@ -663,6 +764,8 @@
     // Form handling
     const form = document.getElementById('registerForm');
     const portInput = document.getElementById('portInput');
+    const cwdInput = document.getElementById('cwdInput');
+    const cmdInput = document.getElementById('cmdInput');
     const submitBtn = document.getElementById('submitBtn');
     const errorMessage = document.getElementById('errorMessage');
     const successMessage = document.getElementById('successMessage');
@@ -671,8 +774,40 @@
     const loadingSubtext = document.getElementById('loadingSubtext');
     const alleywayCheckbox = document.getElementById('alleyway');
     const portalMessage = document.getElementById('portalMessage');
+    const quickModeBtn = document.getElementById('quickModeBtn');
+    const lazyModeBtn = document.getElementById('lazyModeBtn');
+    const quickMode = document.getElementById('quickMode');
+    const lazyMode = document.getElementById('lazyMode');
+    const presetChips = document.querySelectorAll('.preset-chip');
 
+    let currentMode = 'quick';
     let loadingInterval;
+
+    // Mode switching
+    quickModeBtn.addEventListener('click', () => {
+      currentMode = 'quick';
+      quickModeBtn.classList.add('active');
+      lazyModeBtn.classList.remove('active');
+      quickMode.classList.add('active');
+      lazyMode.classList.remove('active');
+      portInput.focus();
+    });
+
+    lazyModeBtn.addEventListener('click', () => {
+      currentMode = 'lazy';
+      lazyModeBtn.classList.add('active');
+      quickModeBtn.classList.remove('active');
+      lazyMode.classList.add('active');
+      quickMode.classList.remove('active');
+      cwdInput.focus();
+    });
+
+    // Preset chip clicks
+    presetChips.forEach(chip => {
+      chip.addEventListener('click', () => {
+        cmdInput.value = chip.dataset.cmd;
+      });
+    });
 
     function showLoading() {
       loadingOverlay.classList.add('active');
@@ -713,87 +848,150 @@
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-
-      const inputVal = portInput.value.trim();
-      const isUrl = inputVal.startsWith('http://') || inputVal.startsWith('https://');
-
-      let port, target;
-      if (isUrl) {
-        target = inputVal;
-      } else {
-        port = parseInt(inputVal);
-        if (!port || port < 1 || port > 65535) {
-          showError("Oops! That doesn't look like a valid port number!");
-          return;
-        }
-      }
-
-      const openAlleyway = alleywayCheckbox.checked;
-
       errorMessage.classList.remove('active');
       submitBtn.disabled = true;
-      showLoading();
 
-      try {
-        // Step 1: Register the domain
-        const registerBody = isUrl ? { name: domainName, target } : { name: domainName, port };
-        const registerRes = await apiCall('/register', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(registerBody),
-        });
+      if (currentMode === 'lazy') {
+        // Lazy Server Mode - submit to /config
+        const cwd = cwdInput.value.trim();
+        const cmd = cmdInput.value.trim();
 
-        const registerData = await registerRes.json();
-
-        if (!registerRes.ok) {
-          hideLoading();
-          showError(registerData.error || "Oops! Something went wrong!");
+        if (!cwd) {
+          showError("Please enter a project folder!");
+          submitBtn.disabled = false;
+          return;
+        }
+        if (!cmd) {
+          showError("Please enter a start command!");
           submitBtn.disabled = false;
           return;
         }
 
-        // Step 2: Open alleyway if requested
-        if (openAlleyway) {
-          loadingText.textContent = "Creating your link...";
-          loadingSubtext.textContent = "This takes a few seconds!";
+        showLoading();
+        loadingText.textContent = "Configuring server...";
+        loadingSubtext.textContent = "Setting up your lazy server!";
 
-          const portalRes = await apiCall('/portal', {
+        try {
+          const configRes = await apiCall('/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: domainName, port, openBrowser: true }),
+            body: JSON.stringify({ name: domainName, cwd, cmd }),
+          });
+
+          if (!configRes.ok) {
+            const data = await configRes.json();
+            hideLoading();
+            showError(data.error || "Failed to configure server!");
+            submitBtn.disabled = false;
+            return;
+          }
+
+          // Now start the process
+          loadingText.textContent = "Starting server...";
+          loadingSubtext.textContent = "Spawning your process!";
+
+          const startRes = await apiCall(`/process/start/${domainName}`, {
+            method: 'POST',
           });
 
           hideLoading();
 
-          if (portalRes.ok) {
-            portalMessage.style.display = 'block';
-            portalMessage.classList.add('active');
-            setTimeout(() => {
-              window.location.reload();
-            }, 2500);
-          } else {
+          if (startRes.ok) {
             showSuccess();
             setTimeout(() => {
               window.location.reload();
             }, 1500);
+          } else {
+            const data = await startRes.json();
+            showError(data.error || "Failed to start server!");
+            submitBtn.disabled = false;
           }
-        } else {
+        } catch (err) {
           hideLoading();
+          showError("Hmm, can't reach the server. Is candy-localhost running?");
+          submitBtn.disabled = false;
+        }
+      } else {
+        // Quick Mode - existing port registration logic
+        const inputVal = portInput.value.trim();
+        const isUrl = inputVal.startsWith('http://') || inputVal.startsWith('https://');
 
-          // Check if restricted zone (yandere mode)
-          if (registerData.restricted) {
-            showRestrictedZone();
-          } else {
-            showSuccess();
-            setTimeout(() => {
-              window.location.reload();
-            }, 1500);
+        let port, target;
+        if (isUrl) {
+          target = inputVal;
+        } else {
+          port = parseInt(inputVal);
+          if (!port || port < 1 || port > 65535) {
+            showError("Oops! That doesn't look like a valid port number!");
+            submitBtn.disabled = false;
+            return;
           }
         }
-      } catch (err) {
-        hideLoading();
-        showError("Hmm, can't reach the server. Is candy-localhost running?");
-        submitBtn.disabled = false;
+
+        const openAlleyway = alleywayCheckbox.checked;
+        showLoading();
+
+        try {
+          // Step 1: Register the domain
+          const registerBody = isUrl ? { name: domainName, target } : { name: domainName, port };
+          const registerRes = await apiCall('/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(registerBody),
+          });
+
+          const registerData = await registerRes.json();
+
+          if (!registerRes.ok) {
+            hideLoading();
+            showError(registerData.error || "Oops! Something went wrong!");
+            submitBtn.disabled = false;
+            return;
+          }
+
+          // Step 2: Open alleyway if requested
+          if (openAlleyway) {
+            loadingText.textContent = "Creating your link...";
+            loadingSubtext.textContent = "This takes a few seconds!";
+
+            const portalRes = await apiCall('/portal', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: domainName, port, openBrowser: true }),
+            });
+
+            hideLoading();
+
+            if (portalRes.ok) {
+              portalMessage.style.display = 'block';
+              portalMessage.classList.add('active');
+              setTimeout(() => {
+                window.location.reload();
+              }, 2500);
+            } else {
+              showSuccess();
+              setTimeout(() => {
+                window.location.reload();
+              }, 1500);
+            }
+          } else {
+            hideLoading();
+
+            // Check if restricted zone (yandere mode)
+            if (registerData.restricted) {
+              showRestrictedZone();
+            } else {
+              showSuccess();
+              setTimeout(() => {
+                window.location.reload();
+              }, 1500);
+            }
+          }
+        } catch (err) {
+          hideLoading();
+          showError("Hmm, can't reach the server. Is candy-localhost running?");
+          submitBtn.disabled = false;
+        }
       }
     });
 

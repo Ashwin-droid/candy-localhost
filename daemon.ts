@@ -1,16 +1,16 @@
 /**
- * candy-localhost daemon - We hand out domains like it's 1980
- * (no iana was harmed in making of this app)
+ * candy-localhost daemon v0.4 - Lazy Dev Server Orchestrator
+ * Now with lazy-loaded dev servers and MCP integration
  *
- * Runs as a background service, manages Caddy, and serves the control plane API
+ * Runs as a background service, manages Caddy, spawns dev servers on-demand
  */
 
-import { $, spawn } from "bun"
+import { $, spawn, type Subprocess } from "bun"
 
 // Random message picker
 const pick = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)]
 
-// Playful messages
+// Playful messages (kept for legacy API responses)
 const msg = {
   added: [
     "Approved. Next!",
@@ -148,15 +148,69 @@ const msg = {
   ],
 }
 
+// ============================================================================
+// Types & Interfaces
+// ============================================================================
+
+interface ServerConfig {
+  cwd: string
+  cmd: string
+}
+
+type ProcessStatus = 'starting' | 'running' | 'dead' | 'errored'
+
+interface ManagedProcess {
+  name: string
+  config: ServerConfig
+  proc: Subprocess | null
+  pid: number | null
+  status: ProcessStatus
+  port: number | null
+  startedAt: Date
+  exitCode: number | null
+  logFile: string
+  detectedPorts: number[]  // All ports detected during startup
+}
+
+// ============================================================================
+// Configuration Paths
+// ============================================================================
+
 const CADDY = "caddy"
 const CADDY_CONFIG_DIR = `${process.env.HOME}/.config/caddy`
+const CANDY_CONFIG_DIR = `${process.env.HOME}/.config/candy`
 const CADDYFILE = `${CADDY_CONFIG_DIR}/Caddyfile`
 const CADDY_LOG = `${CADDY_CONFIG_DIR}/access.log`
 const PID_FILE = `${CADDY_CONFIG_DIR}/candy.pid`
+const SERVERS_CONFIG = `${CANDY_CONFIG_DIR}/servers.json`
+const LOGS_DIR = "/tmp/candy-logs"
+const AUDIT_LOG = `${LOGS_DIR}/_audit.log`
+
+// Reserved domain names (cannot be used for servers/routes)
+const RESERVED_NAMES = new Set(['portal', 'k', 'kill', 'p'])
+const isReserved = (name: string) => RESERVED_NAMES.has(name.toLowerCase())
+
+// Port detection patterns (run against process stdout/stderr)
+const PORT_PATTERNS = [
+  // IPv4: 0.0.0.0:3000, 127.0.0.1:5173, 192.168.1.1:8080
+  /(?:0\.0\.0\.0|127\.0\.0\.1|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d{2,5})/g,
+  // IPv6: [::]:3000, [::1]:5173
+  /\[::(?:1)?\]:(\d{2,5})/g,
+  // URL: http://localhost:3000, http://127.0.0.1:5173/path
+  /https?:\/\/(?:localhost|127\.0\.0\.1):(\d{2,5})/g,
+]
+
+const PORT_DETECTION_TIMEOUT = 10000  // 10 seconds
+
+// ============================================================================
+// State Maps
+// ============================================================================
 
 const routes = new Map<string, number | string>()
-const portals = new Map<string, { proc: ReturnType<typeof spawn> | null, port: number, url?: string, pid?: number }>()
-let caddyProc: ReturnType<typeof spawn> | null = null
+const portals = new Map<string, { proc: Subprocess | null, port: number, url?: string, pid?: number }>()
+const processes = new Map<string, ManagedProcess>()
+const serverConfigs = new Map<string, ServerConfig>()
+let caddyProc: Subprocess | null = null
 
 // Rolling token chains - per-client (session) amnesiac arrays
 // Token format: sessionId:tokenValue
@@ -241,14 +295,386 @@ const getCurrentToken = (sessionId: string): string | null => {
 let pageViews = 0
 let darkShownThisCycle = false
 
-// Activity log
+// Activity log (in-memory for API responses)
 const activityLog: { time: Date, action: string, details: string }[] = []
 const log = (action: string, details: string) => {
   activityLog.push({ time: new Date(), action, details })
+  // Also write to audit log file
+  auditLog(action, details)
 }
 
 // Traffic stats per domain
 const domainHits = new Map<string, number>()
+
+// ============================================================================
+// Log Infrastructure
+// ============================================================================
+
+// Initialize logs directory - clear on boot
+const initLogs = async () => {
+  await $`rm -rf ${LOGS_DIR}`.quiet().nothrow()
+  await $`mkdir -p ${LOGS_DIR}`.quiet().nothrow()
+  // Create symlink to Caddy access log
+  await $`ln -sf ${CADDY_LOG} ${LOGS_DIR}/_caddy.log`.quiet().nothrow()
+  // Create empty audit log
+  await Bun.write(AUDIT_LOG, "")
+}
+
+// Actor types for audit logging
+type Actor = 'AI' | 'Page' | 'Portal' | 'System'
+
+// Write to audit log with actor tracking
+const auditLog = async (action: string, details: string, actor: Actor = 'System') => {
+  const timestamp = new Date().toISOString()
+  const line = `[${timestamp}] [${actor}] ${action}: ${details}\n`
+  try {
+    const file = Bun.file(AUDIT_LOG)
+    const existing = await file.exists() ? await file.text() : ""
+    await Bun.write(AUDIT_LOG, existing + line)
+  } catch {}
+}
+
+// Strip ANSI escape codes from text
+const stripAnsi = (text: string): string => {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+}
+
+// Write to process log file
+const processLog = async (name: string, data: string) => {
+  const logFile = `${LOGS_DIR}/${name}.log`
+  try {
+    const file = Bun.file(logFile)
+    const existing = await file.exists() ? await file.text() : ""
+    await Bun.write(logFile, existing + stripAnsi(data))
+  } catch {}
+}
+
+// Get log file path for a process
+const getLogFile = (name: string) => `${LOGS_DIR}/${name}.log`
+
+// Read logs with mode: tail, head, or search
+const readLogs = async (
+  processName: string,
+  mode: 'tail' | 'head' | 'search',
+  count: number = 50,
+  pattern?: string,
+  context: number = 2
+): Promise<{ success: boolean, data?: string, error?: string }> => {
+  let logFile: string
+  if (processName === '_caddy') {
+    logFile = CADDY_LOG
+  } else if (processName === '_audit') {
+    logFile = AUDIT_LOG
+  } else {
+    logFile = getLogFile(processName)
+  }
+
+  try {
+    const file = Bun.file(logFile)
+    if (!await file.exists()) {
+      return { success: false, error: `Log file not found: ${processName}` }
+    }
+
+    if (mode === 'search' && pattern) {
+      // Safe rg invocation - escape shell metacharacters
+      const safePattern = pattern.replace(/[`$\\;"'|&<>]/g, '\\$&')
+      const result = await $`rg -n -C ${context} -e ${safePattern} ${logFile}`.nothrow().text()
+      return { success: true, data: result || '(no matches)' }
+    } else if (mode === 'head') {
+      const result = await $`head -n ${count} ${logFile}`.nothrow().text()
+      return { success: true, data: result }
+    } else {
+      // tail (default)
+      const result = await $`tail -n ${count} ${logFile}`.nothrow().text()
+      return { success: true, data: result }
+    }
+  } catch (e) {
+    return { success: false, error: String(e) }
+  }
+}
+
+// ============================================================================
+// Server Config Management (servers.json)
+// ============================================================================
+
+// Load server configs from ~/.config/candy/servers.json
+const loadServerConfigs = async () => {
+  try {
+    await $`mkdir -p ${CANDY_CONFIG_DIR}`.quiet().nothrow()
+    const file = Bun.file(SERVERS_CONFIG)
+    if (await file.exists()) {
+      const content = await file.json() as Record<string, ServerConfig>
+      serverConfigs.clear()
+      for (const [name, config] of Object.entries(content)) {
+        serverConfigs.set(name, config)
+      }
+      console.log(`\x1b[90mLoaded ${serverConfigs.size} server configs\x1b[0m`)
+    }
+  } catch (e) {
+    console.log(`\x1b[33mNo server configs found or invalid format\x1b[0m`)
+  }
+}
+
+// Save server configs to ~/.config/candy/servers.json
+const saveServerConfigs = async () => {
+  const data: Record<string, ServerConfig> = {}
+  for (const [name, config] of serverConfigs) {
+    data[name] = config
+  }
+  await $`mkdir -p ${CANDY_CONFIG_DIR}`.quiet().nothrow()
+  await Bun.write(SERVERS_CONFIG, JSON.stringify(data, null, 2))
+}
+
+// Add a server config
+const addServerConfig = async (name: string, cwd: string, cmd: string, actor: Actor = 'Portal') => {
+  // Expand tilde in cwd
+  const expandedCwd = cwd.replace(/^~/, process.env.HOME || '')
+  serverConfigs.set(name, { cwd: expandedCwd, cmd })
+  await saveServerConfigs()
+  auditLog('CONFIG_ADD', `${name}: ${cmd} in ${expandedCwd}`, actor)
+}
+
+// Remove a server config
+const removeServerConfig = async (name: string, actor: Actor = 'Portal') => {
+  serverConfigs.delete(name)
+  await saveServerConfigs()
+  auditLog('CONFIG_REMOVE', name, actor)
+}
+
+// ============================================================================
+// Process Management
+// ============================================================================
+
+// Extract ports from output using detection patterns
+const extractPorts = (output: string): number[] => {
+  const ports = new Set<number>()
+  for (const pattern of PORT_PATTERNS) {
+    // Reset regex state
+    pattern.lastIndex = 0
+    let match
+    while ((match = pattern.exec(output)) !== null) {
+      const port = parseInt(match[1])
+      if (port >= 1024 && port <= 65535) {
+        ports.add(port)
+      }
+    }
+  }
+  return [...ports]
+}
+
+// Spawn a dev server process
+const spawnProcess = async (name: string, actor: Actor = 'System'): Promise<ManagedProcess> => {
+  const config = serverConfigs.get(name)
+  if (!config) {
+    throw new Error(`No config found for server: ${name}`)
+  }
+
+  const logFile = getLogFile(name)
+  // Add restart separator to log file (don't clear)
+  await processLog(name, `\n--- PROCESS RESTART ${new Date().toISOString()} ---\n\n`)
+
+  const managed: ManagedProcess = {
+    name,
+    config,
+    proc: null,
+    pid: null,
+    status: 'starting',
+    port: null,
+    startedAt: new Date(),
+    exitCode: null,
+    logFile,
+    detectedPorts: [],
+  }
+
+  processes.set(name, managed)
+  auditLog('PROCESS_START', `${name}: ${config.cmd}`, actor)
+
+  // Spawn the process with shell
+  const proc = spawn({
+    cmd: ['bash', '-c', config.cmd],
+    cwd: config.cwd,
+    stdout: 'pipe',
+    stderr: 'pipe',
+    env: { ...process.env, FORCE_COLOR: '1' },
+  })
+
+  managed.proc = proc
+  managed.pid = proc.pid
+
+  // Capture stdout
+  const stdoutReader = proc.stdout.getReader()
+  const stderrReader = proc.stderr.getReader()
+  const decoder = new TextDecoder()
+
+  // Collected output for port detection
+  let collectedOutput = ''
+
+  const captureStream = async (reader: ReadableStreamDefaultReader<Uint8Array>, stream: string) => {
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        const text = stripAnsi(decoder.decode(value))
+        collectedOutput += text
+
+        // Write to log file
+        const timestamp = new Date().toISOString()
+        const lines = text.split('\n').filter(l => l.length > 0)
+        for (const line of lines) {
+          await processLog(name, `[${timestamp}] [${stream}] ${line}\n`)
+        }
+
+        // Extract ports during starting phase
+        if (managed.status === 'starting') {
+          managed.detectedPorts = extractPorts(collectedOutput)
+        }
+      }
+    } catch {}
+  }
+
+  // Start capturing both streams
+  captureStream(stdoutReader, 'stdout')
+  captureStream(stderrReader, 'stderr')
+
+  // Handle process exit
+  proc.exited.then((exitCode) => {
+    managed.exitCode = exitCode
+    const newStatus = exitCode === 0 ? 'dead' : 'errored'
+    managed.status = newStatus
+    managed.proc = null
+    auditLog('STATE', `${name}: starting -> ${newStatus} (exit ${exitCode})`, 'System')
+
+    // Don't remove from processes map - keep for crash recovery UI
+  })
+
+  // Wait for port detection (10s timeout)
+  await new Promise<void>((resolve) => {
+    const startTime = Date.now()
+    const checkInterval = setInterval(() => {
+      const elapsed = Date.now() - startTime
+
+      // Check if process died
+      if (managed.status !== 'starting') {
+        clearInterval(checkInterval)
+        resolve()
+        return
+      }
+
+      // Check for detected ports
+      if (managed.detectedPorts.length === 1) {
+        // Single port detected - auto-bind!
+        managed.port = managed.detectedPorts[0]
+        managed.status = 'running'
+        auditLog('STATE', `${name}: starting -> running (port ${managed.port})`, 'System')
+        clearInterval(checkInterval)
+        resolve()
+        return
+      }
+
+      // Timeout reached
+      if (elapsed >= PORT_DETECTION_TIMEOUT) {
+        clearInterval(checkInterval)
+        // Don't change status if we have multiple or no ports
+        // User will need to select manually
+        if (managed.detectedPorts.length > 0) {
+          // Multiple ports - leave in starting state for user selection
+          managed.status = 'starting'
+        } else if (managed.status === 'starting') {
+          // No ports detected but process still running
+          managed.status = 'starting'
+        }
+        resolve()
+      }
+    }, 100)
+  })
+
+  // If port was detected, add route
+  if (managed.port && managed.status === 'running') {
+    routes.set(name, managed.port)
+    await syncCaddy()
+    auditLog('ROUTE_AUTO', `${name}.localhost -> :${managed.port}`)
+  }
+
+  return managed
+}
+
+// Stop a managed process
+const stopProcess = async (name: string, actor: Actor = 'System'): Promise<boolean> => {
+  const managed = processes.get(name)
+  if (!managed) return false
+
+  if (managed.proc) {
+    managed.proc.kill()
+  } else if (managed.pid) {
+    await $`kill -9 ${managed.pid}`.quiet().nothrow()
+  }
+
+  managed.status = 'dead'
+  managed.exitCode = 0
+  auditLog('PROCESS_STOP', name, actor)
+
+  // Remove route
+  routes.delete(name)
+
+  // Also kill associated portal/tunnel if exists
+  const portal = portals.get(name)
+  if (portal) {
+    if (portal.proc) {
+      portal.proc.kill()
+    } else if (portal.pid) {
+      await $`kill -9 ${portal.pid}`.quiet().nothrow()
+    }
+    portals.delete(name)
+    auditLog('PORTAL_CLOSE', `${name} (with process)`, actor)
+  }
+
+  await syncCaddy()
+
+  return true
+}
+
+// Restart a managed process
+const restartProcess = async (name: string, actor: Actor = 'System'): Promise<ManagedProcess | null> => {
+  await stopProcess(name, actor)
+
+  // Small delay before restart
+  await new Promise(r => setTimeout(r, 500))
+
+  if (!serverConfigs.has(name)) {
+    return null
+  }
+
+  return spawnProcess(name, actor)
+}
+
+// Manually set port for a process
+const setProcessPort = async (name: string, port: number, actor: Actor = 'Portal'): Promise<boolean> => {
+  const managed = processes.get(name)
+  if (!managed) return false
+
+  const prevStatus = managed.status
+  managed.port = port
+  managed.status = 'running'
+
+  routes.set(name, port)
+  await syncCaddy()
+  auditLog('STATE', `${name}: ${prevStatus} -> running (port ${port}, manual)`, actor)
+
+  return true
+}
+
+// Format uptime for display
+const formatUptime = (startedAt: Date): string => {
+  const seconds = Math.floor((Date.now() - startedAt.getTime()) / 1000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = seconds % 60
+  if (minutes < 60) return `${minutes}m ${remainingSeconds}s`
+  const hours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+  return `${hours}h ${remainingMinutes}m`
+}
 
 // Check if Caddy is already running via admin API
 const isCaddyRunning = async () => {
@@ -371,7 +797,27 @@ const syncCaddy = async () => {
 `
   }
 
-  // portal.localhost is handled by the daemon directly via *.localhost wildcard
+  // Kill subdomains: <name>.kill.localhost and <name>.k.localhost
+  // Using *.kill.localhost pattern (not kill.*.localhost) because wildcards only match one level
+  content += `*.kill.localhost, *.k.localhost {
+  tls internal
+  reverse_proxy localhost:9999
+  log
+}
+
+`
+
+  // Portal subdomains: <name>.portal.localhost and <name>.p.localhost
+  // Opens a cloudflare tunnel and redirects after DNS propagates
+  content += `*.portal.localhost, *.p.localhost {
+  tls internal
+  reverse_proxy localhost:9999
+  log
+}
+
+`
+
+  // Everything else goes to daemon (portal, unregistered domains, etc)
   content += `*.localhost {
   reverse_proxy localhost:9999
   log
@@ -498,11 +944,14 @@ const controlServer = Bun.serve({
     }
 
     // === Web UI Routes (no token required, token is SSR'd) ===
+    // Also allow SSE streams and portal status polling without token (read-only)
     const isWebRoute = req.method === "GET" && (
       url.pathname === "/" ||
       url.pathname === "/favicon.svg" ||
       url.pathname === "/register" ||
-      url.pathname === "/portal"
+      url.pathname === "/portal" ||
+      url.pathname.startsWith("/stream/") ||
+      url.pathname.startsWith("/portal/status/")
     )
 
     // === API Routes require token validation ===
@@ -520,7 +969,7 @@ const controlServer = Bun.serve({
       const { name } = body
 
       // Reserved names
-      if (name.toLowerCase() === "portal") {
+      if (isReserved(name)) {
         return Response.json({ error: "That name is reserved. Nice try though.", details: name }, { status: 403, headers: corsHeaders })
       }
 
@@ -555,12 +1004,20 @@ const controlServer = Bun.serve({
 
     if (req.method === "DELETE" && url.pathname.startsWith("/register/")) {
       const name = url.pathname.split("/")[2]
-      if (name.toLowerCase() === "portal") {
+      if (isReserved(name)) {
         return Response.json({ error: "That name is reserved. Nice try though.", details: name }, { status: 403, headers: corsHeaders })
       }
       if (!routes.has(name)) {
         return Response.json({ error: pick(msg.notFound), details: name }, { status: 404, headers: corsHeaders })
       }
+
+      // Also stop the associated process if running
+      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      const proc = processes.get(name)
+      if (proc && (proc.status === 'running' || proc.status === 'starting')) {
+        await stopProcess(name, actor)
+      }
+
       routes.delete(name)
       await syncCaddy()
       const m = pick(msg.removed)
@@ -571,7 +1028,7 @@ const controlServer = Bun.serve({
     if (req.method === "POST" && url.pathname === "/rename") {
       const { oldName, newName } = await req.json() as { oldName: string, newName: string }
 
-      if (oldName.toLowerCase() === "portal" || newName.toLowerCase() === "portal") {
+      if (isReserved(oldName) || isReserved(newName)) {
         return Response.json({ error: "That name is reserved. Nice try though.", details: "portal" }, { status: 403, headers: corsHeaders })
       }
       if (!routes.has(oldName)) {
@@ -600,7 +1057,7 @@ const controlServer = Bun.serve({
     if (req.method === "GET" && url.pathname === "/routes") {
       const routeList: Record<string, { target: number | string, isRestricted: boolean }> = {}
       for (const [name, target] of routes) {
-        if (name.toLowerCase() === "portal") continue  // hide reserved
+        if (isReserved(name)) continue  // hide reserved
         routeList[name] = {
           target,
           isRestricted: typeof target === "string"
@@ -627,7 +1084,7 @@ const controlServer = Bun.serve({
         portalName = `anon-${anonCounter}`
       }
 
-      if (portalName.toLowerCase() === "portal") {
+      if (isReserved(portalName)) {
         return Response.json({ error: "That name is reserved. Nice try though.", details: portalName }, { status: 403, headers: corsHeaders })
       }
 
@@ -777,6 +1234,21 @@ const controlServer = Bun.serve({
       return Response.json(portalList, { headers: corsHeaders })
     }
 
+    // Get single portal status (for polling from portaling.html)
+    if (req.method === "GET" && url.pathname.startsWith("/portal/status/")) {
+      const name = url.pathname.split("/")[3]
+      const portal = portals.get(name)
+      if (!portal) {
+        return Response.json({ exists: false }, { headers: corsHeaders })
+      }
+      return Response.json({
+        exists: true,
+        url: portal.url,
+        port: portal.port,
+        ready: !!portal.url
+      }, { headers: corsHeaders })
+    }
+
     if (req.method === "POST" && url.pathname.startsWith("/portal/close/")) {
       const name = url.pathname.split("/")[3]
       const toClose = portals.get(name)
@@ -900,6 +1372,175 @@ const controlServer = Bun.serve({
       return Response.json({ status: "shutting_down", message: m }, { headers: corsHeaders })
     }
 
+    // === Process Management API ===
+
+    if (req.method === "GET" && url.pathname === "/processes") {
+      const processList: Record<string, any> = {}
+      for (const [name, proc] of processes) {
+        processList[name] = {
+          status: proc.status,
+          port: proc.port,
+          pid: proc.pid,
+          uptime: formatUptime(proc.startedAt),
+          exitCode: proc.exitCode,
+          detectedPorts: proc.detectedPorts,
+        }
+      }
+      return Response.json({ success: true, processes: processList }, { headers: corsHeaders })
+    }
+
+    if (req.method === "POST" && url.pathname.startsWith("/process/start/")) {
+      const name = url.pathname.split("/")[3]
+      if (!serverConfigs.has(name)) {
+        return Response.json({ success: false, error: `No config for server: ${name}` }, { status: 404, headers: corsHeaders })
+      }
+      try {
+        const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+        const managed = await spawnProcess(name, actor)
+        return Response.json({
+          success: true,
+          data: {
+            name,
+            status: managed.status,
+            port: managed.port,
+            pid: managed.pid,
+            detectedPorts: managed.detectedPorts,
+          }
+        }, { headers: corsHeaders })
+      } catch (e) {
+        return Response.json({ success: false, error: String(e) }, { status: 500, headers: corsHeaders })
+      }
+    }
+
+    if (req.method === "POST" && url.pathname.startsWith("/process/stop/")) {
+      const name = url.pathname.split("/")[3]
+      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      const success = await stopProcess(name, actor)
+      return Response.json({ success }, { headers: corsHeaders })
+    }
+
+    if (req.method === "POST" && url.pathname.startsWith("/process/restart/")) {
+      const name = url.pathname.split("/")[3]
+      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      const managed = await restartProcess(name, actor)
+      if (!managed) {
+        return Response.json({ success: false, error: `Failed to restart: ${name}` }, { status: 500, headers: corsHeaders })
+      }
+      return Response.json({
+        success: true,
+        data: {
+          name,
+          status: managed.status,
+          port: managed.port,
+          pid: managed.pid,
+        }
+      }, { headers: corsHeaders })
+    }
+
+    if (req.method === "POST" && url.pathname.startsWith("/process/port/")) {
+      const name = url.pathname.split("/")[3]
+      const { port } = await req.json() as { port: number }
+      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      const success = await setProcessPort(name, port, actor)
+      return Response.json({ success }, { headers: corsHeaders })
+    }
+
+    // === Config Management API ===
+
+    if (req.method === "GET" && url.pathname === "/configs") {
+      const configs: Record<string, ServerConfig> = {}
+      for (const [name, config] of serverConfigs) {
+        configs[name] = config
+      }
+      return Response.json({ success: true, configs }, { headers: corsHeaders })
+    }
+
+    if (req.method === "POST" && url.pathname === "/config") {
+      const { name, cwd, cmd } = await req.json() as { name: string, cwd: string, cmd: string }
+      if (isReserved(name)) {
+        return Response.json({ error: "That name is reserved. Nice try though.", details: name }, { status: 403, headers: corsHeaders })
+      }
+      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      await addServerConfig(name, cwd, cmd, actor)
+      return Response.json({ success: true }, { headers: corsHeaders })
+    }
+
+    if (req.method === "DELETE" && url.pathname.startsWith("/config/")) {
+      const name = url.pathname.split("/")[2]
+      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      await removeServerConfig(name, actor)
+      return Response.json({ success: true }, { headers: corsHeaders })
+    }
+
+    // === SSE Streaming Logs ===
+
+    if (req.method === "GET" && url.pathname.startsWith("/stream/")) {
+      const name = url.pathname.split("/")[2]
+      const logFile = getLogFile(name)
+
+      // Return SSE stream
+      const stream = new ReadableStream({
+        async start(controller) {
+          const encoder = new TextEncoder()
+          let lastSize = 0
+
+          const sendEvent = (data: string) => {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`))
+          }
+
+          // Initial content
+          try {
+            const file = Bun.file(logFile)
+            if (await file.exists()) {
+              const content = await file.text()
+              lastSize = content.length
+              sendEvent(content)
+            }
+          } catch {}
+
+          // Poll for new content
+          const interval = setInterval(async () => {
+            try {
+              const file = Bun.file(logFile)
+              if (await file.exists()) {
+                const content = await file.text()
+                if (content.length > lastSize) {
+                  const newContent = content.slice(lastSize)
+                  lastSize = content.length
+                  sendEvent(newContent)
+                }
+              }
+
+              // Also send process status updates
+              const proc = processes.get(name)
+              if (proc) {
+                controller.enqueue(encoder.encode(`event: status\ndata: ${JSON.stringify({
+                  status: proc.status,
+                  port: proc.port,
+                  detectedPorts: proc.detectedPorts,
+                })}\n\n`))
+              }
+            } catch {}
+          }, 500)
+
+          // Cleanup on abort
+          req.signal.addEventListener('abort', () => {
+            clearInterval(interval)
+            controller.close()
+          })
+        }
+      })
+
+      return new Response(stream, {
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          ...corsHeaders,
+        }
+      })
+    }
+
     // === Web UI ===
 
     // SSR inject token into HTML - creates a new session for each page load
@@ -913,6 +1554,18 @@ const controlServer = Bun.serve({
       return html.replace('</head>', tokenScript + '</head>')
     }
 
+    // Inject variables into HTML
+    const injectVars = (html: string, vars: Record<string, any>): string => {
+      let result = injectToken(html)
+      const varsScript = `<script>window.CANDY_VARS=${JSON.stringify(vars)};</script>`
+      if (result.includes('window.CANDY_TOKEN')) {
+        result = result.replace('</script>', `</script>${varsScript}`)
+      } else {
+        result = result.replace('</head>', varsScript + '</head>')
+      }
+      return result
+    }
+
     if (req.method === "GET" && url.pathname === "/favicon.svg") {
       try {
         const svg = await Bun.file(import.meta.dir + "/public/favicon.svg").text()
@@ -922,33 +1575,205 @@ const controlServer = Bun.serve({
       }
     }
 
-    if (req.method === "GET" && (url.pathname === "/register" || url.pathname === "/portal")) {
-      return Response.redirect(url.origin + "/", 302)
-    }
+    // Parse host header
+    const reqHost = req.headers.get("host")?.replace(":9999", "") || ""
 
-    if (req.method === "GET" && url.pathname !== "/") {
-      return Response.redirect(url.origin + "/", 302)
-    }
+    // Handle kill subdomain: <name>.kill.localhost or <name>.k.localhost
+    const killMatch = reqHost.match(/^([a-z0-9-]+)\.(kill|k)\.localhost$/)
+    if (killMatch && req.method === "GET") {
+      const serverName = killMatch[1]  // name is first capture group now
 
-    if (req.method === "GET" && url.pathname === "/") {
+      // Stop the process if running (Page actor - direct browser access)
+      const proc = processes.get(serverName)
+      if (proc && (proc.status === 'running' || proc.status === 'starting')) {
+        await stopProcess(serverName, 'Page')
+      }
+
+      // Serve killed.html
       try {
-        const reqHost = req.headers.get("host")?.replace(".localhost", "").replace(":9999", "") || "unknown"
-        domainHits.set(reqHost, (domainHits.get(reqHost) || 0) + 1)
+        const rawHtml = await Bun.file(import.meta.dir + "/public/killed.html").text()
+        const html = injectVars(rawHtml, { name: serverName })
+        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
+      } catch {
+        return new Response(`Process "${serverName}" killed. <a href="http://portal.localhost">Return to portal</a>`, {
+          headers: { "Content-Type": "text/html; charset=utf-8" }
+        })
+      }
+    }
 
-        // Serve portal UI at portal.localhost
-        if (reqHost === "portal") {
+    // Handle portal subdomain: <name>.portal.localhost or <name>.p.localhost
+    const portalMatch = reqHost.match(/^([a-z0-9-]+)\.(portal|p)\.localhost$/)
+    if (portalMatch && req.method === "GET") {
+      const serverName = portalMatch[1]
+
+      // Check if process is running
+      const proc = processes.get(serverName)
+      if (!proc || proc.status !== 'running' || !proc.port) {
+        // Check if config exists
+        const hasConfig = serverConfigs.has(serverName)
+        const message = hasConfig
+          ? `Server "${serverName}" is not running.`
+          : `Server "${serverName}" does not exist.`
+        const action = hasConfig
+          ? `<a href="https://${serverName}.localhost" class="btn">Start Server</a>`
+          : `<a href="https://portal.localhost" class="btn">Go to Portal</a>`
+
+        return new Response(`<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8">
+<title>Server Not Running</title>
+<style>
+  body { font-family: system-ui; background: #0a0a0f; color: #e0e0e8; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+  .box { text-align: center; padding: 2rem; }
+  h1 { font-size: 1.2rem; margin-bottom: 1rem; }
+  .btn { display: inline-block; padding: 0.6rem 1.2rem; background: #00e5ff; color: #0a0a0f; text-decoration: none; border-radius: 4px; margin-top: 1rem; }
+</style>
+</head><body>
+<div class="box">
+  <h1>${message}</h1>
+  ${action}
+</div>
+</body></html>`, {
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+          status: 404
+        })
+      }
+
+      // Check if portal already exists
+      let existingPortal = portals.get(serverName)
+      if (!existingPortal) {
+        // Create a new portal
+        auditLog('PORTAL_CREATE', `${serverName} (auto from ${serverName}.p.localhost)`, 'Page')
+
+        // Start cloudflared tunnel
+        const tunnelProc = spawn({
+          cmd: ['cloudflared', 'tunnel', '--url', `http://localhost:${proc.port}`],
+          stdout: 'pipe',
+          stderr: 'pipe',
+        })
+
+        existingPortal = {
+          port: proc.port,
+          url: null,
+          pid: tunnelProc.pid,
+          proc: tunnelProc,
+        }
+        portals.set(serverName, existingPortal)
+
+        // Capture tunnel URL from stderr
+        const reader = tunnelProc.stderr.getReader()
+        const decoder = new TextDecoder()
+        const urlPattern = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/
+
+        ;(async () => {
+          try {
+            while (true) {
+              const { done, value } = await reader.read()
+              if (done) break
+              const text = decoder.decode(value)
+              const match = text.match(urlPattern)
+              if (match && existingPortal) {
+                existingPortal.url = match[0]
+                auditLog('PORTAL_READY', `${serverName} -> ${match[0]}`, 'System')
+                await syncCaddy()
+                break
+              }
+            }
+          } catch {}
+        })()
+      }
+
+      // Serve the portal loading page
+      try {
+        const rawHtml = await Bun.file(import.meta.dir + "/public/portaling.html").text()
+        const html = injectVars(rawHtml, {
+          name: serverName,
+          existingUrl: existingPortal?.url || ''
+        })
+        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
+      } catch {
+        return new Response(`Creating tunnel for "${serverName}"... Refresh in a few seconds.`, {
+          headers: { "Content-Type": "text/html; charset=utf-8" }
+        })
+      }
+    }
+
+    // Main routing logic for *.localhost
+    if (req.method === "GET" && (url.pathname === "/" || url.pathname === "")) {
+      try {
+        const domain = reqHost.replace(".localhost", "")
+        domainHits.set(domain, (domainHits.get(domain) || 0) + 1)
+
+        // Portal UI at portal.localhost
+        if (domain === "portal") {
           const rawHtml = await Bun.file(import.meta.dir + "/public/portal.html").text()
           const html = injectToken(rawHtml)
           return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
         }
 
-        pageViews++
+        // Check if there's a managed process for this domain
+        const managed = processes.get(domain)
 
+        if (managed) {
+          // Process exists - check its status
+          if (managed.status === 'running' && managed.port) {
+            // This shouldn't happen - Caddy should be proxying
+            // But just in case, redirect to actual port
+            return Response.redirect(`http://localhost:${managed.port}`, 302)
+          }
+
+          if (managed.status === 'starting') {
+            // Show starting page with streaming logs
+            const rawHtml = await Bun.file(import.meta.dir + "/public/starting.html").text()
+            const html = injectVars(rawHtml, {
+              name: domain,
+              detectedPorts: managed.detectedPorts,
+            })
+            return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
+          }
+
+          if (managed.status === 'errored' || managed.status === 'dead') {
+            // Show crashed page
+            const rawHtml = await Bun.file(import.meta.dir + "/public/crashed.html").text()
+            const html = injectVars(rawHtml, {
+              name: domain,
+              exitCode: managed.exitCode,
+              status: managed.status,
+            })
+            return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
+          }
+        }
+
+        // Check if there's a server config (lazy loading)
+        if (serverConfigs.has(domain)) {
+          // Spawn the server! (Page actor - direct browser access)
+          try {
+            const newProcess = await spawnProcess(domain, 'Page')
+
+            if (newProcess.status === 'running' && newProcess.port) {
+              // Auto-detected port - redirect (Caddy will take over on next request)
+              return Response.redirect(`http://${domain}.localhost`, 302)
+            }
+
+            // Show starting page
+            const rawHtml = await Bun.file(import.meta.dir + "/public/starting.html").text()
+            const html = injectVars(rawHtml, {
+              name: domain,
+              detectedPorts: newProcess.detectedPorts,
+            })
+            return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
+          } catch (e) {
+            return new Response(`Failed to start server: ${e}`, { status: 500 })
+          }
+        }
+
+        // No config exists - show candy/terminal page with mode toggle
+        // (supports both Quick port mode and Lazy Server mode)
+        pageViews++
         let showDark = Math.random() < 0.15
         if (!showDark && pageViews >= 10 && !darkShownThisCycle) {
           showDark = true
         }
-
         if (showDark) {
           darkShownThisCycle = true
         }
@@ -956,24 +1781,38 @@ const controlServer = Bun.serve({
           pageViews = 0
           darkShownThisCycle = false
         }
-
         const page = showDark ? "terminal.html" : "candy.html"
         const rawHtml = await Bun.file(import.meta.dir + "/public/" + page).text()
         const html = injectToken(rawHtml)
         return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
-      } catch {
-        return new Response("registration terminal offline", { status: 500 })
+      } catch (e) {
+        return new Response("registration terminal offline: " + e, { status: 500 })
       }
+    }
+
+    // Redirect other paths to root
+    if (req.method === "GET") {
+      return Response.redirect(url.origin + "/", 302)
     }
 
     return Response.json({ error: "not found" }, { status: 404, headers: corsHeaders })
   }
 })
 
+// ============================================================================
+// Startup Sequence
+// ============================================================================
+
+// Initialize log directory (clears on boot)
+await initLogs()
+
 // Clear access log and Caddyfile on startup (fresh slate each boot)
 try {
   await Bun.write(CADDY_LOG, "")
 } catch {}
+
+// Load server configs
+await loadServerConfigs()
 
 // Create fresh Caddyfile (don't load previous routes - clean slate)
 await syncCaddy()
@@ -985,14 +1824,16 @@ await startCaddy()
 await Bun.write(PID_FILE, process.pid.toString())
 
 console.log(`
-\x1b[36m░█▀▀░█▀█░█▀█░█▀▄░█░█\x1b[0m   \x1b[90mv0.3.0 (daemon)\x1b[0m
-\x1b[36m░█░░░█▀█░█░█░█░█░░█░\x1b[0m   "we hand out domains like it's 1980"
+\x1b[36m░█▀▀░█▀█░█▀█░█▀▄░█░█\x1b[0m   \x1b[90mv0.4.0 (lazy dev server orchestrator)\x1b[0m
+\x1b[36m░█░░░█▀█░█░█░█░█░░█░\x1b[0m   "we spawn servers like it's 1980"
 \x1b[36m░▀▀▀░▀░▀░▀░▀░▀▀░░░▀░\x1b[0m   \x1b[90mno iana was harmed. probably.\x1b[0m
 
-\x1b[33mCaddyfile:\x1b[0m  ${CADDYFILE}
-\x1b[33mControl:\x1b[0m    http://localhost:9999
-\x1b[33mPID:\x1b[0m        ${process.pid}
+\x1b[33mCaddyfile:\x1b[0m   ${CADDYFILE}
+\x1b[33mServers:\x1b[0m     ${SERVERS_CONFIG}
+\x1b[33mLogs:\x1b[0m        ${LOGS_DIR}
+\x1b[33mControl:\x1b[0m     http://localhost:9999
+\x1b[33mPID:\x1b[0m         ${process.pid}
 
-\x1b[90mdaemon mode active. use 'candy' CLI to interact.\x1b[0m
+\x1b[90mLazy dev server mode active. Visit <name>.localhost to auto-start.\x1b[0m
 `)
 

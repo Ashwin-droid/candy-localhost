@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Opening Portal...</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --surface: #12121a;
+      --border: #1e1e2a;
+      --text: #e0e0e8;
+      --dim: #6a6a7a;
+      --cyan: #00e5ff;
+      --magenta: #ff00aa;
+      --green: #00ff6a;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+
+    .container {
+      max-width: 600px;
+      width: 100%;
+    }
+
+    .terminal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .terminal-header {
+      background: var(--bg);
+      padding: 0.75rem 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .terminal-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--dim);
+    }
+    .terminal-dot.red { background: #ff5f57; }
+    .terminal-dot.yellow { background: #febc2e; }
+    .terminal-dot.green { background: #28c840; }
+
+    .terminal-title {
+      flex: 1;
+      text-align: center;
+      font-size: 0.75rem;
+      color: var(--dim);
+    }
+
+    .terminal-body {
+      padding: 1.5rem;
+      min-height: 200px;
+    }
+
+    .log-line {
+      margin-bottom: 0.5rem;
+      font-size: 0.8rem;
+      line-height: 1.6;
+    }
+
+    .log-line .time {
+      color: var(--dim);
+    }
+
+    .log-line .action {
+      color: var(--cyan);
+    }
+
+    .log-line .success {
+      color: var(--green);
+    }
+
+    .log-line .url {
+      color: var(--magenta);
+      word-break: break-all;
+    }
+
+    .spinner {
+      display: inline-block;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    .countdown {
+      margin-top: 1.5rem;
+      padding: 1rem;
+      background: var(--bg);
+      border-radius: 6px;
+      text-align: center;
+    }
+
+    .countdown-number {
+      font-size: 2rem;
+      font-weight: 700;
+      color: var(--cyan);
+    }
+
+    .countdown-label {
+      font-size: 0.7rem;
+      color: var(--dim);
+      margin-top: 0.25rem;
+    }
+
+    .progress-bar {
+      margin-top: 1rem;
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--cyan), var(--magenta));
+      width: 0%;
+      transition: width 1s linear;
+    }
+
+    .actions {
+      margin-top: 1rem;
+      display: flex;
+      gap: 0.75rem;
+      justify-content: center;
+    }
+
+    .btn {
+      padding: 0.6rem 1.2rem;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.75rem;
+      border-radius: 4px;
+      cursor: pointer;
+      text-decoration: none;
+      transition: all 0.2s;
+    }
+
+    .btn:hover {
+      border-color: var(--cyan);
+      color: var(--cyan);
+    }
+
+    .btn-primary {
+      background: var(--cyan);
+      color: var(--bg);
+      border-color: var(--cyan);
+    }
+
+    .btn-primary:hover {
+      background: transparent;
+      color: var(--cyan);
+    }
+
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="terminal">
+      <div class="terminal-header">
+        <div class="terminal-dot red"></div>
+        <div class="terminal-dot yellow"></div>
+        <div class="terminal-dot green"></div>
+        <div class="terminal-title" id="serverName">server.localhost</div>
+      </div>
+      <div class="terminal-body">
+        <div id="logs">
+          <div class="log-line">
+            <span class="time">[00:00]</span>
+            <span class="action">Opening portal...</span>
+            <span class="spinner">|</span>
+          </div>
+        </div>
+
+        <div id="countdown-section" class="countdown hidden">
+          <div class="countdown-number" id="countdown">20</div>
+          <div class="countdown-label">seconds until redirect (DNS propagation)</div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="progress"></div>
+          </div>
+        </div>
+
+        <div id="actions" class="actions hidden">
+          <a href="#" id="go-now" class="btn btn-primary">Go Now</a>
+          <a href="https://portal.localhost" class="btn">Back to Portal</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const vars = window.CANDY_VARS || {};
+    const serverName = vars.name || 'unknown';
+    const existingUrl = vars.existingUrl || '';
+    const API = 'http://localhost:9999';
+    const REDIRECT_DELAY = 20; // seconds
+
+    document.getElementById('serverName').textContent = `${serverName}.p.localhost`;
+
+    const logsEl = document.getElementById('logs');
+    const countdownSection = document.getElementById('countdown-section');
+    const countdownEl = document.getElementById('countdown');
+    const progressEl = document.getElementById('progress');
+    const actionsEl = document.getElementById('actions');
+    const goNowBtn = document.getElementById('go-now');
+
+    let startTime = Date.now();
+    let tunnelUrl = existingUrl;
+    let urlReceivedAt = existingUrl ? Date.now() : null;
+    let redirecting = false;
+
+    function formatTime() {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      const mins = String(Math.floor(elapsed / 60)).padStart(2, '0');
+      const secs = String(elapsed % 60).padStart(2, '0');
+      return `${mins}:${secs}`;
+    }
+
+    function addLog(action, extra = '', className = 'action') {
+      const line = document.createElement('div');
+      line.className = 'log-line';
+      line.innerHTML = `<span class="time">[${formatTime()}]</span> <span class="${className}">${action}</span>${extra ? ' ' + extra : ''}`;
+      logsEl.appendChild(line);
+    }
+
+    function updateSpinner() {
+      const frames = ['|', '/', '-', '\\'];
+      const spinners = document.querySelectorAll('.spinner');
+      const frame = frames[Math.floor(Date.now() / 100) % frames.length];
+      spinners.forEach(s => s.textContent = frame);
+    }
+
+    async function checkStatus() {
+      try {
+        const res = await fetch(`${API}/portal/status/${serverName}`);
+        const data = await res.json();
+
+        if (data.ready && data.url && !tunnelUrl) {
+          tunnelUrl = data.url;
+          urlReceivedAt = Date.now();
+
+          // Update logs
+          logsEl.innerHTML = '';
+          addLog('Portal created', '', 'success');
+          addLog('Tunnel URL:', `<span class="url">${tunnelUrl}</span>`);
+          addLog('Waiting for DNS propagation...', '<span class="spinner">|</span>');
+
+          // Show countdown
+          countdownSection.classList.remove('hidden');
+          actionsEl.classList.remove('hidden');
+          goNowBtn.href = tunnelUrl;
+
+          startCountdown();
+        }
+      } catch (e) {
+        console.error('Status check failed:', e);
+      }
+    }
+
+    function startCountdown() {
+      let remaining = REDIRECT_DELAY;
+
+      const tick = () => {
+        if (redirecting) return;
+
+        const elapsed = Math.floor((Date.now() - urlReceivedAt) / 1000);
+        remaining = Math.max(0, REDIRECT_DELAY - elapsed);
+
+        countdownEl.textContent = remaining;
+        progressEl.style.width = `${((REDIRECT_DELAY - remaining) / REDIRECT_DELAY) * 100}%`;
+
+        if (remaining <= 0) {
+          redirecting = true;
+          addLog('Redirecting...', '', 'success');
+          window.location.href = tunnelUrl;
+        } else {
+          setTimeout(tick, 1000);
+        }
+      };
+
+      tick();
+    }
+
+    // If URL already exists, start countdown immediately
+    if (existingUrl) {
+      logsEl.innerHTML = '';
+      addLog('Portal already open', '', 'success');
+      addLog('Tunnel URL:', `<span class="url">${existingUrl}</span>`);
+      addLog('Redirecting shortly...', '<span class="spinner">|</span>');
+
+      countdownSection.classList.remove('hidden');
+      actionsEl.classList.remove('hidden');
+      goNowBtn.href = existingUrl;
+
+      startCountdown();
+    } else {
+      // Poll for status
+      setInterval(checkStatus, 1000);
+    }
+
+    // Update spinners
+    setInterval(updateSpinner, 100);
+  </script>
+</body>
+</html>

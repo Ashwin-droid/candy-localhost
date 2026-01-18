@@ -1,16 +1,13 @@
 {
   "name": "candy-localhost",
-  "version": "0.3.0",
-  "description": "We hand out domains like it's 1980",
+  "version": "0.4.0",
+  "description": "Lazy dev server orchestrator with MCP integration",
   "type": "module",
-  "main": "index.ts",
-  "bin": {
-    "candy": "./index.ts"
-  },
+  "main": "daemon.ts",
   "scripts": {
-    "start": "bun run index.ts",
     "daemon": "bun run daemon.ts",
     "dev": "bun run --watch daemon.ts",
+    "mcp": "bun run mcp.ts",
     "install-service": "sudo cp candy-localhost.service /etc/systemd/system/candy-localhost@.service && sudo systemctl daemon-reload && echo 'Service installed. Enable with: sudo systemctl enable --now candy-localhost@$USER'"
   },
   "devDependencies": {

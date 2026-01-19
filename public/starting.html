@@ -503,9 +503,10 @@
 
   <script>
     const API = 'http://localhost:9999';
-    const vars = window.CANDY_VARS || { name: 'unknown', detectedPorts: [] };
+    const vars = window.CANDY_VARS || { name: 'unknown', detectedPorts: [], returnPath: '/' };
     let currentToken = window.CANDY_TOKEN;
     const serverName = vars.name;
+    const returnPath = vars.returnPath || '/';
 
     // Token management - rolling one-time-use tokens
     async function refreshToken() {
@@ -585,7 +586,7 @@
         });
 
         if (res.ok) {
-          location.href = `http://${serverName}.localhost`;
+          location.href = `https://${serverName}.localhost${returnPath}`;
         } else {
           const data = await res.json();
           alert('Failed to set port: ' + (data.error || 'Unknown error'));
@@ -616,7 +617,7 @@
         document.getElementById('redirectOverlay').classList.add('visible');
         eventSource.close();
         setTimeout(() => {
-          location.href = `http://${serverName}.localhost`;
+          location.href = `https://${serverName}.localhost${returnPath}`;
         }, 1200);
       } else if (status.status === 'errored' || status.status === 'dead') {
         statusText.textContent = 'Process stopped';

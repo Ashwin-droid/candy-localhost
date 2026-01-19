@@ -1074,6 +1074,26 @@
       terminal.scrollTop = terminal.scrollHeight;
     }
 
+    function appendLink(text, url, suffix = '', className = 'dim') {
+      const line = document.createElement('div');
+      line.className = 'terminal-line ' + className;
+      const link = document.createElement('a');
+      link.href = url;
+      link.target = '_blank';
+      link.textContent = text;
+      link.style.color = 'var(--accent)';
+      link.style.textDecoration = 'none';
+      line.appendChild(link);
+      if (suffix) {
+        const span = document.createElement('span');
+        span.textContent = suffix;
+        span.style.color = 'var(--text-dim)';
+        line.appendChild(span);
+      }
+      terminal.appendChild(line);
+      terminal.scrollTop = terminal.scrollHeight;
+    }
+
     function appendHtml(html) {
       const div = document.createElement('div');
       div.innerHTML = html;
@@ -1112,7 +1132,7 @@ Tunneling:
 
 Surveillance:
   logs [count]               View activity logs.
-  stats [name]               View traffic stats.
+  stats                      View traffic stats.
 
 Misc:
   clear, cls                 Clear terminal.
@@ -1286,21 +1306,24 @@ Misc:
             break;
 
           case 'stats':
-            if (args[0]) {
-              const sRes = await apiCall('/stats/' + args[0]);
-              const sData = await sRes.json();
-              appendOutput(`Domain: ${args[0]}.localhost`, 'output');
-              appendOutput(`Status: ${sData.isRegistered ? 'REGISTERED' : 'UNREGISTERED'}`, sData.isRegistered ? 'success' : 'error');
-              appendOutput(`Port: ${sData.port || '-'}`, 'dim');
-              appendOutput(`Requests: ${sData.totalRequests} (${sData.tunnelRequests} via tunnel)`, 'dim');
-            } else {
+            {
               const sRes = await apiCall('/stats');
               const sData = await sRes.json();
               appendOutput(`Total requests: ${sData.totalRequests}`, 'output');
-              appendOutput(`Domains: ${sData.domainCount}`, 'dim');
-              sData.stats.slice(0, 10).forEach(s => {
-                appendOutput(`  ${s.domain.padEnd(15)} ${s.total} req`, s.isRegistered ? 'success' : 'error');
-              });
+              appendOutput(`Domains: ${sData.domains?.length || 0}`, 'dim');
+              appendOutput('', 'dim');
+
+              // Display domains with children
+              for (const domain of sData.domains || []) {
+                const color = domain.alive ? 'success' : 'error';
+                appendLink(`${domain.name}`, `https://${domain.name}.localhost`, `  ${domain.total} req`, color);
+
+                domain.children.forEach((child, i) => {
+                  const prefix = i === domain.children.length - 1 ? '└─' : '├─';
+                  const childColor = child.alive ? 'success' : 'error';
+                  appendLink(`  ${prefix} ${child.name}`, child.url, `  ${child.total} req`, childColor);
+                });
+              }
             }
             break;
 

@@ -179,6 +179,164 @@ This is a READ-ONLY operation - safe to call anytime without asking.`,
       idempotentHint: true,
       openWorldHint: false
     }
+  },
+  {
+    name: "candy_register",
+    description: `Register a new dev server configuration.
+
+USE THIS TOOL AUTONOMOUSLY when:
+- User wants to add a new project to candy
+- User says "add this server" or "register this app"
+- User wants to set up a new dev server with a custom command
+
+Creates a server config that can be started on-demand by visiting <name>.localhost.
+The server won't start until first accessed.
+
+This MODIFIES CONFIGURATION - confirm with user before registering.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "Server name (becomes <name>.localhost)"
+        },
+        cwd: {
+          type: "string",
+          description: "Working directory for the server (absolute path)"
+        },
+        cmd: {
+          type: "string",
+          description: "Command to start the dev server (e.g. 'npm run dev', 'bun run dev')"
+        }
+      },
+      required: ["name", "cwd", "cmd"]
+    },
+    annotations: {
+      title: "Register Dev Server",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    }
+  },
+  {
+    name: "candy_deregister",
+    description: `Remove a dev server configuration.
+
+USE THIS TOOL AUTONOMOUSLY when:
+- User wants to remove a server from candy
+- User says "delete this server" or "remove this app"
+- User no longer needs a dev server registered
+
+This removes the server config. If the server is running, it will be stopped first.
+
+This MODIFIES CONFIGURATION - confirm with user before deregistering.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "Server name to remove"
+        }
+      },
+      required: ["name"]
+    },
+    annotations: {
+      title: "Deregister Dev Server",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false
+    }
+  },
+  {
+    name: "candy_portal_open",
+    description: `Open a Cloudflare tunnel (portal) for a dev server.
+
+USE THIS TOOL AUTONOMOUSLY when:
+- User wants to share their local app with someone
+- User says "make this public" or "create a tunnel"
+- User needs a public URL for their dev server
+
+Creates a temporary public URL via Cloudflare Tunnel (trycloudflare.com).
+The server must be running first.
+
+This STARTS AN EXTERNAL TUNNEL - confirm with user before opening.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "Server name to create portal for"
+        },
+        port: {
+          type: "number",
+          description: "Port to tunnel (required if server not registered)"
+        }
+      },
+      required: ["name"]
+    },
+    annotations: {
+      title: "Open Portal",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true
+    }
+  },
+  {
+    name: "candy_portal_close",
+    description: `Close a Cloudflare tunnel (portal).
+
+USE THIS TOOL AUTONOMOUSLY when:
+- User is done sharing their app
+- User says "close the tunnel" or "stop sharing"
+- User wants to take down the public URL
+
+Terminates the Cloudflare tunnel process.
+
+This STOPS AN EXTERNAL TUNNEL - prefer to confirm with user.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "Portal name to close"
+        }
+      },
+      required: ["name"]
+    },
+    annotations: {
+      title: "Close Portal",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false
+    }
+  },
+  {
+    name: "candy_portals",
+    description: `List all open Cloudflare tunnels (portals).
+
+USE THIS TOOL AUTONOMOUSLY when:
+- User asks about active tunnels or public URLs
+- User wants to see what's currently shared
+- You need to check if a portal exists before opening/closing
+
+Returns each portal's name, port, and public URL.
+
+This is a READ-ONLY operation - safe to call anytime without asking.`,
+    inputSchema: {
+      type: "object",
+      properties: {}
+    },
+    annotations: {
+      title: "List Portals",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    }
   }
 ]
 
@@ -265,6 +423,52 @@ async function handleStop(params: any): Promise<any> {
   return await daemonFetch(`/process/stop/${name}`, { method: "POST" })
 }
 
+async function handleRegister(params: any): Promise<any> {
+  const { name, cwd, cmd } = params
+  return await daemonFetch("/config", {
+    method: "POST",
+    body: JSON.stringify({ name, cwd, cmd })
+  })
+}
+
+async function handleDeregister(params: any): Promise<any> {
+  const { name } = params
+  // First stop the process if running
+  await daemonFetch(`/process/stop/${name}`, { method: "POST" }).catch(() => {})
+  // Then remove the config
+  return await daemonFetch(`/config/${name}`, { method: "DELETE" })
+}
+
+async function handlePortalOpen(params: any): Promise<any> {
+  const { name } = params
+  let { port } = params
+
+  // If no port provided, look it up from running processes
+  if (!port && name) {
+    const processesRes = await daemonFetch("/processes")
+    const proc = processesRes.processes?.[name]
+    if (proc?.port) {
+      port = proc.port
+    } else {
+      return { error: `Server '${name}' is not running or has no port. Start it first.` }
+    }
+  }
+
+  return await daemonFetch("/portal", {
+    method: "POST",
+    body: JSON.stringify({ name, port })
+  })
+}
+
+async function handlePortalClose(params: any): Promise<any> {
+  const { name } = params
+  return await daemonFetch(`/portal/close/${name}`, { method: "POST" })
+}
+
+async function handlePortals(): Promise<any> {
+  return await daemonFetch("/portals")
+}
+
 async function handleLogs(params: any): Promise<any> {
   const { name, mode = "tail", lines = 50, pattern } = params
   const logFile = `${LOGS_DIR}/${name}.log`
@@ -307,7 +511,6 @@ async function handleLogs(params: any): Promise<any> {
     } catch {}
 
     return {
-      candy: `Lazy dev server orchestrator. Hands out domains on .localhost TLD.`,
       server: {
         name,
         url: `https://${name}.localhost`,
@@ -369,6 +572,21 @@ async function handleRequest(request: MCPRequest): Promise<MCPResponse | null> {
             break
           case "candy_logs":
             result = await handleLogs(toolArgs)
+            break
+          case "candy_register":
+            result = await handleRegister(toolArgs)
+            break
+          case "candy_deregister":
+            result = await handleDeregister(toolArgs)
+            break
+          case "candy_portal_open":
+            result = await handlePortalOpen(toolArgs)
+            break
+          case "candy_portal_close":
+            result = await handlePortalClose(toolArgs)
+            break
+          case "candy_portals":
+            result = await handlePortals()
             break
           default:
             return {

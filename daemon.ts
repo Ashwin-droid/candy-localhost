@@ -210,6 +210,8 @@ const routes = new Map<string, number | string>()
 const portals = new Map<string, { proc: Subprocess | null, port: number, url?: string, pid?: number }>()
 const processes = new Map<string, ManagedProcess>()
 const serverConfigs = new Map<string, ServerConfig>()
+// Historical mapping: tunnel domain -> server name (persists after portal close)
+const tunnelHistory = new Map<string, string>()
 let caddyProc: Subprocess | null = null
 
 // Rolling token chains - per-client (session) amnesiac arrays
@@ -790,11 +792,25 @@ const syncCaddy = async () => {
   for (const [name, target] of routes) {
     const proxyTarget = typeof target === "number" ? `localhost:${target}` : target
     content += `${name}.localhost {
+  tls internal
   reverse_proxy ${proxyTarget}
   log
 }
 
 `
+  }
+
+  // Tunnel domains (trycloudflare.com) - route to local ports
+  for (const [name, { port, url }] of portals) {
+    if (url) {
+      const tunnelDomain = url.replace('https://', '')
+      content += `${tunnelDomain} {
+  reverse_proxy localhost:${port}
+  log
+}
+
+`
+    }
   }
 
   // Kill subdomains: <name>.kill.localhost and <name>.k.localhost
@@ -819,6 +835,7 @@ const syncCaddy = async () => {
 
   // Everything else goes to daemon (portal, unregistered domains, etc)
   content += `*.localhost {
+  tls internal
   reverse_proxy localhost:9999
   log
 }
@@ -859,7 +876,8 @@ const getCaddyStats = async () => {
     for (const line of logContent.trim().split("\n").filter(l => l.trim())) {
       try {
         const entry = JSON.parse(line)
-        const host = entry.request?.host?.replace(".localhost", "") || ""
+        // Strip port and .localhost suffix
+        const host = entry.request?.host?.replace(/:\d+$/, '').replace(".localhost", "") || ""
         if (!host) continue
         const current = caddyHits.get(host) || { total: 0, tunnel: 0, lastSeen: 0 }
         current.total++
@@ -945,7 +963,11 @@ const controlServer = Bun.serve({
 
     // === Web UI Routes (no token required, token is SSR'd) ===
     // Also allow SSE streams and portal status polling without token (read-only)
+    // Allow all GET requests from *.localhost domains (not direct API calls)
+    const hostHeader = req.headers.get("host") || ""
+    const isLocalhostDomain = hostHeader.endsWith(".localhost") || hostHeader.endsWith(".localhost:9999")
     const isWebRoute = req.method === "GET" && (
+      isLocalhostDomain ||
       url.pathname === "/" ||
       url.pathname === "/favicon.svg" ||
       url.pathname === "/register" ||
@@ -1069,7 +1091,23 @@ const controlServer = Bun.serve({
     // === Portal Management ===
 
     if (req.method === "POST" && url.pathname === "/portal") {
-      const { name, port, openBrowser } = await req.json() as { name?: string, port: number, openBrowser?: boolean }
+      const body = await req.json() as { name?: string, port?: number, openBrowser?: boolean }
+      let { name, port } = body
+      const { openBrowser } = body
+
+      // If no port provided but name is given, look up from running processes
+      if (!port && name) {
+        const proc = processes.get(name)
+        if (proc?.port) {
+          port = proc.port
+        } else {
+          return Response.json({ error: `Server '${name}' is not running or has no port.` }, { status: 400, headers: corsHeaders })
+        }
+      }
+
+      if (!port) {
+        return Response.json({ error: "Port is required" }, { status: 400, headers: corsHeaders })
+      }
 
       const existingPortal = [...portals.entries()].find(([, p]) => p.port === port)
       if (existingPortal) {
@@ -1099,7 +1137,7 @@ const controlServer = Bun.serve({
       }
 
       const cfProc = spawn({
-        cmd: ["cloudflared", "tunnel", "--url", `http://localhost:${port}`],
+        cmd: ["cloudflared", "tunnel", "--no-tls-verify", "--url", `https://${portalName}.localhost`],
         stdout: "pipe",
         stderr: "pipe",
       })
@@ -1125,6 +1163,8 @@ const controlServer = Bun.serve({
         if (portal) {
           portal.url = tunnelUrl
           portal.pid = cfProc.pid
+          // Track tunnel -> server mapping for stats history
+          tunnelHistory.set(tunnelUrl.replace('https://', ''), portalName)
           await syncCaddy()
         }
 
@@ -1182,7 +1222,7 @@ const controlServer = Bun.serve({
 
       const results = await Promise.all(batchTargets.map(async ({ name, port }) => {
         const proc = spawn({
-          cmd: ["cloudflared", "tunnel", "--url", `http://localhost:${port}`],
+          cmd: ["cloudflared", "tunnel", "--no-tls-verify", "--url", `https://${name}.localhost`],
           stdout: "pipe",
           stderr: "pipe",
         })
@@ -1212,6 +1252,8 @@ const controlServer = Bun.serve({
         if (url && portal) {
           portal.url = url
           portal.pid = pid
+          // Track tunnel -> server mapping for stats history
+          tunnelHistory.set(url.replace('https://', ''), name)
           log("PORTAL", `${name} -> ${url}`)
           successResults.push({ name, port, url })
         } else {
@@ -1289,52 +1331,62 @@ const controlServer = Bun.serve({
       const totalReqs = [...caddyHits.values()].reduce((a, b) => a + b.total, 0)
       const sessionStart = activityLog[0]?.time || new Date()
 
-      const stats: any[] = []
-      const sorted = [...caddyHits.entries()].sort((a, b) => b[1].total - a[1].total)
+      // Use tunnelHistory for tunnel -> server mapping (includes dead tunnels)
+      const tunnelToServer = tunnelHistory
 
-      for (const [domain, { total, tunnel }] of sorted) {
-        stats.push({
-          domain,
-          total,
-          tunnel,
-          isRegistered: routes.has(domain)
-        })
+      // Build domains list with children
+      const domainsMap = new Map<string, { name: string, total: number, alive: boolean, children: { name: string, url: string, total: number, alive: boolean }[] }>()
+
+      for (const [domain, { total }] of caddyHits) {
+        // Skip reserved names (portal, kill, etc)
+        if (isReserved(domain)) continue
+
+        const serverName = tunnelToServer.get(domain)
+        if (serverName) {
+          // This is a tunnel domain - add as child
+          if (!domainsMap.has(serverName)) {
+            const proc = processes.get(serverName)
+            domainsMap.set(serverName, {
+              name: serverName,
+              total: 0,
+              alive: proc?.status === 'running',
+              children: []
+            })
+          }
+          const portal = portals.get(serverName)
+          // Tunnel is alive only if it matches the current active portal URL
+          const isCurrentTunnel = portal?.url === `https://${domain}`
+          const tunnelAlive = isCurrentTunnel && !!(portal?.proc || (portal?.pid && await isPidRunning(portal.pid)))
+          const entry = domainsMap.get(serverName)!
+          entry.children.push({ name: domain, url: `https://${domain}`, total, alive: tunnelAlive })
+          entry.total += total
+        } else {
+          // Standalone domain
+          if (!domainsMap.has(domain)) {
+            const proc = processes.get(domain)
+            domainsMap.set(domain, {
+              name: domain,
+              total: 0,
+              alive: proc?.status === 'running',
+              children: []
+            })
+          }
+          domainsMap.get(domain)!.total += total
+        }
       }
+
+      // Sort children and convert to array
+      const domains = [...domainsMap.values()]
+        .map(d => {
+          d.children.sort((a, b) => b.total - a.total)
+          return d
+        })
+        .sort((a, b) => b.total - a.total)
 
       return Response.json({
         sessionStart: sessionStart.toISOString(),
         totalRequests: totalReqs,
-        domainCount: caddyHits.size,
-        stats
-      }, { headers: corsHeaders })
-    }
-
-    if (req.method === "GET" && url.pathname.startsWith("/stats/")) {
-      const domain = url.pathname.split("/")[2]
-      const caddyHits = await getCaddyStats()
-      const stats = caddyHits.get(domain) || { total: 0, tunnel: 0, lastSeen: 0 }
-
-      const isRegistered = routes.has(domain)
-      const hasPortal = portals.has(domain)
-      const portalUrl = portals.get(domain)?.url
-      const port = routes.get(domain)
-
-      const domainActivity = activityLog.filter(e => e.details.includes(domain))
-
-      return Response.json({
-        domain,
-        isRegistered,
-        port: isRegistered ? port : null,
-        hasPortal,
-        portalUrl: portalUrl || null,
-        totalRequests: stats.total,
-        tunnelRequests: stats.tunnel,
-        lastSeen: stats.lastSeen ? new Date(stats.lastSeen * 1000).toISOString() : null,
-        activity: domainActivity.slice(-10).map(e => ({
-          time: e.time.toISOString(),
-          action: e.action,
-          details: e.details
-        }))
+        domains
       }, { headers: corsHeaders })
     }
 
@@ -1647,7 +1699,7 @@ const controlServer = Bun.serve({
 
         // Start cloudflared tunnel
         const tunnelProc = spawn({
-          cmd: ['cloudflared', 'tunnel', '--url', `http://localhost:${proc.port}`],
+          cmd: ['cloudflared', 'tunnel', '--no-tls-verify', '--url', `https://${serverName}.localhost`],
           stdout: 'pipe',
           stderr: 'pipe',
         })
@@ -1674,6 +1726,8 @@ const controlServer = Bun.serve({
               const match = text.match(urlPattern)
               if (match && existingPortal) {
                 existingPortal.url = match[0]
+                // Track tunnel -> server mapping for stats history
+                tunnelHistory.set(match[0].replace('https://', ''), serverName)
                 auditLog('PORTAL_READY', `${serverName} -> ${match[0]}`, 'System')
                 await syncCaddy()
                 break
@@ -1699,13 +1753,14 @@ const controlServer = Bun.serve({
     }
 
     // Main routing logic for *.localhost
-    if (req.method === "GET" && (url.pathname === "/" || url.pathname === "")) {
+    if (req.method === "GET") {
       try {
         const domain = reqHost.replace(".localhost", "")
-        domainHits.set(domain, (domainHits.get(domain) || 0) + 1)
+        const isRootPath = url.pathname === "/" || url.pathname === ""
 
-        // Portal UI at portal.localhost
-        if (domain === "portal") {
+        // Portal UI at portal.localhost (only root)
+        if (domain === "portal" && isRootPath) {
+          domainHits.set(domain, (domainHits.get(domain) || 0) + 1)
           const rawHtml = await Bun.file(import.meta.dir + "/public/portal.html").text()
           const html = injectToken(rawHtml)
           return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
@@ -1715,19 +1770,24 @@ const controlServer = Bun.serve({
         const managed = processes.get(domain)
 
         if (managed) {
+          if (isRootPath) {
+            domainHits.set(domain, (domainHits.get(domain) || 0) + 1)
+          }
+
           // Process exists - check its status
           if (managed.status === 'running' && managed.port) {
             // This shouldn't happen - Caddy should be proxying
             // But just in case, redirect to actual port
-            return Response.redirect(`http://localhost:${managed.port}`, 302)
+            return Response.redirect(`http://localhost:${managed.port}${url.pathname}`, 302)
           }
 
           if (managed.status === 'starting') {
-            // Show starting page with streaming logs
+            // Show starting page with streaming logs (preserve path for refresh)
             const rawHtml = await Bun.file(import.meta.dir + "/public/starting.html").text()
             const html = injectVars(rawHtml, {
               name: domain,
               detectedPorts: managed.detectedPorts,
+              returnPath: url.pathname + url.search,
             })
             return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
           }
@@ -1746,20 +1806,25 @@ const controlServer = Bun.serve({
 
         // Check if there's a server config (lazy loading)
         if (serverConfigs.has(domain)) {
+          if (isRootPath) {
+            domainHits.set(domain, (domainHits.get(domain) || 0) + 1)
+          }
+
           // Spawn the server! (Page actor - direct browser access)
           try {
             const newProcess = await spawnProcess(domain, 'Page')
 
             if (newProcess.status === 'running' && newProcess.port) {
-              // Auto-detected port - redirect (Caddy will take over on next request)
-              return Response.redirect(`http://${domain}.localhost`, 302)
+              // Auto-detected port - redirect preserving path (Caddy will take over)
+              return Response.redirect(`https://${domain}.localhost${url.pathname}${url.search}`, 302)
             }
 
-            // Show starting page
+            // Show starting page (preserve path for refresh)
             const rawHtml = await Bun.file(import.meta.dir + "/public/starting.html").text()
             const html = injectVars(rawHtml, {
               name: domain,
               detectedPorts: newProcess.detectedPorts,
+              returnPath: url.pathname + url.search,
             })
             return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
           } catch (e) {
@@ -1767,8 +1832,13 @@ const controlServer = Bun.serve({
           }
         }
 
-        // No config exists - show candy/terminal page with mode toggle
-        // (supports both Quick port mode and Lazy Server mode)
+        // No config exists - redirect non-root paths to root for registration
+        if (!isRootPath) {
+          return Response.redirect(`https://${domain}.localhost/`, 302)
+        }
+
+        // Show candy/terminal page with mode toggle (registration screen)
+        domainHits.set(domain, (domainHits.get(domain) || 0) + 1)
         pageViews++
         let showDark = Math.random() < 0.15
         if (!showDark && pageViews >= 10 && !darkShownThisCycle) {
@@ -1788,11 +1858,6 @@ const controlServer = Bun.serve({
       } catch (e) {
         return new Response("registration terminal offline: " + e, { status: 500 })
       }
-    }
-
-    // Redirect other paths to root
-    if (req.method === "GET") {
-      return Response.redirect(url.origin + "/", 302)
     }
 
     return Response.json({ error: "not found" }, { status: 404, headers: corsHeaders })

@@ -170,6 +170,7 @@ interface ManagedProcess {
   exitCode: number | null
   logFile: string
   detectedPorts: number[]  // All ports detected during startup
+  terminal: any | null  // Bun.Terminal reference for PTY input
 }
 
 // ============================================================================
@@ -183,6 +184,7 @@ const CADDYFILE = `${CADDY_CONFIG_DIR}/Caddyfile`
 const CADDY_LOG = `${CADDY_CONFIG_DIR}/access.log`
 const PID_FILE = `${CADDY_CONFIG_DIR}/candy.pid`
 const SERVERS_CONFIG = `${CANDY_CONFIG_DIR}/servers.json`
+const MCP_SECRET_FILE = `${CANDY_CONFIG_DIR}/mcp-secret`
 const LOGS_DIR = "/tmp/candy-logs"
 const AUDIT_LOG = `${LOGS_DIR}/_audit.log`
 
@@ -226,6 +228,33 @@ setInterval(() => {
     if (data.created < cutoff) sessionTokens.delete(sessionId)
   }
 }, 60 * 60 * 1000) // every hour
+
+// MCP Authentication - bootstrap secret + session API keys
+// The daemon writes a secret to MCP_SECRET_FILE on startup
+// MCP reads it, exchanges for a session API key via /mcp/auth
+// API key is valid for the daemon's lifetime (no rolling)
+let mcpBootstrapSecret: string | null = null
+const mcpApiKeys = new Set<string>()
+
+const initMcpAuth = async () => {
+  mcpBootstrapSecret = crypto.randomUUID()
+  await $`mkdir -p ${CANDY_CONFIG_DIR}`.quiet().nothrow()
+  await Bun.write(MCP_SECRET_FILE, mcpBootstrapSecret)
+  // Restrict file permissions to owner only
+  await $`chmod 600 ${MCP_SECRET_FILE}`.quiet().nothrow()
+  console.log(`\x1b[90mMCP auth initialized\x1b[0m`)
+}
+
+const validateMcpApiKey = (apiKey: string): boolean => {
+  return mcpApiKeys.has(apiKey)
+}
+
+const exchangeMcpSecret = (secret: string): string | null => {
+  if (secret !== mcpBootstrapSecret) return null
+  const apiKey = `mcp_${crypto.randomUUID()}`
+  mcpApiKeys.add(apiKey)
+  return apiKey
+}
 
 // Generate a random token value
 const generateTokenValue = () => crypto.randomUUID()
@@ -336,10 +365,26 @@ const auditLog = async (action: string, details: string, actor: Actor = 'System'
   } catch {}
 }
 
-// Strip ANSI escape codes from text
+// Strip ANSI escape codes and terminal control sequences from text
 const stripAnsi = (text: string): string => {
-  // eslint-disable-next-line no-control-regex
-  return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+  return text
+    // Standard ANSI escape sequences (colors, cursor, clear, etc)
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')
+    // OSC sequences (title, hyperlinks, etc): ESC ] ... BEL or ESC ] ... ESC \
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    // DCS, PM, APC sequences
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b[PX^_][^\x1b]*\x1b\\/g, '')
+    // Simple escape sequences (like ESC c for reset)
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b[cDEHMNOPVWXZ78=>]/g, '')
+    // Carriage returns without newlines (terminal overwrites)
+    .replace(/\r(?!\n)/g, '')
+    // Bell character
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x07/g, '')
 }
 
 // Write to process log file
@@ -465,7 +510,7 @@ const extractPorts = (output: string): number[] => {
   return [...ports]
 }
 
-// Spawn a dev server process
+// Spawn a dev server process using Bun.Terminal for proper PTY support
 const spawnProcess = async (name: string, actor: Actor = 'System'): Promise<ManagedProcess> => {
   const config = serverConfigs.get(name)
   if (!config) {
@@ -487,57 +532,58 @@ const spawnProcess = async (name: string, actor: Actor = 'System'): Promise<Mana
     exitCode: null,
     logFile,
     detectedPorts: [],
+    terminal: null,
   }
 
   processes.set(name, managed)
   auditLog('PROCESS_START', `${name}: ${config.cmd}`, actor)
 
-  // Spawn the process with shell
-  const proc = spawn({
-    cmd: ['bash', '-c', config.cmd],
-    cwd: config.cwd,
-    stdout: 'pipe',
-    stderr: 'pipe',
-    env: { ...process.env, FORCE_COLOR: '1' },
-  })
-
-  managed.proc = proc
-  managed.pid = proc.pid
-
-  // Capture stdout
-  const stdoutReader = proc.stdout.getReader()
-  const stderrReader = proc.stderr.getReader()
-  const decoder = new TextDecoder()
-
   // Collected output for port detection
   let collectedOutput = ''
+  let lastLoggedLine = ''
 
-  const captureStream = async (reader: ReadableStreamDefaultReader<Uint8Array>, stream: string) => {
-    try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        const text = stripAnsi(decoder.decode(value))
+  // Spawn bash with PTY using Bun.Terminal API (v1.3.5+)
+  // This gives us a real pseudo-terminal so .bashrc loads fully
+  const proc = spawn({
+    cmd: ['bash', '-i'],
+    cwd: config.cwd,
+    env: { ...process.env, FORCE_COLOR: '1', TERM: 'xterm-256color' },
+    terminal: {
+      cols: 120,
+      rows: 30,
+      async data(terminal, data) {
+        const text = stripAnsi(new TextDecoder().decode(data))
         collectedOutput += text
 
-        // Write to log file
+        // Write to log file - split on newlines, strip carriage returns, filter empty
         const timestamp = new Date().toISOString()
-        const lines = text.split('\n').filter(l => l.length > 0)
+        const lines = text
+          .split(/\r?\n/)
+          .map(l => l.replace(/\r/g, '').trim())
+          .filter(l => l.length > 0)
         for (const line of lines) {
-          await processLog(name, `[${timestamp}] [${stream}] ${line}\n`)
+          // Skip duplicate consecutive lines (bash echo)
+          if (line === lastLoggedLine) continue
+          lastLoggedLine = line
+          await processLog(name, `[${timestamp}] [pty] ${line}\n`)
         }
 
         // Extract ports during starting phase
         if (managed.status === 'starting') {
           managed.detectedPorts = extractPorts(collectedOutput)
         }
-      }
-    } catch {}
-  }
+      },
+    },
+  })
 
-  // Start capturing both streams
-  captureStream(stdoutReader, 'stdout')
-  captureStream(stderrReader, 'stderr')
+  managed.proc = proc
+  managed.pid = proc.pid
+  managed.terminal = proc.terminal
+
+  // Send the command to the interactive shell
+  // Small delay to let bash initialize
+  await new Promise(r => setTimeout(r, 100))
+  managed.terminal.write(`${config.cmd}\n`)
 
   // Handle process exit
   proc.exited.then((exitCode) => {
@@ -545,6 +591,10 @@ const spawnProcess = async (name: string, actor: Actor = 'System'): Promise<Mana
     const newStatus = exitCode === 0 ? 'dead' : 'errored'
     managed.status = newStatus
     managed.proc = null
+    if (managed.terminal) {
+      try { managed.terminal.close() } catch {}
+      managed.terminal = null
+    }
     auditLog('STATE', `${name}: starting -> ${newStatus} (exit ${exitCode})`, 'System')
 
     // Don't remove from processes map - keep for crash recovery UI
@@ -601,19 +651,42 @@ const spawnProcess = async (name: string, actor: Actor = 'System'): Promise<Mana
   return managed
 }
 
+// Kill entire process tree (parent + all descendants)
+const killProcessTree = async (pid: number) => {
+  // Get all descendant PIDs using pgrep
+  const descendants = await $`pgrep -P ${pid}`.quiet().nothrow().text()
+  const childPids = descendants.trim().split('\n').filter(p => p.trim())
+
+  // Recursively kill children first
+  for (const childPid of childPids) {
+    await killProcessTree(parseInt(childPid))
+  }
+
+  // Then kill this process
+  await $`kill -9 ${pid}`.quiet().nothrow()
+}
+
 // Stop a managed process
 const stopProcess = async (name: string, actor: Actor = 'System'): Promise<boolean> => {
   const managed = processes.get(name)
   if (!managed) return false
 
-  if (managed.proc) {
+  // Kill entire process tree to ensure npm/vite children are killed
+  if (managed.pid) {
+    await killProcessTree(managed.pid)
+  } else if (managed.proc) {
     managed.proc.kill()
-  } else if (managed.pid) {
-    await $`kill -9 ${managed.pid}`.quiet().nothrow()
+  }
+
+  // Close terminal if still open
+  if (managed.terminal) {
+    try { managed.terminal.close() } catch {}
+    managed.terminal = null
   }
 
   managed.status = 'dead'
   managed.exitCode = 0
+  managed.proc = null
   auditLog('PROCESS_STOP', name, actor)
 
   // Remove route
@@ -945,12 +1018,6 @@ const controlServer = Bun.serve({
       return new Response(null, { headers: corsHeaders })
     }
 
-    // === Session Creation Endpoint (no auth required - for CLI) ===
-    if (req.method === "POST" && url.pathname === "/session") {
-      const token = createSession()
-      return Response.json({ token }, { headers: corsHeaders })
-    }
-
     // === Token Refresh Endpoint (no auth required) ===
     if (req.method === "POST" && url.pathname === "/token") {
       const body = await req.json() as { token: string }
@@ -959,6 +1026,17 @@ const controlServer = Bun.serve({
         return Response.json({ error: "Invalid token. Session expired." }, { status: 401, headers: corsHeaders })
       }
       return Response.json({ token: newToken }, { headers: corsHeaders })
+    }
+
+    // === MCP Auth Endpoint (exchange bootstrap secret for API key) ===
+    if (req.method === "POST" && url.pathname === "/mcp/auth") {
+      const body = await req.json() as { secret: string }
+      const apiKey = exchangeMcpSecret(body.secret)
+      if (!apiKey) {
+        return Response.json({ error: "Invalid secret" }, { status: 401, headers: corsHeaders })
+      }
+      auditLog('MCP_AUTH', 'MCP client authenticated', 'AI')
+      return Response.json({ apiKey }, { headers: corsHeaders })
     }
 
     // === Web UI Routes (no token required, token is SSR'd) ===
@@ -977,7 +1055,10 @@ const controlServer = Bun.serve({
     )
 
     // === API Routes require token validation ===
-    if (!isWebRoute) {
+    // MCP uses X-Candy-API-Key header (obtained via /mcp/auth)
+    const mcpApiKey = req.headers.get("X-Candy-API-Key")
+    const isMCP = mcpApiKey && validateMcpApiKey(mcpApiKey)
+    if (!isWebRoute && !isMCP) {
       const token = req.headers.get("X-Candy-Token")
       if (!token || !consumeToken(token)) {
         return unauthorizedResponse(corsHeaders)
@@ -1497,6 +1578,57 @@ const controlServer = Bun.serve({
       return Response.json({ success }, { headers: corsHeaders })
     }
 
+    // Send input to process PTY (interactive terminal input)
+    if (req.method === "POST" && url.pathname.startsWith("/process/input/")) {
+      const name = url.pathname.split("/")[3]
+      const managed = processes.get(name)
+      if (!managed) {
+        return Response.json({ success: false, error: `Process not found: ${name}` }, { status: 404, headers: corsHeaders })
+      }
+      if (!managed.terminal) {
+        return Response.json({ success: false, error: `Process has no active terminal: ${name}` }, { status: 400, headers: corsHeaders })
+      }
+
+      const { input, key } = await req.json() as { input?: string, key?: string }
+
+      // Support both raw input and special keys
+      if (input !== undefined) {
+        managed.terminal.write(input)
+        const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'AI'
+        auditLog('PTY_INPUT', `${name}: ${input.length} chars`, actor)
+      } else if (key) {
+        // Handle special keys: enter, ctrl+c, ctrl+d, etc.
+        const keyMap: Record<string, string> = {
+          'enter': '\n',
+          'return': '\n',
+          'ctrl+c': '\x03',
+          'ctrl+d': '\x04',
+          'ctrl+z': '\x1a',
+          'ctrl+l': '\x0c',
+          'tab': '\t',
+          'escape': '\x1b',
+          'esc': '\x1b',
+          'backspace': '\x7f',
+          'up': '\x1b[A',
+          'down': '\x1b[B',
+          'right': '\x1b[C',
+          'left': '\x1b[D',
+        }
+        const keyCode = keyMap[key.toLowerCase()]
+        if (keyCode) {
+          managed.terminal.write(keyCode)
+          const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'AI'
+          auditLog('PTY_KEY', `${name}: ${key}`, actor)
+        } else {
+          return Response.json({ success: false, error: `Unknown key: ${key}` }, { status: 400, headers: corsHeaders })
+        }
+      } else {
+        return Response.json({ success: false, error: 'Provide "input" (string) or "key" (special key name)' }, { status: 400, headers: corsHeaders })
+      }
+
+      return Response.json({ success: true }, { headers: corsHeaders })
+    }
+
     // === Config Management API ===
 
     if (req.method === "GET" && url.pathname === "/configs") {
@@ -1878,6 +2010,9 @@ try {
 
 // Load server configs
 await loadServerConfigs()
+
+// Initialize MCP auth (write bootstrap secret to file)
+await initMcpAuth()
 
 // Create fresh Caddyfile (don't load previous routes - clean slate)
 await syncCaddy()

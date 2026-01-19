@@ -461,8 +461,12 @@
       <div class="logs-panel">
         <div class="panel-header">
           <span class="panel-title">Server Output</span>
-          <span class="panel-badge">LIVE</span>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <span class="panel-badge" style="background: var(--magenta-glow); color: var(--magenta); border: 1px solid var(--magenta-dim);">PTY</span>
+            <span class="panel-badge">LIVE</span>
+          </div>
         </div>
+        <div style="font-size: 0.65rem; color: var(--text-muted); padding: 0.5rem 1rem; background: var(--bg-elevated); border-bottom: 1px solid var(--border);">keystrokes go directly to terminal</div>
         <div class="logs-content" id="logsContent"></div>
       </div>
 
@@ -631,6 +635,61 @@
     eventSource.onerror = () => {
       document.getElementById('statusText').textContent = 'Connection lost';
     };
+
+    // PTY input - send all keystrokes to terminal
+    document.addEventListener('keydown', async (e) => {
+      // Don't capture if typing in an input field
+      if (e.target.tagName === 'INPUT') return;
+
+      e.preventDefault();
+
+      // Build the input to send
+      let input = null;
+      let key = null;
+
+      // Handle Ctrl combinations
+      if (e.ctrlKey) {
+        const ctrlKeys = {
+          'c': 'ctrl+c',
+          'd': 'ctrl+d',
+          'z': 'ctrl+z',
+          'l': 'ctrl+l',
+        };
+        if (ctrlKeys[e.key.toLowerCase()]) {
+          key = ctrlKeys[e.key.toLowerCase()];
+        }
+      } else if (e.key === 'Enter') {
+        input = '\n';
+      } else if (e.key === 'Tab') {
+        key = 'tab';
+      } else if (e.key === 'Backspace') {
+        key = 'backspace';
+      } else if (e.key === 'ArrowUp') {
+        key = 'up';
+      } else if (e.key === 'ArrowDown') {
+        key = 'down';
+      } else if (e.key === 'ArrowLeft') {
+        key = 'left';
+      } else if (e.key === 'ArrowRight') {
+        key = 'right';
+      } else if (e.key.length === 1) {
+        // Regular character
+        input = e.key;
+      }
+
+      if (input !== null || key !== null) {
+        try {
+          const body = key ? { key } : { input };
+          await apiCall(`/process/input/${serverName}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          });
+        } catch (err) {
+          console.error('PTY input failed:', err);
+        }
+      }
+    });
   </script>
 </body>
 </html>

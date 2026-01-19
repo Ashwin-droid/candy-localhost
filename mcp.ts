@@ -337,6 +337,54 @@ This is a READ-ONLY operation - safe to call anytime without asking.`,
       idempotentHint: true,
       openWorldHint: false
     }
+  },
+  {
+    name: "candy_input",
+    description: `Send input to a running dev server's terminal (PTY).
+
+USE THIS TOOL AUTONOMOUSLY when:
+- Server prompts for input (e.g. "press h for help", "continue? y/n")
+- User asks to interact with the running process
+- You need to send keyboard commands to the server (e.g. restart vite with 'r')
+- User wants to answer prompts in the terminal
+
+Supports:
+- Raw text input (including newlines)
+- Special keys: enter, ctrl+c, ctrl+d, ctrl+z, tab, escape, backspace, arrow keys
+
+Examples:
+- Send "h" + enter to vite for help: { "input": "h\\n" }
+- Send ctrl+c to interrupt: { "key": "ctrl+c" }
+- Restart vite: { "input": "r\\n" }
+- Answer yes to prompt: { "input": "y\\n" }
+
+This SENDS INPUT TO A PROCESS - use when server needs interaction.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "Server name to send input to"
+        },
+        input: {
+          type: "string",
+          description: "Raw text to send (use \\n for enter)"
+        },
+        key: {
+          type: "string",
+          enum: ["enter", "ctrl+c", "ctrl+d", "ctrl+z", "ctrl+l", "tab", "escape", "backspace", "up", "down", "left", "right"],
+          description: "Special key to send (alternative to input)"
+        }
+      },
+      required: ["name"]
+    },
+    annotations: {
+      title: "Send Terminal Input",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false
+    }
   }
 ]
 
@@ -344,42 +392,47 @@ This is a READ-ONLY operation - safe to call anytime without asking.`,
 // Daemon API Client
 // ============================================================================
 
-let sessionToken: string | null = null
+const MCP_SECRET_FILE = `${process.env.HOME}/.config/candy/mcp-secret`
+let apiKey: string | null = null
 
-async function getToken(): Promise<string> {
-  if (!sessionToken) {
-    const res = await fetch(`${DAEMON_URL}/session`, { method: "POST" })
-    const data = await res.json() as { token: string }
-    sessionToken = data.token
+async function getApiKey(): Promise<string> {
+  if (apiKey) return apiKey
+
+  // Read bootstrap secret from file
+  const secretFile = Bun.file(MCP_SECRET_FILE)
+  if (!await secretFile.exists()) {
+    throw new Error("MCP secret file not found. Is the candy daemon running?")
   }
-  return sessionToken
-}
+  const secret = (await secretFile.text()).trim()
 
-async function refreshToken(): Promise<string> {
-  const res = await fetch(`${DAEMON_URL}/token`, {
+  // Exchange secret for API key
+  const res = await fetch(`${DAEMON_URL}/mcp/auth`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token: sessionToken })
+    body: JSON.stringify({ secret })
   })
-  const data = await res.json() as { token: string }
-  sessionToken = data.token
-  return sessionToken
+
+  if (!res.ok) {
+    throw new Error("Failed to authenticate with daemon. Secret may be stale - restart daemon?")
+  }
+
+  const data = await res.json() as { apiKey: string }
+  apiKey = data.apiKey
+  return apiKey
 }
 
 async function daemonFetch(path: string, options: RequestInit = {}): Promise<any> {
-  const token = await getToken()
+  const key = await getApiKey()
 
   const res = await fetch(`${DAEMON_URL}${path}`, {
     ...options,
     headers: {
       ...options.headers,
-      "X-Candy-Token": token,
-      "X-Candy-Actor": "AI",
+      "X-Candy-API-Key": key,
       "Content-Type": "application/json"
     }
   })
 
-  await refreshToken()
   return res.json()
 }
 
@@ -467,6 +520,18 @@ async function handlePortalClose(params: any): Promise<any> {
 
 async function handlePortals(): Promise<any> {
   return await daemonFetch("/portals")
+}
+
+async function handleInput(params: any): Promise<any> {
+  const { name, input, key } = params
+  const body: any = {}
+  if (input !== undefined) body.input = input
+  if (key !== undefined) body.key = key
+
+  return await daemonFetch(`/process/input/${name}`, {
+    method: "POST",
+    body: JSON.stringify(body)
+  })
 }
 
 async function handleLogs(params: any): Promise<any> {
@@ -587,6 +652,9 @@ async function handleRequest(request: MCPRequest): Promise<MCPResponse | null> {
             break
           case "candy_portals":
             result = await handlePortals()
+            break
+          case "candy_input":
+            result = await handleInput(toolArgs)
             break
           default:
             return {

@@ -327,7 +327,10 @@
     <div class="logs-panel">
       <div class="panel-header">
         <span class="panel-title">Error Logs</span>
-        <span class="panel-badge">LAST 100 LINES</span>
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <span class="panel-badge" style="background: rgba(0, 229, 255, 0.15); color: var(--cyan); border: 1px solid rgba(0, 229, 255, 0.3);" title="keystrokes go directly to terminal">PTY ACTIVE</span>
+          <span class="panel-badge">LAST 100 LINES</span>
+        </div>
       </div>
       <div class="logs-content" id="logsContent">Loading logs...</div>
     </div>
@@ -434,6 +437,58 @@
     }
 
     loadLogs();
+
+    // PTY input - send keystrokes directly to terminal
+    document.addEventListener('keydown', async (e) => {
+      // Don't capture if user is in a form field or button
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'BUTTON') return;
+
+      e.preventDefault();
+
+      let body = {};
+
+      // Handle special keys
+      if (e.ctrlKey && e.key.toLowerCase() === 'c') {
+        body = { key: 'ctrl+c' };
+      } else if (e.ctrlKey && e.key.toLowerCase() === 'd') {
+        body = { key: 'ctrl+d' };
+      } else if (e.ctrlKey && e.key.toLowerCase() === 'z') {
+        body = { key: 'ctrl+z' };
+      } else if (e.ctrlKey && e.key.toLowerCase() === 'l') {
+        body = { key: 'ctrl+l' };
+      } else if (e.key === 'Enter') {
+        body = { key: 'enter' };
+      } else if (e.key === 'Tab') {
+        body = { key: 'tab' };
+      } else if (e.key === 'Escape') {
+        body = { key: 'escape' };
+      } else if (e.key === 'Backspace') {
+        body = { key: 'backspace' };
+      } else if (e.key === 'ArrowUp') {
+        body = { key: 'up' };
+      } else if (e.key === 'ArrowDown') {
+        body = { key: 'down' };
+      } else if (e.key === 'ArrowLeft') {
+        body = { key: 'left' };
+      } else if (e.key === 'ArrowRight') {
+        body = { key: 'right' };
+      } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        // Regular character
+        body = { input: e.key };
+      } else {
+        return; // Ignore other keys
+      }
+
+      try {
+        await apiCall(`/process/input/${serverName}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+      } catch (err) {
+        console.error('Failed to send PTY input:', err);
+      }
+    });
 
     async function restartServer() {
       const btn = document.getElementById('restartBtn');

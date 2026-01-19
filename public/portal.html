@@ -765,8 +765,8 @@
       </div>
     </div>
     <div class="mode-switch">
-      <button class="mode-btn active" data-mode="cli">CLI</button>
-      <button class="mode-btn" data-mode="gui">GUI</button>
+      <button class="mode-btn" data-mode="cli">CLI</button>
+      <button class="mode-btn active" data-mode="gui">GUI</button>
     </div>
     <div class="status-indicator">
       <div class="status-dot" id="status-dot"></div>
@@ -776,7 +776,7 @@
 
   <main>
     <!-- CLI Panel -->
-    <div id="cli-panel" class="panel active">
+    <div id="cli-panel" class="panel">
       <div class="terminal" id="terminal">
         <div class="welcome">
           <pre class="ascii-logo">░█▀▀░█▀█░█▀█░█▀▄░█░█
@@ -793,7 +793,7 @@
     </div>
 
     <!-- GUI Panel -->
-    <div id="gui-panel" class="panel">
+    <div id="gui-panel" class="panel active">
       <div class="gui-content">
         <!-- Stats Card -->
         <div class="card">
@@ -954,7 +954,9 @@
           <span style="color: var(--cyan);">❯</span>
           <span id="logs-modal-title">Logs</span>
           <span id="logs-modal-status" class="process-status" style="margin-left: 0.25rem;"></span>
+          <span style="font-size: 0.6rem; color: var(--magenta); background: var(--magenta-glow); padding: 0.2rem 0.5rem; border-radius: 3px; margin-left: 0.5rem; animation: pulse 2s ease-in-out infinite;">PTY ACTIVE</span>
         </div>
+        <div style="font-size: 0.65rem; color: var(--text-muted); margin-top: 0.25rem;">keystrokes go directly to terminal • Esc to close</div>
         <div style="display: flex; gap: 0.75rem; align-items: center;">
           <label style="font-size: 0.7rem; color: var(--text-dim); display: flex; align-items: center; gap: 0.35rem; cursor: pointer;">
             <input type="checkbox" id="logs-autoscroll" checked style="margin: 0; accent-color: var(--cyan);">
@@ -1523,9 +1525,8 @@ Misc:
     }
 
     // Init
-    checkStatus();
-    setInterval(checkStatus, 10000);
-    cliInput.focus();
+    refreshAll();
+    setInterval(refreshAll, 5000); // Refresh every 5s
 
     // Click outside modal to close
     document.getElementById('add-route-modal').addEventListener('click', (e) => {
@@ -1751,10 +1752,67 @@ Misc:
       if (e.target.id === 'logs-modal') hideLogs();
     });
 
-    // Close logs modal on Escape
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && document.getElementById('logs-modal').style.display === 'flex') {
+    // PTY input - send all keystrokes to terminal when logs modal is open
+    document.addEventListener('keydown', async (e) => {
+      const logsModal = document.getElementById('logs-modal');
+      if (logsModal.style.display !== 'flex' || !currentLogsProcess) return;
+
+      // Escape closes modal
+      if (e.key === 'Escape') {
         hideLogs();
+        return;
+      }
+
+      // Don't capture if typing in checkbox
+      if (e.target.type === 'checkbox') return;
+
+      e.preventDefault();
+
+      // Build the input to send
+      let input = null;
+      let key = null;
+
+      // Handle Ctrl combinations
+      if (e.ctrlKey) {
+        const ctrlKeys = {
+          'c': 'ctrl+c',
+          'd': 'ctrl+d',
+          'z': 'ctrl+z',
+          'l': 'ctrl+l',
+        };
+        if (ctrlKeys[e.key.toLowerCase()]) {
+          key = ctrlKeys[e.key.toLowerCase()];
+        }
+      } else if (e.key === 'Enter') {
+        input = '\n';
+      } else if (e.key === 'Tab') {
+        key = 'tab';
+      } else if (e.key === 'Backspace') {
+        key = 'backspace';
+      } else if (e.key === 'ArrowUp') {
+        key = 'up';
+      } else if (e.key === 'ArrowDown') {
+        key = 'down';
+      } else if (e.key === 'ArrowLeft') {
+        key = 'left';
+      } else if (e.key === 'ArrowRight') {
+        key = 'right';
+      } else if (e.key.length === 1) {
+        // Regular character
+        input = e.key;
+      }
+
+      if (input !== null || key !== null) {
+        try {
+          const body = key ? { key } : { input };
+          await apiCall(`/process/input/${currentLogsProcess}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          });
+        } catch (err) {
+          console.error('PTY input failed:', err);
+        }
       }
     });
 

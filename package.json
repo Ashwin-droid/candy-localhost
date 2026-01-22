@@ -8,6 +8,7 @@
     "daemon": "bun run daemon.ts",
     "dev": "bun run --watch daemon.ts",
     "mcp": "bun run mcp.ts",
+    "test": "bun test",
     "install-service": "sudo cp candy-localhost.service /etc/systemd/system/candy-localhost@.service && sudo systemctl daemon-reload && echo 'Service installed. Enable with: sudo systemctl enable --now candy-localhost@$USER'"
   },
   "devDependencies": {

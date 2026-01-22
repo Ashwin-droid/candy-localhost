@@ -618,10 +618,44 @@ const spawnProcess = async (name: string, actor: Actor = 'System'): Promise<Mana
   let collectedOutput = ''
   let lastLoggedLine = ''
 
+  const startPortDetection = () => {
+    const startTime = Date.now()
+    const checkInterval = setInterval(async () => {
+      const elapsed = Date.now() - startTime
+
+      // Stop checking if process is no longer starting
+      if (managed.status !== 'starting') {
+        clearInterval(checkInterval)
+        return
+      }
+
+      // If exactly one port detected, bind and mark running
+      if (managed.detectedPorts.length === 1) {
+        managed.port = managed.detectedPorts[0]
+        managed.status = 'running'
+        auditLog('STATE', `${name}: starting -> running (port ${managed.port})`, 'System')
+        clearInterval(checkInterval)
+
+        // Add route and sync
+        routes.set(name, managed.port)
+        await syncCaddy()
+        auditLog('ROUTE_AUTO', `${name}.localhost -> :${managed.port}`)
+        return
+      }
+
+      // Timeout: keep starting state (user can manually select a port if multiple detected)
+      if (elapsed >= PORT_DETECTION_TIMEOUT) {
+        clearInterval(checkInterval)
+      }
+    }, 100)
+  }
+
   // Spawn bash with PTY using Bun.Terminal API (v1.3.5+)
-  // This gives us a real pseudo-terminal so .bashrc loads fully
+  // Use `-i -c <cmd>` so:
+  // - .bashrc loads (interactive)
+  // - the bash process exits when the command exits (so we can mark status dead/errored)
   const proc = spawn({
-    cmd: ['bash', '-i'],
+    cmd: ['bash', '-ic', config.cmd],
     cwd: config.cwd,
     env: { ...process.env, FORCE_COLOR: '1', TERM: 'xterm-256color' },
     terminal: {
@@ -656,10 +690,8 @@ const spawnProcess = async (name: string, actor: Actor = 'System'): Promise<Mana
   managed.pid = proc.pid
   managed.terminal = proc.terminal
 
-  // Send the command to the interactive shell
-  // Small delay to let bash initialize
-  await new Promise(r => setTimeout(r, 100))
-  managed.terminal.write(`${config.cmd}\n`)
+  // Kick off port detection asynchronously; do not block tool calls/UI on this.
+  startPortDetection()
 
   // Handle process exit
   proc.exited.then((exitCode) => {
@@ -673,6 +705,7 @@ const spawnProcess = async (name: string, actor: Actor = 'System'): Promise<Mana
     const newStatus = exitCode === 0 ? 'dead' : 'errored'
     managed.status = newStatus
     managed.proc = null
+    managed.pid = null
     if (managed.terminal) {
       try { managed.terminal.close() } catch {}
       managed.terminal = null
@@ -682,70 +715,66 @@ const spawnProcess = async (name: string, actor: Actor = 'System'): Promise<Mana
     // Don't remove from processes map - keep for crash recovery UI
   })
 
-  // Wait for port detection (10s timeout)
-  await new Promise<void>((resolve) => {
-    const startTime = Date.now()
-    const checkInterval = setInterval(() => {
-      const elapsed = Date.now() - startTime
-
-      // Check if process died
-      if (managed.status !== 'starting') {
-        clearInterval(checkInterval)
-        resolve()
-        return
-      }
-
-      // Check for detected ports
-      if (managed.detectedPorts.length === 1) {
-        // Single port detected - auto-bind!
-        managed.port = managed.detectedPorts[0]
-        managed.status = 'running'
-        auditLog('STATE', `${name}: starting -> running (port ${managed.port})`, 'System')
-        clearInterval(checkInterval)
-        resolve()
-        return
-      }
-
-      // Timeout reached
-      if (elapsed >= PORT_DETECTION_TIMEOUT) {
-        clearInterval(checkInterval)
-        // Don't change status if we have multiple or no ports
-        // User will need to select manually
-        if (managed.detectedPorts.length > 0) {
-          // Multiple ports - leave in starting state for user selection
-          managed.status = 'starting'
-        } else if (managed.status === 'starting') {
-          // No ports detected but process still running
-          managed.status = 'starting'
-        }
-        resolve()
-      }
-    }, 100)
-  })
-
-  // If port was detected, add route
-  if (managed.port && managed.status === 'running') {
-    routes.set(name, managed.port)
-    await syncCaddy()
-    auditLog('ROUTE_AUTO', `${name}.localhost -> :${managed.port}`)
-  }
-
   return managed
 }
 
-// Kill entire process tree (parent + all descendants)
-const killProcessTree = async (pid: number) => {
-  // Get all descendant PIDs using pgrep
-  const descendants = await $`pgrep -P ${pid}`.quiet().nothrow().text()
-  const childPids = descendants.trim().split('\n').filter(p => p.trim())
+const parsePidList = (text: string): number[] =>
+  text
+    .split('\n')
+    .map(p => p.trim())
+    .filter(Boolean)
+    .map(p => parseInt(p, 10))
+    .filter(p => Number.isFinite(p) && p > 0)
 
-  // Recursively kill children first
-  for (const childPid of childPids) {
-    await killProcessTree(parseInt(childPid))
+const getDirectChildPids = async (pid: number): Promise<number[]> => {
+  const stdout = await $`pgrep -P ${pid}`.quiet().nothrow().text()
+  return parsePidList(stdout)
+}
+
+// List entire process tree (children first, then parent).
+// This is safer than process-group kills because npm/node often spawn into their own PGID.
+const getProcessTreePids = async (pid: number, visited = new Set<number>()): Promise<number[]> => {
+  if (!Number.isFinite(pid) || pid <= 0) return []
+  if (visited.has(pid)) return []
+  visited.add(pid)
+
+  const children = await getDirectChildPids(pid)
+  const ordered: number[] = []
+  for (const child of children) {
+    ordered.push(...await getProcessTreePids(child, visited))
+  }
+  ordered.push(pid)
+  return ordered
+}
+
+const terminateProcessTree = async (pid: number, graceMs = 5000): Promise<void> => {
+  const pids = await getProcessTreePids(pid)
+  if (pids.length === 0) return
+
+  // First: try graceful shutdown
+  for (const p of pids) {
+    await $`kill -TERM ${p}`.quiet().nothrow()
   }
 
-  // Then kill this process
-  await $`kill -9 ${pid}`.quiet().nothrow()
+  const deadline = Date.now() + graceMs
+  while (Date.now() < deadline) {
+    let anyRunning = false
+    for (const p of pids) {
+      if (await isPidRunning(p)) {
+        anyRunning = true
+        break
+      }
+    }
+    if (!anyRunning) return
+    await new Promise(r => setTimeout(r, 200))
+  }
+
+  // Fallback: hard kill anything still running
+  for (const p of pids) {
+    if (await isPidRunning(p)) {
+      await $`kill -KILL ${p}`.quiet().nothrow()
+    }
+  }
 }
 
 // Stop a managed process
@@ -753,11 +782,23 @@ const stopProcess = async (name: string, actor: Actor = 'System'): Promise<boole
   const managed = processes.get(name)
   if (!managed) return false
 
-  // Kill entire process tree to ensure npm/vite children are killed
-  if (managed.pid) {
-    await killProcessTree(managed.pid)
-  } else if (managed.proc) {
-    managed.proc.kill()
+  // Only attempt to terminate OS processes if we believe the process is active.
+  // This avoids "stale PID reuse" where a dead process' old PID could later belong to an unrelated program.
+  const shouldTerminate = managed.status === 'running' || managed.status === 'starting'
+  let terminated = true
+  if (shouldTerminate) {
+    const pid = managed.pid ?? managed.proc?.pid ?? null
+    if (pid && await isPidRunning(pid)) {
+      await terminateProcessTree(pid, 5000)
+      terminated = !(await isPidRunning(pid))
+    } else if (managed.proc) {
+      try { managed.proc.kill() } catch {}
+    }
+  }
+
+  if (!terminated) {
+    auditLog('PROCESS_STOP_FAIL', name, actor)
+    return false
   }
 
   // Close terminal if still open
@@ -769,6 +810,7 @@ const stopProcess = async (name: string, actor: Actor = 'System'): Promise<boole
   managed.status = 'dead'
   managed.exitCode = 0
   managed.proc = null
+  managed.pid = null
   auditLog('PROCESS_STOP', name, actor)
 
   // Clear logs for fresh restart
@@ -781,9 +823,9 @@ const stopProcess = async (name: string, actor: Actor = 'System'): Promise<boole
   const portal = portals.get(name)
   if (portal) {
     if (portal.proc) {
-      portal.proc.kill()
+      try { portal.proc.kill() } catch {}
     } else if (portal.pid) {
-      await $`kill -9 ${portal.pid}`.quiet().nothrow()
+      await terminateProcessTree(portal.pid, 3000)
     }
     portals.delete(name)
     auditLog('PORTAL_CLOSE', `${name} (with process)`, actor)
@@ -796,7 +838,8 @@ const stopProcess = async (name: string, actor: Actor = 'System'): Promise<boole
 
 // Restart a managed process
 const restartProcess = async (name: string, actor: Actor = 'System'): Promise<ManagedProcess | null> => {
-  await stopProcess(name, actor)
+  const stopped = await stopProcess(name, actor)
+  if (!stopped) return null
 
   // Small delay before restart
   await new Promise(r => setTimeout(r, 500))
@@ -806,6 +849,27 @@ const restartProcess = async (name: string, actor: Actor = 'System'): Promise<Ma
   }
 
   return spawnProcess(name, actor)
+}
+
+const restartLocks = new Map<string, Promise<void>>()
+
+const scheduleRestart = (name: string, actor: Actor) => {
+  if (restartLocks.has(name)) return
+
+  const task = (async () => {
+    try {
+      await stopProcess(name, actor)
+      // Small delay before restart
+      await new Promise(r => setTimeout(r, 500))
+      if (serverConfigs.has(name)) {
+        await spawnProcess(name, actor)
+      }
+    } finally {
+      restartLocks.delete(name)
+    }
+  })()
+
+  restartLocks.set(name, task)
 }
 
 // Manually set port for a process
@@ -896,12 +960,39 @@ const stopCaddy = async (force = false) => {
   }
 }
 
-// Cleanup on exit
-const cleanup = async () => {
-  for (const [, { proc }] of portals) proc?.kill()
-  await stopCaddy(true)
-  await $`rm -f ${PID_FILE}`.quiet().nothrow()
-}
+  const cleanupManagedProcesses = async () => {
+    for (const [, managed] of processes) {
+      if (managed.status !== 'running' && managed.status !== 'starting') continue
+      const pid = managed.pid ?? managed.proc?.pid ?? null
+      if (pid && await isPidRunning(pid)) {
+        await terminateProcessTree(pid, 2000)
+      } else if (managed.proc) {
+        try { managed.proc.kill() } catch {}
+      }
+      if (managed.terminal) {
+        try { managed.terminal.close() } catch {}
+        managed.terminal = null
+      }
+      managed.proc = null
+      managed.pid = null
+      managed.status = 'dead'
+      managed.exitCode = 0
+    }
+  }
+
+  // Cleanup on exit
+  const cleanup = async () => {
+	  for (const [, { proc, pid }] of portals) {
+      if (proc) {
+        try { proc.kill() } catch {}
+      } else if (pid && await isPidRunning(pid)) {
+        await terminateProcessTree(pid, 2000)
+      }
+    }
+    await cleanupManagedProcesses()
+	  await stopCaddy(true)
+	  await $`rm -f ${PID_FILE}`.quiet().nothrow()
+  }
 
 process.on("SIGINT", async () => { await cleanup(); process.exit(0) })
 process.on("SIGTERM", async () => { await cleanup(); process.exit(0) })
@@ -971,8 +1062,8 @@ const syncCaddy = async () => {
     }
   }
 
-  // Kill subdomains: <name>.kill.localhost and <name>.k.localhost
-  // Using *.kill.localhost pattern (not kill.*.localhost) because wildcards only match one level
+  // Kill subdomains:
+  // - <name>.kill.localhost / <name>.k.localhost
   content += `*.kill.localhost, *.k.localhost {
   tls internal
   reverse_proxy localhost:9999
@@ -1466,9 +1557,9 @@ const controlServer = Bun.serve({
       }
 
       if (toClose.proc) {
-        toClose.proc.kill()
+        try { toClose.proc.kill() } catch {}
       } else if (toClose.pid) {
-        await $`kill -9 ${toClose.pid}`.quiet().nothrow()
+        await terminateProcessTree(toClose.pid, 3000)
       }
       portals.delete(name)
       await syncCaddy()
@@ -1632,6 +1723,22 @@ const controlServer = Bun.serve({
       }
       try {
         const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+        const existing = processes.get(name)
+        if (existing && (existing.status === 'running' || existing.status === 'starting')) {
+          // Start is intentionally idempotent: avoid spawning duplicates that orphan old processes.
+          return Response.json({
+            success: true,
+            data: {
+              name,
+              status: existing.status,
+              port: existing.port,
+              pid: existing.pid,
+              detectedPorts: existing.detectedPorts,
+            },
+            message: `${name} is already ${existing.status}`
+          }, { headers: corsHeaders })
+        }
+
         const managed = await spawnProcess(name, actor)
         return Response.json({
           success: true,
@@ -1658,18 +1765,18 @@ const controlServer = Bun.serve({
     if (req.method === "POST" && url.pathname.startsWith("/process/restart/")) {
       const name = url.pathname.split("/")[3]
       const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
-      const managed = await restartProcess(name, actor)
-      if (!managed) {
-        return Response.json({ success: false, error: `Failed to restart: ${name}` }, { status: 500, headers: corsHeaders })
-      }
+      scheduleRestart(name, actor)
+      const proc = processes.get(name)
       return Response.json({
         success: true,
         data: {
           name,
-          status: managed.status,
-          port: managed.port,
-          pid: managed.pid,
-        }
+          status: proc?.status || "starting",
+          port: proc?.port || null,
+          pid: proc?.pid || null,
+          detectedPorts: proc?.detectedPorts || [],
+        },
+        message: restartLocks.has(name) ? "Restart scheduled" : "Restart queued"
       }, { headers: corsHeaders })
     }
 
@@ -1865,10 +1972,11 @@ const controlServer = Bun.serve({
     // Parse host header
     const reqHost = req.headers.get("host")?.replace(":9999", "") || ""
 
-    // Handle kill subdomain: <name>.kill.localhost or <name>.k.localhost
-    const killMatch = reqHost.match(/^([a-z0-9-]+)\.(kill|k)\.localhost$/)
-    if (killMatch && req.method === "GET") {
-      const serverName = killMatch[1]  // name is first capture group now
+    // Handle kill hostnames:
+    // - <name>.kill.localhost / <name>.k.localhost
+    const killSuffixMatch = reqHost.match(/^([a-z0-9-]+)\.(kill|k)\.localhost$/)
+    if (killSuffixMatch && req.method === "GET") {
+      const serverName = killSuffixMatch[1]
 
       // Stop the process if running (Page actor - direct browser access)
       const proc = processes.get(serverName)
@@ -2011,9 +2119,11 @@ const controlServer = Bun.serve({
 
           // Process exists - check its status
           if (managed.status === 'running' && managed.port) {
-            // This shouldn't happen - Caddy should be proxying
-            // But just in case, redirect to actual port
-            return Response.redirect(`http://localhost:${managed.port}${url.pathname}`, 302)
+            // This usually means a race: we marked the process running before Caddy finished reloading.
+            // Never redirect users to localhost:<port>; keep them on <name>.localhost and ensure the route exists.
+            routes.set(domain, managed.port)
+            await syncCaddy()
+            return Response.redirect(`https://${domain}.localhost${url.pathname}${url.search}`, 302)
           }
 
           if (managed.status === 'starting') {
@@ -2139,4 +2249,3 @@ console.log(`
 
 \x1b[90mLazy dev server mode active. Visit <name>.localhost to auto-start.\x1b[0m
 `)
-

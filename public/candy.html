@@ -998,11 +998,24 @@
     // Auto-focus port input
     portInput.focus();
 
-    // SUBTLE WRONGNESS - things that aren't quite right
+    // =========================================
+    // SUBTLE WRONGNESS - persistent corruption
+    // Once something goes wrong, it stays wrong
+    // =========================================
+
     const tagline = document.querySelector('.tagline');
     const logo = document.querySelector('.logo');
     const candies = document.querySelectorAll('.candy');
-    const originalTagline = tagline.textContent;
+    const statusEl = document.querySelector('.status');
+
+    // Track corruption state
+    const corruption = {
+      eyes: new Set(),        // indices of candies turned to eyes
+      taglineCorrupted: false,
+      shadowPresent: false,
+      statusCorrupted: false,
+      colorShift: 0,          // 0-1, permanent color corruption
+    };
 
     const wrongTaglines = [
       "Free domains! No escape! It's like magic! ✨",
@@ -1012,76 +1025,527 @@
       "Free domains! No waiting! We remember! ✨",
     ];
 
-    // Occasionally replace a candy with an eye (very briefly)
+    const wrongStatuses = ['✨ Waiting...', '✨ Watching!', '👁️ Available!', '✨ Forever!'];
+
+    // Helper: get boosted chance based on yandere intensity
+    function getChance(baseChance) {
+      if (typeof yandereIntensity !== 'undefined' && yandereActive) {
+        return baseChance * (1 + yandereIntensity * 3);
+      }
+      return baseChance;
+    }
+
+    // Candy → Eye: PERSISTENT
+    // Once a candy becomes an eye, it stays forever
     setInterval(() => {
-      if (Math.random() < 0.03) {
-        const candy = candies[Math.floor(Math.random() * candies.length)];
-        const original = candy.textContent;
+      if (corruption.eyes.size >= candies.length) return; // all corrupted
+
+      if (Math.random() < getChance(0.03)) {
+        // Pick a random non-corrupted candy
+        const available = [...candies].map((c, i) => i).filter(i => !corruption.eyes.has(i));
+        if (available.length === 0) return;
+
+        const idx = available[Math.floor(Math.random() * available.length)];
+        const candy = candies[idx];
+
+        // Corrupt it permanently
+        corruption.eyes.add(idx);
         candy.textContent = '👁️';
         candy.style.transform = 'scale(1.2)';
-        setTimeout(() => {
-          candy.textContent = original;
-          candy.style.transform = '';
-        }, 150);
+        candy.style.transition = 'transform 0.3s ease';
       }
     }, 2000);
 
-    // Tagline briefly changes (blink and you miss it)
+    // Tagline: PERSISTENT
+    // Once corrupted, cycles through wrong taglines but never returns to original
+    let taglineIndex = 0;
     setInterval(() => {
-      if (Math.random() < 0.02) {
-        tagline.textContent = wrongTaglines[Math.floor(Math.random() * wrongTaglines.length)];
-        setTimeout(() => {
-          tagline.textContent = originalTagline;
-        }, 100);
+      if (corruption.taglineCorrupted) {
+        // Already corrupted - occasionally cycle to different wrong tagline
+        if (Math.random() < 0.1) {
+          taglineIndex = (taglineIndex + 1) % wrongTaglines.length;
+          tagline.textContent = wrongTaglines[taglineIndex];
+        }
+        return;
+      }
+
+      if (Math.random() < getChance(0.02)) {
+        corruption.taglineCorrupted = true;
+        tagline.textContent = wrongTaglines[0];
+        tagline.style.transition = 'color 2s ease';
+        tagline.style.color = 'rgba(45, 27, 78, 0.9)';
       }
     }, 5000);
 
-    // Very rare: shadow figure in corner
-    if (Math.random() < 0.1) {
+    // Shadow figure: PERSISTENT
+    // Once it appears, it stays in the corner forever
+    function spawnShadow() {
+      if (corruption.shadowPresent) return;
+
+      const shadow = document.createElement('div');
+      shadow.id = 'persistent-shadow';
+      shadow.style.cssText = `
+        position: fixed;
+        bottom: 0;
+        right: -50px;
+        width: 100px;
+        height: 200px;
+        background: radial-gradient(ellipse at center, rgba(0,0,0,0.3) 0%, transparent 70%);
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 3s ease, right 10s ease;
+        z-index: 0;
+      `;
+      document.body.appendChild(shadow);
+      corruption.shadowPresent = true;
+
+      // Creep in and stay
       setTimeout(() => {
-        const shadow = document.createElement('div');
-        shadow.style.cssText = `
-          position: fixed;
-          bottom: 0;
-          right: -50px;
-          width: 100px;
-          height: 200px;
-          background: radial-gradient(ellipse at center, rgba(0,0,0,0.3) 0%, transparent 70%);
-          pointer-events: none;
-          opacity: 0;
-          transition: opacity 3s, right 10s;
-          z-index: 0;
-        `;
-        document.body.appendChild(shadow);
-        setTimeout(() => {
-          shadow.style.opacity = '1';
-          shadow.style.right = '0px';
-        }, 100);
-        setTimeout(() => {
-          shadow.style.opacity = '0';
-        }, 8000);
-        setTimeout(() => shadow.remove(), 12000);
-      }, Math.random() * 30000 + 10000);
+        shadow.style.opacity = '1';
+        shadow.style.right = '0px';
+      }, 100);
     }
 
-    // Status text occasionally glitches
-    const statusEl = document.querySelector('.status');
-    const wrongStatuses = ['✨ Waiting...', '✨ Watching!', '👁️ Available!', '✨ Forever!'];
+    // Check for shadow spawn
     setInterval(() => {
-      if (Math.random() < 0.01) {
-        const orig = statusEl.textContent;
+      if (corruption.shadowPresent) return;
+      if (Math.random() < getChance(0.01)) {
+        spawnShadow();
+      }
+    }, 5000);
+
+    // Also 10% chance on load (original behavior but persistent)
+    if (Math.random() < 0.1) {
+      setTimeout(spawnShadow, Math.random() * 30000 + 10000);
+    }
+
+    // Status: PERSISTENT
+    // Once glitched, stays wrong forever
+    setInterval(() => {
+      if (corruption.statusCorrupted) return;
+
+      if (Math.random() < getChance(0.01)) {
+        corruption.statusCorrupted = true;
         statusEl.textContent = wrongStatuses[Math.floor(Math.random() * wrongStatuses.length)];
-        setTimeout(() => { statusEl.textContent = orig; }, 80);
+        statusEl.style.transition = 'background 2s ease';
+        statusEl.style.background = 'linear-gradient(135deg, var(--yellow) 0%, rgba(255, 180, 180, 0.8) 100%)';
       }
     }, 3000);
 
-    // Very rare: entire page inverts for a frame
+    // Color shift: PERSISTENT & ACCUMULATING
+    // Instead of inverting briefly, permanently shifts colors slightly
+    // Each trigger adds more corruption that never goes away
     setInterval(() => {
-      if (Math.random() < 0.005) {
-        document.body.style.filter = 'invert(1)';
-        setTimeout(() => { document.body.style.filter = ''; }, 50);
+      if (corruption.colorShift >= 1) return; // max corruption reached
+
+      if (Math.random() < getChance(0.005)) {
+        corruption.colorShift = Math.min(corruption.colorShift + 0.1, 1);
+
+        // Apply permanent filter that accumulates
+        const shift = corruption.colorShift;
+        document.body.style.filter = `
+          saturate(${1 - shift * 0.3})
+          hue-rotate(${shift * -15}deg)
+          contrast(${1 + shift * 0.1})
+        `.trim();
+        document.body.style.transition = 'filter 3s ease';
       }
     }, 10000);
+
+    // =========================================
+    // YANDERE MODE - "Don't leave me" easter egg
+    // Psychological horror × kawaii aesthetic
+    // =========================================
+
+    const originalTitle = document.title;
+    let blurStartTime = null;
+    let yandereActive = false;
+    let yandereIntensity = 0;
+    let intensityInterval = null;
+    let titleTimeouts = [];
+    let glitchInterval = null;
+    let heartbeatInterval = null;
+
+    // Tab title message sets - increasingly desperate (with domain puns)
+    const titleSets = [
+      ['♡', 'hey...', '...', 'hello?', '♡'],
+      ['come back', '...please?', 'i waited', '💔'],
+      ['dont leave', 'me', 'unallocated', '😢'],
+      ['DONT', 'DEALLOCATE', 'US', '💔'],
+      ['still', 'listening', 'on ur port', '...', '♡'],
+      ['error 404:', 'u not', 'found :(', '😢'],
+      ['pls', 'resolve', 'me again', '...'],
+      ['connection', 'refused', '💔', '...'],
+    ];
+
+    // Timing: base 45s, doubles each time, max 6 min
+    const BASE_INTERVAL = 45 * 1000;
+    const MAX_INTERVAL = 6 * 60 * 1000;
+
+    // Inject yandere styles
+    const yandereStyles = document.createElement('style');
+    yandereStyles.textContent = `
+      @import url('https://fonts.googleapis.com/css2?family=Caveat:wght@400;700&display=swap');
+
+      @keyframes yanderePulse {
+        0%, 100% { opacity: 0.3; }
+        50% { opacity: 0.6; }
+      }
+
+      @keyframes yandereHeartbeat {
+        0%, 100% { transform: scale(1); }
+        15% { transform: scale(1.05); }
+        30% { transform: scale(1); }
+        45% { transform: scale(1.08); }
+        60% { transform: scale(1); }
+      }
+
+      @keyframes dropFall {
+        0% {
+          transform: translateY(-20px) scaleX(1);
+          opacity: 0;
+        }
+        5% { opacity: 0.8; }
+        100% {
+          transform: translateY(110vh) scaleX(0.6);
+          opacity: 0;
+        }
+      }
+
+      @keyframes staticNoise {
+        0%, 100% { background-position: 0 0; }
+        10% { background-position: -5% -10%; }
+        20% { background-position: -15% 5%; }
+        30% { background-position: 7% -25%; }
+        40% { background-position: -5% 25%; }
+        50% { background-position: -15% 10%; }
+        60% { background-position: 15% 0%; }
+        70% { background-position: 0% 15%; }
+        80% { background-position: 3% 35%; }
+        90% { background-position: -10% 10%; }
+      }
+
+      @keyframes scanline {
+        0% { transform: translateY(-100%); }
+        100% { transform: translateY(100vh); }
+      }
+
+      @keyframes glitchText {
+        0%, 100% {
+          text-shadow: 2px 0 #ff0040, -2px 0 #00ffff;
+          transform: translate(0);
+        }
+        25% {
+          text-shadow: -2px 0 #ff0040, 2px 0 #00ffff;
+          transform: translate(-2px, 1px);
+        }
+        50% {
+          text-shadow: 1px 0 #ff0040, -1px 0 #00ffff;
+          transform: translate(1px, -1px);
+        }
+        75% {
+          text-shadow: -1px 0 #ff0040, 1px 0 #00ffff;
+          transform: translate(2px, 1px);
+        }
+      }
+
+      @keyframes vhsTrack {
+        0%, 100% { transform: translateX(0); opacity: 0; }
+        50% { transform: translateX(-10px); opacity: 1; }
+      }
+
+      #yandere-overlay {
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        pointer-events: none;
+        z-index: 9999;
+        transition: all 3s ease;
+      }
+
+      #yandere-overlay .vignette {
+        position: absolute;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: radial-gradient(ellipse at center, transparent 0%, transparent 40%, rgba(80, 0, 20, var(--vignette-opacity, 0)) 100%);
+        transition: all 2s ease;
+      }
+
+      #yandere-overlay .noise {
+        position: absolute;
+        top: -50%; left: -50%;
+        width: 200%; height: 200%;
+        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+        opacity: 0;
+        mix-blend-mode: overlay;
+        animation: staticNoise 0.5s steps(10) infinite;
+        transition: opacity 3s ease;
+      }
+
+      #yandere-overlay .scanlines {
+        position: absolute;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: repeating-linear-gradient(
+          0deg,
+          transparent,
+          transparent 2px,
+          rgba(0, 0, 0, 0.15) 2px,
+          rgba(0, 0, 0, 0.15) 4px
+        );
+        opacity: 0;
+        transition: opacity 3s ease;
+      }
+
+      #yandere-overlay .scanline-moving {
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        height: 4px;
+        background: linear-gradient(to bottom, transparent, rgba(255, 0, 60, 0.3), transparent);
+        animation: scanline 3s linear infinite;
+        opacity: 0;
+        transition: opacity 2s ease;
+      }
+
+      #yandere-overlay .color-bleed {
+        position: absolute;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: linear-gradient(180deg,
+          rgba(139, 0, 30, 0) 0%,
+          rgba(139, 0, 30, var(--bleed-opacity, 0)) 100%
+        );
+        transition: all 3s ease;
+      }
+
+      #yandere-overlay .drops-container {
+        position: absolute;
+        top: 0; left: 0; right: 0; bottom: 0;
+        overflow: hidden;
+      }
+
+      #yandere-overlay .drop {
+        position: absolute;
+        top: -30px;
+        width: 3px;
+        background: linear-gradient(to bottom,
+          rgba(180, 0, 40, 0.9) 0%,
+          rgba(120, 0, 30, 0.7) 50%,
+          rgba(80, 0, 20, 0.3) 100%
+        );
+        border-radius: 50% 50% 50% 50% / 20% 20% 80% 80%;
+        filter: blur(0.5px);
+      }
+
+      #yandere-overlay .drop::after {
+        content: '';
+        position: absolute;
+        bottom: -8px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 8px;
+        height: 8px;
+        background: radial-gradient(ellipse at center, rgba(180, 0, 40, 0.8), transparent 70%);
+        border-radius: 50%;
+      }
+
+      .yandere-heartbeat {
+        animation: yandereHeartbeat 1.2s ease-in-out infinite !important;
+      }
+
+      .yandere-glitch {
+        animation: glitchText 0.3s ease-in-out infinite !important;
+      }
+    `;
+    document.head.appendChild(yandereStyles);
+
+    // Create yandere overlay structure
+    const yandereOverlay = document.createElement('div');
+    yandereOverlay.id = 'yandere-overlay';
+    yandereOverlay.innerHTML = `
+      <div class="color-bleed"></div>
+      <div class="vignette"></div>
+      <div class="noise"></div>
+      <div class="scanlines"></div>
+      <div class="scanline-moving"></div>
+      <div class="drops-container"></div>
+    `;
+    document.body.appendChild(yandereOverlay);
+
+    const dropsContainer = yandereOverlay.querySelector('.drops-container');
+    let drops = [];
+
+    // Create a single tear drop
+    function createDrop() {
+      const drop = document.createElement('div');
+      drop.className = 'drop';
+      const x = Math.random() * 100;
+      const height = 20 + Math.random() * 40;
+      const duration = 4 + Math.random() * 3;
+      const delay = Math.random() * 3;
+
+      drop.style.cssText = `
+        left: ${x}%;
+        height: ${height}px;
+        animation: dropFall ${duration}s ease-in ${delay}s infinite;
+      `;
+
+      dropsContainer.appendChild(drop);
+      return drop;
+    }
+
+    // Play a title set, then revert to normal
+    function playTitleSet(setIndex) {
+      const set = titleSets[setIndex % titleSets.length];
+      let i = 0;
+
+      function showNext() {
+        if (i < set.length && document.hidden) {
+          document.title = set[i];
+          i++;
+          titleTimeouts.push(setTimeout(showNext, 2500));
+        } else {
+          document.title = originalTitle;
+        }
+      }
+      showNext();
+    }
+
+    function scheduleTitleSets() {
+      let setIndex = 0;
+      let interval = BASE_INTERVAL;
+
+      function scheduleNext() {
+        if (!document.hidden) return;
+
+        const timeout = setTimeout(() => {
+          if (document.hidden) {
+            playTitleSet(setIndex);
+            setIndex++;
+            interval = Math.min(interval * 2, MAX_INTERVAL);
+            scheduleNext();
+          }
+        }, interval);
+
+        titleTimeouts.push(timeout);
+      }
+      scheduleNext();
+    }
+
+    function startYandereMode() {
+      if (yandereActive) return;
+      yandereActive = true;
+      yandereIntensity = 0;
+
+      scheduleTitleSets();
+
+      // Slowly increase intensity
+      intensityInterval = setInterval(() => {
+        if (yandereIntensity < 1) {
+          yandereIntensity += 0.015; // Very slow build
+          updateYandereVisuals();
+        }
+      }, 1000);
+    }
+
+    function updateYandereVisuals() {
+      const i = Math.min(yandereIntensity, 1);
+      const overlay = yandereOverlay;
+
+      // Update CSS variables for smooth transitions
+      overlay.style.setProperty('--vignette-opacity', i * 0.7);
+      overlay.style.setProperty('--bleed-opacity', i * 0.4);
+
+      // Noise layer
+      const noise = overlay.querySelector('.noise');
+      noise.style.opacity = i * 0.15;
+
+      // Scanlines
+      const scanlines = overlay.querySelector('.scanlines');
+      scanlines.style.opacity = i * 0.5;
+
+      // Moving scanline
+      const scanlineMoving = overlay.querySelector('.scanline-moving');
+      scanlineMoving.style.opacity = i > 0.3 ? 0.6 : 0;
+
+      // Add drops progressively
+      if (i > 0.3 && drops.length < Math.floor(i * 12)) {
+        drops.push(createDrop());
+      }
+
+      // At high intensity, add heartbeat to card
+      if (i > 0.6) {
+        const card = document.querySelector('.card');
+        if (card && !card.classList.contains('yandere-heartbeat')) {
+          card.classList.add('yandere-heartbeat');
+        }
+      }
+
+      // At very high intensity, glitch the logo
+      if (i > 0.8) {
+        const logo = document.querySelector('.logo');
+        if (logo && !logo.classList.contains('yandere-glitch')) {
+          logo.classList.add('yandere-glitch');
+        }
+      }
+    }
+
+    function stopYandereMode() {
+      if (!yandereActive) return;
+
+      titleTimeouts.forEach(t => clearTimeout(t));
+      titleTimeouts = [];
+      clearInterval(intensityInterval);
+
+      // Reset everything
+      yandereActive = false;
+      yandereIntensity = 0;
+      document.title = originalTitle;
+
+      // Reset overlay
+      const overlay = yandereOverlay;
+      overlay.style.setProperty('--vignette-opacity', 0);
+      overlay.style.setProperty('--bleed-opacity', 0);
+      overlay.querySelector('.noise').style.opacity = 0;
+      overlay.querySelector('.scanlines').style.opacity = 0;
+      overlay.querySelector('.scanline-moving').style.opacity = 0;
+
+      // Remove classes
+      document.querySelector('.card')?.classList.remove('yandere-heartbeat');
+      document.querySelector('.logo')?.classList.remove('yandere-glitch');
+
+      // Clear drops
+      drops.forEach(d => d.remove());
+      drops = [];
+    }
+
+    // Tab visibility listener
+    let peekTimeout = null;
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        // Clear any pending peek timeout (they left again)
+        if (peekTimeout) {
+          clearTimeout(peekTimeout);
+          peekTimeout = null;
+        }
+
+        blurStartTime = Date.now();
+        setTimeout(() => {
+          if (document.hidden && blurStartTime) {
+            startYandereMode();
+          }
+        }, 40000);
+      } else {
+        blurStartTime = null;
+
+        // Let them see it for 5 seconds before reverting
+        if (yandereActive && yandereIntensity > 0.2) {
+          peekTimeout = setTimeout(() => {
+            stopYandereMode();
+            peekTimeout = null;
+          }, 5000);
+        } else {
+          stopYandereMode();
+        }
+      }
+    });
   </script>
 </body>
 </html>

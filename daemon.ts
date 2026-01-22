@@ -167,6 +167,7 @@ interface ManagedProcess {
   status: ProcessStatus
   port: number | null
   startedAt: Date
+  lastActivity: number  // Unix timestamp of last request/activity
   exitCode: number | null
   logFile: string
   detectedPorts: number[]  // All ports detected during startup
@@ -228,6 +229,61 @@ setInterval(() => {
     if (data.created < cutoff) sessionTokens.delete(sessionId)
   }
 }, 60 * 60 * 1000) // every hour
+
+// Auto-kill idle servers (1hr no activity, no portal)
+const IDLE_TIMEOUT = 60 * 60 * 1000 // 1 hour
+let lastLogPosition = 0
+
+const updateActivityFromCaddyLogs = async () => {
+  try {
+    const file = Bun.file(CADDY_LOG)
+    if (!await file.exists()) return
+
+    const content = await file.text()
+    const newContent = content.slice(lastLogPosition)
+    lastLogPosition = content.length
+
+    // Parse Caddy JSON logs for requests to *.localhost
+    for (const line of newContent.split('\n')) {
+      if (!line.trim()) continue
+      try {
+        const log = JSON.parse(line)
+        const host = log.request?.host || ''
+        const match = host.match(/^([a-z0-9-]+)\.localhost/)
+        if (match) {
+          const serverName = match[1]
+          const proc = processes.get(serverName)
+          if (proc && proc.status === 'running') {
+            proc.lastActivity = Date.now()
+          }
+        }
+      } catch {}
+    }
+  } catch {}
+}
+
+const killIdleServers = async () => {
+  const now = Date.now()
+  for (const [name, proc] of processes) {
+    if (proc.status !== 'running') continue
+
+    const idleTime = now - proc.lastActivity
+    const hasPortal = portals.has(name)
+
+    // Kill if idle for 1hr+ and no portal
+    if (idleTime > IDLE_TIMEOUT && !hasPortal) {
+      console.log(`\x1b[33m[auto-kill] ${name} idle for ${Math.round(idleTime / 60000)}min\x1b[0m`)
+      await stopProcess(name, 'System')
+      auditLog('AUTO_KILL', `${name} (idle ${Math.round(idleTime / 60000)}min)`, 'System')
+    }
+  }
+}
+
+// Run every 30 minutes (idle timeout is 1hr, so ±30min is fine)
+setInterval(async () => {
+  await updateActivityFromCaddyLogs()
+  await killIdleServers()
+}, 30 * 60 * 1000)
 
 // MCP Authentication - bootstrap secret + session API keys
 // The daemon writes a secret to MCP_SECRET_FILE on startup
@@ -400,6 +456,12 @@ const processLog = async (name: string, data: string) => {
 // Get log file path for a process
 const getLogFile = (name: string) => `${LOGS_DIR}/${name}.log`
 
+// Clear logs for a process
+const clearLogs = async (name: string) => {
+  const logFile = getLogFile(name)
+  await $`rm -f ${logFile}`.quiet().nothrow()
+}
+
 // Read logs with mode: tail, head, or search
 const readLogs = async (
   processName: string,
@@ -484,6 +546,19 @@ const addServerConfig = async (name: string, cwd: string, cmd: string, actor: Ac
 
 // Remove a server config
 const removeServerConfig = async (name: string, actor: Actor = 'Portal') => {
+  // Stop the process if running
+  const proc = processes.get(name)
+  if (proc && (proc.status === 'running' || proc.status === 'starting')) {
+    await stopProcess(name, actor)
+  }
+
+  // Clear logs
+  await clearLogs(name)
+
+  // Remove from processes map
+  processes.delete(name)
+
+  // Delete config
   serverConfigs.delete(name)
   await saveServerConfigs()
   auditLog('CONFIG_REMOVE', name, actor)
@@ -529,6 +604,7 @@ const spawnProcess = async (name: string, actor: Actor = 'System'): Promise<Mana
     status: 'starting',
     port: null,
     startedAt: new Date(),
+    lastActivity: Date.now(),
     exitCode: null,
     logFile,
     detectedPorts: [],
@@ -587,6 +663,12 @@ const spawnProcess = async (name: string, actor: Actor = 'System'): Promise<Mana
 
   // Handle process exit
   proc.exited.then((exitCode) => {
+    // If already marked dead (intentional kill), don't overwrite with errored
+    if (managed.status === 'dead') {
+      managed.proc = null
+      return
+    }
+
     managed.exitCode = exitCode
     const newStatus = exitCode === 0 ? 'dead' : 'errored'
     managed.status = newStatus
@@ -595,7 +677,7 @@ const spawnProcess = async (name: string, actor: Actor = 'System'): Promise<Mana
       try { managed.terminal.close() } catch {}
       managed.terminal = null
     }
-    auditLog('STATE', `${name}: starting -> ${newStatus} (exit ${exitCode})`, 'System')
+    auditLog('STATE', `${name}: ${newStatus} (exit ${exitCode})`, 'System')
 
     // Don't remove from processes map - keep for crash recovery UI
   })
@@ -688,6 +770,9 @@ const stopProcess = async (name: string, actor: Actor = 'System'): Promise<boole
   managed.exitCode = 0
   managed.proc = null
   auditLog('PROCESS_STOP', name, actor)
+
+  // Clear logs for fresh restart
+  await clearLogs(name)
 
   // Remove route
   routes.delete(name)
@@ -1405,6 +1490,24 @@ const controlServer = Bun.serve({
         })),
         total: activityLog.length
       }, { headers: corsHeaders })
+    }
+
+    // Process logs: /logs/:name?mode=tail|head|search&lines=50&pattern=error&context=2
+    if (req.method === "GET" && url.pathname.startsWith("/logs/")) {
+      const name = url.pathname.slice(6) // strip "/logs/"
+      if (!name) {
+        return Response.json({ error: "Missing process name" }, { status: 400, headers: corsHeaders })
+      }
+      const mode = (url.searchParams.get("mode") || "tail") as 'tail' | 'head' | 'search'
+      const lines = parseInt(url.searchParams.get("lines") || "50")
+      const pattern = url.searchParams.get("pattern") || undefined
+      const context = parseInt(url.searchParams.get("context") || "2")
+
+      const result = await readLogs(name, mode, lines, pattern, context)
+      if (!result.success) {
+        return Response.json({ error: result.error }, { status: 404, headers: corsHeaders })
+      }
+      return Response.json({ logs: result.data }, { headers: corsHeaders })
     }
 
     if (req.method === "GET" && url.pathname === "/stats") {

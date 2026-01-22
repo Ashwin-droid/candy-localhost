@@ -5,7 +5,6 @@
  * Designed for autonomous agent use - no explicit user request needed.
  */
 
-import { $ } from "bun"
 
 // ============================================================================
 // Types
@@ -30,7 +29,6 @@ interface MCPResponse {
 // ============================================================================
 
 const DAEMON_URL = "http://localhost:9999"
-const LOGS_DIR = "/tmp/candy-logs"
 
 // ============================================================================
 // Tool Definitions
@@ -536,58 +534,34 @@ async function handleInput(params: any): Promise<any> {
 
 async function handleLogs(params: any): Promise<any> {
   const { name, mode = "tail", lines = 50, pattern } = params
-  const logFile = `${LOGS_DIR}/${name}.log`
   const lineCount = Math.min(lines, 500)
 
   try {
-    const file = Bun.file(logFile)
-    if (!await file.exists()) {
-      return { error: `No logs found for '${name}'. Server may not have been started yet.` }
+    // Fetch logs from daemon
+    const queryParams = new URLSearchParams({
+      mode,
+      lines: String(lineCount),
+      ...(pattern && { pattern })
+    })
+    const logsRes = await daemonFetch(`/logs/${name}?${queryParams}`)
+    if (logsRes.error) {
+      return { error: logsRes.error }
     }
 
-    let result: string
-    if (mode === "search" && pattern) {
-      result = await $`grep -n -C 2 ${pattern} ${logFile}`.nothrow().text()
-      if (!result.trim()) result = "(no matches)"
-    } else if (mode === "head") {
-      result = await $`head -n ${lineCount} ${logFile}`.nothrow().text()
-    } else {
-      result = await $`tail -n ${lineCount} ${logFile}`.nothrow().text()
-    }
-
-    // Get server config and status for more context
-    let serverInfo: any = {}
+    // Get server status for header
+    let status = "unknown"
+    let port = ""
     try {
-      const [configsRes, processesRes] = await Promise.all([
-        daemonFetch("/configs"),
-        daemonFetch("/processes")
-      ])
-      const config = configsRes.configs?.[name]
+      const processesRes = await daemonFetch("/processes")
       const proc = processesRes.processes?.[name]
-      if (config) {
-        serverInfo = {
-          cwd: config.cwd,
-          cmd: config.cmd,
-          status: proc?.status || "stopped",
-          port: proc?.port || null,
-          pid: proc?.pid || null
-        }
+      if (proc) {
+        status = proc.status || "stopped"
+        port = proc.port ? `:${proc.port}` : ""
       }
     } catch {}
 
-    return {
-      server: {
-        name,
-        url: `https://${name}.localhost`,
-        ...serverInfo
-      },
-      query: {
-        mode,
-        lines: mode !== "search" ? lineCount : undefined,
-        pattern: mode === "search" ? pattern : undefined
-      },
-      logs: result || "(no output)"
-    }
+    const header = `[${name}] ${status}${port}\n${"─".repeat(40)}\n`
+    return header + (logsRes.logs || "(no output)")
   } catch (e) {
     return { error: String(e) }
   }

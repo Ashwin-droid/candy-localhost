@@ -193,6 +193,7 @@
     /* Main content */
     main {
       flex: 1;
+      min-height: 0; /* Required for flex child to scroll */
       display: flex;
       overflow: hidden;
     }
@@ -201,6 +202,7 @@
       display: none;
       width: 100%;
       height: 100%;
+      min-height: 0; /* Required for flex child to scroll */
     }
 
     .panel.active {
@@ -298,10 +300,12 @@
       flex-direction: column;
       background: var(--bg-deep);
       overflow: hidden;
+      min-height: 0; /* Required for flex child to scroll */
     }
 
     .gui-content {
       flex: 1;
+      min-height: 0; /* Required for flex child to scroll */
       padding: 1.5rem;
       overflow-y: auto;
       display: grid;
@@ -1121,11 +1125,25 @@
 Daemon Control:
   status                     Check daemon status.
 
-Domain Allocation Services:
+Domain Allocation:
   add, a <name> <port>       Claim a domain.
   rm, r <name>               Deallocate a domain.
   rename, ren <old> <new>    Rename a domain.
   ls, l                      List all routes.
+
+Dev Servers:
+  servers, sv                List all server configs.
+  start <name>               Start a dev server.
+  stop <name>                Stop a running server.
+  restart <name>             Restart a server.
+  proc <name>                Show process details.
+  port <name> <port>         Manually set port.
+  tail <name> [lines]        View server logs.
+  send <name> <text>         Send input to PTY.
+
+Server Config:
+  config <name> <cwd> <cmd>  Register a server config.
+  unconfig <name>            Remove a server config.
 
 Tunneling:
   portal, p [name] <port>    Open a tunnel.
@@ -1325,6 +1343,257 @@ Misc:
                   const childColor = child.alive ? 'success' : 'error';
                   appendLink(`  ${prefix} ${child.name}`, child.url, `  ${child.total} req`, childColor);
                 });
+              }
+            }
+            break;
+
+          // === Dev Server Commands ===
+
+          case 'servers':
+          case 'sv':
+            {
+              const [cfgRes, procRes] = await Promise.all([
+                apiCall('/configs'),
+                apiCall('/processes')
+              ]);
+              const configs = (await cfgRes.json()).configs || {};
+              const procs = (await procRes.json()).processes || {};
+              const names = Object.keys(configs);
+
+              if (names.length === 0) {
+                appendOutput('No server configs registered.', 'dim');
+              } else {
+                names.forEach(name => {
+                  const cfg = configs[name];
+                  const proc = procs[name];
+                  const status = proc?.status || 'stopped';
+                  const port = proc?.port ? `:${proc.port}` : '';
+                  const statusColor = status === 'running' ? 'success' : status === 'errored' ? 'error' : 'dim';
+                  appendOutput(`  ${name.padEnd(15)} ${status.padEnd(10)}${port}`, statusColor);
+                  appendOutput(`    ${cfg.cmd} in ${cfg.cwd}`, 'dim');
+                });
+              }
+            }
+            break;
+
+          case 'start':
+            if (!args[0]) {
+              appendOutput('Usage: start <name>', 'error');
+              break;
+            }
+            {
+              appendOutput(`Starting ${args[0]}...`, 'dim');
+              const startRes = await apiCall(`/process/start/${args[0]}`, { method: 'POST' });
+              const startData = await startRes.json();
+              if (startData.error) {
+                appendOutput(startData.error, 'error');
+              } else {
+                const d = startData.data || startData;
+                appendOutput(`▶ ${d.name} running on :${d.port} (PID ${d.pid})`, 'success');
+              }
+            }
+            break;
+
+          case 'stop':
+            if (!args[0]) {
+              appendOutput('Usage: stop <name>', 'error');
+              break;
+            }
+            {
+              const stopRes = await apiCall(`/process/stop/${args[0]}`, { method: 'POST' });
+              const stopData = await stopRes.json();
+              if (stopData.error) {
+                appendOutput(stopData.error, 'error');
+              } else {
+                appendOutput(`■ ${args[0]} stopped`, 'dim');
+              }
+            }
+            break;
+
+          case 'restart':
+            if (!args[0]) {
+              appendOutput('Usage: restart <name>', 'error');
+              break;
+            }
+            {
+              appendOutput(`Restarting ${args[0]}...`, 'dim');
+              const restartRes = await apiCall(`/process/restart/${args[0]}`, { method: 'POST' });
+              const restartData = await restartRes.json();
+              if (restartData.error) {
+                appendOutput(restartData.error, 'error');
+              } else {
+                const d = restartData.data || restartData;
+                appendOutput(`↻ ${d.name} restarted on :${d.port} (PID ${d.pid})`, 'success');
+              }
+            }
+            break;
+
+          case 'proc':
+            if (!args[0]) {
+              appendOutput('Usage: proc <name>', 'error');
+              break;
+            }
+            {
+              const [cfgRes2, procRes2] = await Promise.all([
+                apiCall('/configs'),
+                apiCall('/processes')
+              ]);
+              const cfg2 = (await cfgRes2.json()).configs?.[args[0]];
+              const proc2 = (await procRes2.json()).processes?.[args[0]];
+
+              if (!cfg2) {
+                appendOutput(`Server '${args[0]}' not found.`, 'error');
+              } else {
+                appendOutput(`Server: ${args[0]}`, 'output');
+                appendOutput(`  Command:  ${cfg2.cmd}`, 'dim');
+                appendOutput(`  CWD:      ${cfg2.cwd}`, 'dim');
+                if (proc2) {
+                  const statusColor = proc2.status === 'running' ? 'success' : proc2.status === 'errored' ? 'error' : 'dim';
+                  appendOutput(`  Status:   ${proc2.status}`, statusColor);
+                  appendOutput(`  Port:     ${proc2.port || 'N/A'}`, 'dim');
+                  appendOutput(`  PID:      ${proc2.pid || 'N/A'}`, 'dim');
+                  if (proc2.startedAt) {
+                    const uptime = Math.floor((Date.now() - new Date(proc2.startedAt).getTime()) / 1000);
+                    const m = Math.floor(uptime / 60);
+                    const s = uptime % 60;
+                    appendOutput(`  Uptime:   ${m}m ${s}s`, 'dim');
+                  }
+                  if (proc2.detectedPorts?.length > 1) {
+                    appendOutput(`  Detected: ${proc2.detectedPorts.join(', ')}`, 'dim');
+                  }
+                } else {
+                  appendOutput(`  Status:   stopped`, 'dim');
+                }
+              }
+            }
+            break;
+
+          case 'port':
+            if (args.length < 2) {
+              appendOutput('Usage: port <name> <port>', 'error');
+              break;
+            }
+            {
+              const portRes = await apiCall(`/process/port/${args[0]}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ port: parseInt(args[1]) })
+              });
+              const portData = await portRes.json();
+              if (portData.error) {
+                appendOutput(portData.error, 'error');
+              } else {
+                appendOutput(`⚡ ${args[0]} port set to :${args[1]}`, 'success');
+              }
+            }
+            break;
+
+          case 'tail':
+            {
+              const tailName = args[0];
+              const tailLines = args[1] || 20;
+              if (!tailName) {
+                appendOutput('Usage: tail <name> [lines]', 'error');
+                break;
+              }
+              try {
+                const logFile = `/tmp/candy-logs/${tailName}.log`;
+                const tailRes = await fetch(`http://localhost:9999/stream/${tailName}`);
+                if (!tailRes.ok) throw new Error('Failed to fetch logs');
+
+                // Just fetch the log file content via a quick SSE connection
+                const reader = tailRes.body.getReader();
+                const decoder = new TextDecoder();
+                let content = '';
+                const startTime = Date.now();
+
+                while (Date.now() - startTime < 1000) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  const chunk = decoder.decode(value);
+                  const lines = chunk.split('\n');
+                  for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                      try {
+                        content += JSON.parse(line.slice(6));
+                      } catch {}
+                    }
+                  }
+                }
+                reader.cancel();
+
+                const logLines = content.split('\n').filter(l => l.trim());
+                const lastN = logLines.slice(-tailLines);
+                if (lastN.length === 0) {
+                  appendOutput('(no logs yet)', 'dim');
+                } else {
+                  lastN.forEach(l => appendOutput(l, 'dim'));
+                }
+              } catch (e) {
+                appendOutput(`Failed to read logs: ${e.message}`, 'error');
+              }
+            }
+            break;
+
+          case 'send':
+            if (args.length < 2) {
+              appendOutput('Usage: send <name> <text>', 'error');
+              break;
+            }
+            {
+              const sendName = args[0];
+              const sendText = args.slice(1).join(' ');
+              const sendRes = await apiCall(`/process/input/${sendName}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ input: sendText + '\n' })
+              });
+              const sendData = await sendRes.json();
+              if (sendData.error) {
+                appendOutput(sendData.error, 'error');
+              } else {
+                appendOutput(`→ sent to ${sendName}: ${sendText}`, 'dim');
+              }
+            }
+            break;
+
+          case 'config':
+            if (args.length < 3) {
+              appendOutput('Usage: config <name> <cwd> <cmd...>', 'error');
+              appendOutput('  Example: config myapp ~/projects/myapp npm run dev', 'dim');
+              break;
+            }
+            {
+              const cfgName = args[0];
+              const cfgCwd = args[1];
+              const cfgCmd = args.slice(2).join(' ');
+              const cfgRes = await apiCall('/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: cfgName, cwd: cfgCwd, cmd: cfgCmd })
+              });
+              const cfgData = await cfgRes.json();
+              if (cfgData.error) {
+                appendOutput(cfgData.error, 'error');
+              } else {
+                appendOutput(`+ ${cfgName} registered`, 'success');
+                appendOutput(`  ${cfgCmd} in ${cfgCwd}`, 'dim');
+              }
+            }
+            break;
+
+          case 'unconfig':
+            if (!args[0]) {
+              appendOutput('Usage: unconfig <name>', 'error');
+              break;
+            }
+            {
+              const ucfgRes = await apiCall(`/config/${args[0]}`, { method: 'DELETE' });
+              const ucfgData = await ucfgRes.json();
+              if (ucfgData.error) {
+                appendOutput(ucfgData.error, 'error');
+              } else {
+                appendOutput(`- ${args[0]} removed`, 'error');
               }
             }
             break;

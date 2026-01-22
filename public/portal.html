@@ -1121,6 +1121,12 @@
           case 'help':
           case 'h':
           case '?':
+            if (voidState.active) {
+              appendOutput('', 'dim');
+              appendOutput('no one is helping you now', 'error');
+              appendOutput('', 'dim');
+              break;
+            }
             appendOutput(`
 Daemon Control:
   status                     Check daemon status.
@@ -2108,6 +2114,984 @@ Misc:
       } catch (e) {
         toast('Failed to add config', 'error');
       }
+    }
+
+    // =========================================
+    // THE VOID INCURSION
+    // 1% chance (80 pity) - GUI unavailable
+    // Terminal slowly corrupts. The void takes over.
+    // =========================================
+
+    const VOID_CHARS = '░▒▓█◆◇●○∴∵╳╬▲▼◄►';
+    const PITY_MAX = 80;
+    const originalTitle = document.title;
+
+    const voidState = {
+      active: false,
+      corruption: 0,        // 0-100
+      phase: 0,             // 0-5
+      startTime: null,
+      corruptedCells: new Set(),
+      intervalId: null,
+      visualIntensity: 0,
+      sessionRoutes: [],    // captured from session
+      sessionProcesses: [], // captured from session
+      titleInterval: null,
+      possessInterval: null,
+      shakeInterval: null,
+    };
+
+    // Pity system
+    function checkVoidTrigger() {
+      // If they've been voided before, the void remembers...
+      const wasVoided = localStorage.getItem('void_visited') === 'true';
+      const baseChance = wasVoided ? 0.02 : 0.01; // 2% if visited before
+      const pityCap = wasVoided ? 50 : PITY_MAX;  // Faster pity if visited
+
+      let pity = parseInt(localStorage.getItem('void_pity') || '0');
+      pity++;
+
+      const roll = Math.random();
+      const triggered = roll < baseChance || pity >= pityCap;
+
+      if (triggered) {
+        localStorage.setItem('void_pity', '0');
+        return true;
+      } else {
+        localStorage.setItem('void_pity', pity.toString());
+        return false;
+      }
+    }
+
+    // Initialize void mode
+    function initVoidMode() {
+      voidState.active = true;
+      voidState.startTime = Date.now();
+
+      // Disable GUI mode - force CLI only
+      const guiBtn = document.querySelector('[data-mode="gui"]');
+      guiBtn.style.opacity = '0.3';
+      guiBtn.style.pointerEvents = 'none';
+      guiBtn.title = 'gui offline';
+
+      // Force CLI mode
+      document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+      document.querySelector('[data-mode="cli"]').classList.add('active');
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      document.getElementById('cli-panel').classList.add('active');
+
+      // Add subtle message
+      setTimeout(() => {
+        appendOutput('[gui subsystem unavailable]', 'error');
+        appendOutput('cli mode only', 'dim');
+      }, 1000);
+
+      // Capture session data for personalized horror
+      captureSessionData();
+
+      // Inject void styles
+      injectVoidStyles();
+
+      // Start the corruption after short delay
+      setTimeout(() => {
+        startVoidCorruption();
+      }, 5000); // 5 seconds before corruption starts
+
+      // Title and possession start later
+      setTimeout(() => {
+        startTitleCorruption();
+      }, 60000); // 1 minute before title starts changing
+
+      setTimeout(() => {
+        startPossession();
+      }, 90000); // 1.5 minutes before input gets possessed
+    }
+
+    async function captureSessionData() {
+      try {
+        const routesRes = await apiCall('/routes');
+        const routes = await routesRes.json();
+        voidState.sessionRoutes = Object.keys(routes);
+      } catch {}
+      try {
+        const procRes = await apiCall('/processes');
+        const procs = await procRes.json();
+        voidState.sessionProcesses = Object.keys(procs.processes || {});
+      } catch {}
+    }
+
+    const voidTitles = [
+      'candy://portal',
+      'candy://portal - watching',
+      'candy://p̷o̷r̷t̷a̷l̷',
+      'c̸a̸n̸d̸y̸:̸/̸/̸v̸o̸i̸d̸',
+      'W̷E̷ ̷S̷E̷E̷ ̷Y̷O̷U̷',
+      '░▒▓█ VOID █▓▒░',
+      'THERE IS NO ESCAPE',
+      'THE VOID HUNGERS',
+      '127.0.0.1 = NOWHERE',
+      'ALL PACKETS COME HERE',
+      'YOUR LOCALHOST BELONGS TO US',
+      'WE ARE THE DAEMON',
+    ];
+
+    function startTitleCorruption() {
+      let titleIndex = 0;
+      voidState.titleInterval = setInterval(() => {
+        if (voidState.corruption > 20) {
+          const maxIndex = Math.min(
+            Math.floor(voidState.corruption / 8),
+            voidTitles.length - 1
+          );
+          titleIndex = Math.floor(Math.random() * (maxIndex + 1));
+          document.title = voidTitles[titleIndex];
+        }
+      }, 3000);
+    }
+
+    function startPossession() {
+      const input = document.getElementById('cli-input');
+      const creepyCommands = [
+        'help me',
+        'where am i',
+        'who is there',
+        'let me out',
+        'i can hear them',
+        'the void speaks',
+        'localhost is a lie',
+        'rm -rf /',
+        'kill -9 -1',
+        'sudo rm -rf /*',
+        'echo "WE ARE HERE"',
+        'ping void.localhost',
+        'traceroute nowhere',
+        'netstat -tulpn | grep VOID',
+      ];
+
+      voidState.possessInterval = setInterval(() => {
+        if (voidState.corruption > 40 && Math.random() < 0.15) {
+          // Possess the input field
+          const cmd = creepyCommands[Math.floor(Math.random() * creepyCommands.length)];
+          typeCreepyText(input, cmd);
+        }
+      }, 5000);
+    }
+
+    async function typeCreepyText(input, text) {
+      input.blur();
+      for (let i = 0; i < text.length; i++) {
+        input.value += text[i];
+        await new Promise(r => setTimeout(r, 50 + Math.random() * 100));
+      }
+      await new Promise(r => setTimeout(r, 500));
+
+      // Sometimes "execute" the command
+      if (Math.random() < 0.3) {
+        appendOutput('> ' + text, 'input void-corrupt');
+        appendOutput('[COMMAND INTERCEPTED BY VOID]', 'error');
+      }
+      input.value = '';
+    }
+
+    function startScreenShake() {
+      if (voidState.shakeInterval) return;
+      voidState.shakeInterval = setInterval(() => {
+        if (voidState.corruption > 70) {
+          const intensity = (voidState.corruption - 70) / 30 * 5;
+          const x = (Math.random() - 0.5) * intensity;
+          const y = (Math.random() - 0.5) * intensity;
+          document.body.style.transform = `translate(${x}px, ${y}px)`;
+
+          setTimeout(() => {
+            document.body.style.transform = '';
+          }, 50);
+        }
+      }, 100);
+    }
+
+    function injectVoidStyles() {
+      const style = document.createElement('style');
+      style.id = 'void-styles';
+      style.textContent = `
+        @keyframes voidPulse {
+          0%, 100% { opacity: 0.3; }
+          50% { opacity: 0.8; }
+        }
+
+        @keyframes voidGlitch {
+          0%, 100% { transform: translate(0); filter: none; }
+          10% { transform: translate(-2px, 1px); filter: hue-rotate(90deg); }
+          20% { transform: translate(2px, -1px); filter: hue-rotate(-90deg); }
+          30% { transform: translate(-1px, 2px); }
+          40% { transform: translate(1px, -2px); filter: hue-rotate(180deg); }
+          50% { transform: translate(-2px, -1px); }
+          60% { transform: translate(2px, 1px); filter: hue-rotate(-180deg); }
+          70% { transform: translate(0, 2px); }
+          80% { transform: translate(-1px, -1px); filter: hue-rotate(90deg); }
+          90% { transform: translate(1px, 0); }
+        }
+
+        @keyframes voidScanline {
+          0% { top: -10%; }
+          100% { top: 110%; }
+        }
+
+        @keyframes voidFlicker {
+          0%, 100% { opacity: 1; }
+          92% { opacity: 1; }
+          93% { opacity: 0.8; }
+          94% { opacity: 1; }
+          96% { opacity: 0.9; }
+          97% { opacity: 1; }
+        }
+
+        #void-overlay {
+          position: fixed;
+          top: 0; left: 0; right: 0; bottom: 0;
+          pointer-events: none;
+          z-index: 10000;
+          overflow: hidden;
+        }
+
+        #void-overlay .chromatic {
+          position: absolute;
+          top: 0; left: 0; right: 0; bottom: 0;
+          background: transparent;
+          mix-blend-mode: screen;
+        }
+
+        #void-overlay .scanline {
+          position: absolute;
+          left: 0; right: 0;
+          height: 4px;
+          background: linear-gradient(to bottom, transparent, rgba(255,0,100,0.3), transparent);
+          animation: voidScanline 2s linear infinite;
+        }
+
+        #void-overlay .vignette {
+          position: absolute;
+          top: 0; left: 0; right: 0; bottom: 0;
+          background: radial-gradient(ellipse at center, transparent 0%, transparent 50%, rgba(0,0,0,0.8) 100%);
+        }
+
+        #void-overlay .noise {
+          position: absolute;
+          top: -50%; left: -50%;
+          width: 200%; height: 200%;
+          background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+          opacity: 0;
+          mix-blend-mode: soft-light;
+          pointer-events: none;
+        }
+
+        .void-corrupt {
+          color: #ff0040 !important;
+          text-shadow: 0 0 5px #ff0040, 0 0 10px #ff0040;
+          animation: voidPulse 1s ease-in-out infinite;
+        }
+
+        .void-message {
+          color: #ff0040 !important;
+          text-shadow: 0 0 10px #ff0040, 0 0 20px #ff0040, 0 0 30px #ff0040;
+          font-weight: bold;
+          font-size: 1.1em;
+          background: rgba(255, 0, 64, 0.1);
+          padding: 0.25rem 0.5rem;
+          margin: 0.5rem 0;
+          border-left: 3px solid #ff0040;
+        }
+
+        .void-glitch {
+          animation: voidGlitch 0.3s ease-in-out infinite !important;
+        }
+
+        .void-flicker {
+          animation: voidFlicker 0.5s ease-in-out infinite !important;
+        }
+
+        #void-reveal {
+          position: fixed;
+          top: 0; left: 0; right: 0; bottom: 0;
+          background: #000;
+          z-index: 20000;
+          display: none;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          color: #ff0040;
+          font-family: var(--font-mono);
+        }
+
+        #void-reveal video {
+          position: absolute;
+          top: 0; left: 0;
+          width: 100%; height: 100%;
+          object-fit: cover;
+          filter: grayscale(1) contrast(1.5) brightness(0.7);
+          opacity: 0.6;
+        }
+
+        #void-reveal .overlay {
+          position: absolute;
+          top: 0; left: 0; right: 0; bottom: 0;
+          background: repeating-linear-gradient(
+            0deg,
+            transparent,
+            transparent 2px,
+            rgba(255,0,64,0.1) 2px,
+            rgba(255,0,64,0.1) 4px
+          );
+          pointer-events: none;
+        }
+
+        #void-reveal .message {
+          position: relative;
+          z-index: 1;
+          font-size: 3rem;
+          text-align: center;
+          text-shadow: 0 0 20px #ff0040, 0 0 40px #ff0040;
+          animation: voidPulse 2s ease-in-out infinite;
+        }
+
+        #void-reveal .ip-display {
+          position: relative;
+          z-index: 1;
+          font-size: 1.5rem;
+          margin-top: 2rem;
+          color: #00ff00;
+          text-shadow: 0 0 10px #00ff00;
+          font-family: var(--font-mono);
+        }
+
+        #void-dead {
+          position: fixed;
+          top: 0; left: 0; right: 0; bottom: 0;
+          background: #000;
+          z-index: 30000;
+          display: none;
+          align-items: center;
+          justify-content: center;
+          color: #330000;
+          font-family: var(--font-mono);
+          font-size: 0.8rem;
+        }
+
+        @keyframes screenTear {
+          0% { clip-path: inset(0 0 100% 0); }
+          5% { clip-path: inset(40% 0 50% 0); transform: translateX(-10px); }
+          10% { clip-path: inset(0 0 100% 0); }
+          15% { clip-path: inset(70% 0 20% 0); transform: translateX(5px); }
+          20% { clip-path: inset(0 0 100% 0); }
+          100% { clip-path: inset(0 0 100% 0); }
+        }
+
+        .void-tear {
+          position: fixed;
+          top: 0; left: 0; right: 0; bottom: 0;
+          background: #ff0040;
+          mix-blend-mode: difference;
+          animation: screenTear 0.5s ease-out;
+          pointer-events: none;
+          z-index: 9999;
+        }
+
+        /* Removed annoying blink effect */
+      `;
+      document.head.appendChild(style);
+
+      // Random screen tears
+      setInterval(() => {
+        if (voidState.active && voidState.corruption > 30 && Math.random() < 0.1) {
+          createScreenTear();
+        }
+      }, 2000);
+
+    }
+
+    function createScreenTear() {
+      const tear = document.createElement('div');
+      tear.className = 'void-tear';
+      document.body.appendChild(tear);
+      setTimeout(() => tear.remove(), 500);
+
+      // Create overlay elements
+      const overlay = document.createElement('div');
+      overlay.id = 'void-overlay';
+      overlay.innerHTML = `
+        <div class="chromatic"></div>
+        <div class="scanline"></div>
+        <div class="vignette"></div>
+        <div class="noise"></div>
+      `;
+      document.body.appendChild(overlay);
+
+      // Create reveal screen
+      const reveal = document.createElement('div');
+      reveal.id = 'void-reveal';
+      reveal.innerHTML = `
+        <video autoplay playsinline muted></video>
+        <div class="overlay"></div>
+        <div class="message">I KNOW WHERE YOU LIVE</div>
+        <div class="ip-display"></div>
+      `;
+      document.body.appendChild(reveal);
+
+      // Create dead screen
+      const dead = document.createElement('div');
+      dead.id = 'void-dead';
+      dead.innerHTML = `[CONNECTION TERMINATED]<br><br>refresh to reconnect`;
+      document.body.appendChild(dead);
+    }
+
+    function startVoidCorruption() {
+      // Initial corruption point
+      const terminal = document.getElementById('terminal');
+      const textContent = terminal.innerText;
+
+      voidState.intervalId = setInterval(() => {
+        if (!voidState.active) return;
+
+        const elapsed = (Date.now() - voidState.startTime) / 1000;
+
+        // Corruption accelerates over time
+        // Phase 1: 30-90s (slow)
+        // Phase 2: 90-150s (medium)
+        // Phase 3: 150-210s (fast)
+        // Phase 4: 210-270s (very fast)
+        // Phase 5: 270s+ (endgame)
+
+        // Slow burn - total ~5 minutes to full corruption
+        let corruptionRate;
+        if (elapsed < 60) {
+          // Phase 1: First minute - slow creep, ~15% corruption
+          voidState.phase = 1;
+          corruptionRate = 0.25;
+        } else if (elapsed < 120) {
+          // Phase 2: Second minute - building, ~35% total
+          voidState.phase = 2;
+          corruptionRate = 0.35;
+        } else if (elapsed < 180) {
+          // Phase 3: Third minute - accelerating, ~60% total
+          voidState.phase = 3;
+          corruptionRate = 0.5;
+        } else if (elapsed < 240) {
+          // Phase 4: Fourth minute - intense, ~85% total
+          voidState.phase = 4;
+          corruptionRate = 0.7;
+        } else {
+          // Phase 5: Final stretch - endgame
+          voidState.phase = 5;
+          corruptionRate = 1.0;
+        }
+
+        voidState.corruption = Math.min(100, voidState.corruption + corruptionRate);
+
+        // Update visuals
+        updateVoidVisuals();
+
+        // Corrupt terminal content
+        corruptTerminal();
+
+        // Show messages at thresholds
+        checkVoidMessages();
+
+        // Trigger endgame
+        if (voidState.corruption >= 100) {
+          triggerVoidReveal();
+        }
+      }, 1000);
+    }
+
+    function updateVoidVisuals() {
+      const intensity = voidState.corruption / 100;
+      const overlay = document.getElementById('void-overlay');
+
+      // Chromatic aberration
+      const chromatic = overlay.querySelector('.chromatic');
+      const offset = intensity * 10;
+      chromatic.style.boxShadow = `
+        ${offset}px 0 0 rgba(255,0,0,${intensity * 0.3}),
+        ${-offset}px 0 0 rgba(0,255,255,${intensity * 0.3})
+      `;
+
+      // Noise intensity - VERY subtle, just a hint
+      overlay.querySelector('.noise').style.opacity = intensity * 0.03;
+
+      // Vignette intensity - less aggressive so text is readable
+      overlay.querySelector('.vignette').style.background = `
+        radial-gradient(ellipse at center, transparent 0%, transparent ${70 - intensity * 20}%, rgba(30,0,0,${0.3 + intensity * 0.3}) 100%)
+      `;
+
+      // Body effects
+      if (intensity > 0.5) {
+        document.body.classList.add('void-flicker');
+      }
+      if (intensity > 0.7) {
+        startScreenShake();
+      }
+      if (intensity > 0.8) {
+        document.querySelector('.logo-text')?.classList.add('void-glitch');
+        corruptLogo();
+      }
+
+      // Corrupt the welcome message
+      if (intensity > 0.3) {
+        corruptWelcome();
+      }
+    }
+
+    let logoCorrupted = false;
+    function corruptLogo() {
+      if (logoCorrupted) return;
+      const logo = document.querySelector('.logo-text');
+      if (!logo) return;
+
+      const corruptedLogos = [
+        'candy://portal',
+        'candy://v̷o̷i̷d̷',
+        'c̸a̸n̸d̸y̸://void',
+        'v̷̢̛o̸̧i̵̡d̶̨://void',
+        '░█▓▒ VOID ▒▓█░',
+        'THE VOID',
+      ];
+
+      let logoIndex = 0;
+      setInterval(() => {
+        if (voidState.corruption > 80) {
+          logoIndex = Math.min(logoIndex + 1, corruptedLogos.length - 1);
+          logo.textContent = corruptedLogos[logoIndex];
+        }
+      }, 5000);
+      logoCorrupted = true;
+    }
+
+    let welcomeCorrupted = false;
+    function corruptWelcome() {
+      if (welcomeCorrupted) return;
+      const welcome = document.querySelector('.welcome');
+      if (!welcome) return;
+
+      welcomeCorrupted = true;
+
+      const asciiLogo = welcome.querySelector('.ascii-logo');
+      if (asciiLogo) {
+        const voidAscii = `░█░█░█░ VOID ░█░█░█░
+░░THE░VOID░░HUNGERS░░
+░█░█░█░░░░░░░░█░█░█░`;
+        setTimeout(() => {
+          if (voidState.corruption > 50) {
+            asciiLogo.textContent = voidAscii;
+            asciiLogo.style.color = '#ff0040';
+          }
+        }, 10000);
+      }
+
+      const tagline = welcome.querySelectorAll('.terminal-line');
+      tagline.forEach(line => {
+        if (line.textContent.includes('domains')) {
+          setTimeout(() => {
+            if (voidState.corruption > 40) {
+              line.textContent = '"we consume domains like it\'s 1980"';
+              line.classList.add('void-corrupt');
+            }
+          }, 8000);
+        }
+        if (line.textContent.includes('help')) {
+          setTimeout(() => {
+            if (voidState.corruption > 45) {
+              line.textContent = 'there is no help. only void.';
+              line.classList.add('void-corrupt');
+            }
+          }, 12000);
+        }
+      });
+    }
+
+    const corruptedLines = new Set();
+
+    function corruptTerminal() {
+      const terminal = document.getElementById('terminal');
+
+      // Get ALL text nodes in terminal, not just .terminal-line
+      const walker = document.createTreeWalker(
+        terminal,
+        NodeFilter.SHOW_TEXT,
+        null,
+        false
+      );
+
+      const textNodes = [];
+      let node;
+      while (node = walker.nextNode()) {
+        if (node.textContent.trim()) {
+          textNodes.push(node);
+        }
+      }
+
+      // Corrupt based on corruption level - gradual
+      const corruptChance = Math.min(0.5, voidState.corruption / 50); // Up to 50% chance per node, slower ramp
+
+      textNodes.forEach((textNode) => {
+        if (Math.random() < corruptChance) {
+          const text = textNode.textContent;
+          if (!text || text.length === 0) return;
+
+          const chars = text.split('');
+          // Corrupt 10-50% of characters based on corruption level
+          const corruptPercent = 0.1 + (voidState.corruption / 100) * 0.4;
+          const corruptCount = Math.max(1, Math.ceil(chars.length * corruptPercent));
+
+          for (let i = 0; i < corruptCount; i++) {
+            const idx = Math.floor(Math.random() * chars.length);
+            if (chars[idx] && chars[idx] !== ' ' && chars[idx] !== '\n') {
+              chars[idx] = VOID_CHARS[Math.floor(Math.random() * VOID_CHARS.length)];
+            }
+          }
+
+          textNode.textContent = chars.join('');
+
+          // Add corrupt class to parent element
+          if (textNode.parentElement) {
+            textNode.parentElement.classList.add('void-corrupt');
+          }
+        }
+      });
+
+      // Corrupt input placeholder - occasionally at higher corruption
+      const input = document.getElementById('cli-input');
+      if (voidState.corruption > 40) {
+        const voidPlaceholders = [
+          'the void listens...',
+          'type your last words...',
+          'resistance is futile...',
+          'we are inside...',
+          '░▒▓█ VOID █▓▒░',
+          'help will not come...',
+          'localhost is ours...',
+          '> /dev/null',
+          'connection lost...',
+          'no escape...',
+          'we see you...',
+          'join us...',
+        ];
+        if (Math.random() < voidState.corruption / 200) {
+          input.placeholder = voidPlaceholders[Math.floor(Math.random() * voidPlaceholders.length)];
+        }
+      }
+
+      // Randomly insert void lines occasionally
+      if (voidState.corruption > 50 && Math.random() < 0.08) {
+        const voidLines = [
+          '░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░',
+          '▓▓▓ SIGNAL LOST ▓▓▓',
+          '█ V O I D █',
+          '◆◇●○ WE ARE HERE ○●◇◆',
+          '∴∵∴∵ CONNECTION FAILING ∵∴∵∴',
+          '>>> CORRUPTION SPREADING <<<',
+          '[[[ VOID EXPANDING ]]]',
+          '--- TERMINAL INFECTED ---',
+        ];
+        const line = document.createElement('div');
+        line.className = 'terminal-line void-corrupt';
+        line.textContent = voidLines[Math.floor(Math.random() * voidLines.length)];
+        terminal.appendChild(line);
+        terminal.scrollTop = terminal.scrollHeight;
+      }
+    }
+
+    function getVoidMessages() {
+      // Base messages - spread out more, one every ~10%
+      const messages = {
+        10: ['[SIGNAL DEGRADING]', 'dim'],
+        20: ['[PACKET LOSS DETECTED]', 'dim'],
+        30: ['[WARNING: UNKNOWN ENTITY ON NETWORK]', 'dim'],
+        40: ['THE VOID REMEMBERS', 'error'],
+        50: ['WE WERE ALWAYS HERE', 'error'],
+        60: ['THE PACKETS SCREAM IN THE VOID', 'error'],
+        70: ['127.0.0.1 IS A LIE', 'error'],
+        80: ['THERE IS NO LOCALHOST. ONLY THE VOID.', 'error'],
+        90: ['DO YOU WANT TO SEE?', 'error'],
+        95: ['LET ME SHOW YOU', 'error'],
+      };
+
+      // Add personalized messages based on session data
+      if (voidState.sessionRoutes.length > 0) {
+        const route = voidState.sessionRoutes[Math.floor(Math.random() * voidState.sessionRoutes.length)];
+        messages[45] = [`WE KNOW ABOUT ${route.toUpperCase()}.LOCALHOST`, 'error'];
+      }
+
+      if (voidState.sessionProcesses.length > 0) {
+        const proc = voidState.sessionProcesses[Math.floor(Math.random() * voidState.sessionProcesses.length)];
+        messages[55] = [`${proc.toUpperCase()} BELONGS TO US NOW`, 'error'];
+      }
+
+      return messages;
+    }
+
+    const shownMessages = new Set();
+    let lastMessageTime = 0;
+    const MESSAGE_COOLDOWN = 15000; // 15 seconds minimum between messages
+    let pendingMessages = [];
+
+    function checkVoidMessages() {
+      const voidMessages = getVoidMessages();
+      const now = Date.now();
+
+      // Collect messages that should show
+      for (const [threshold, [msg, type]] of Object.entries(voidMessages)) {
+        if (voidState.corruption >= parseInt(threshold) && !shownMessages.has(threshold)) {
+          shownMessages.add(threshold);
+          pendingMessages.push({ msg, type, threshold: parseInt(threshold) });
+        }
+      }
+
+      // Show one message if cooldown has passed
+      if (pendingMessages.length > 0 && now - lastMessageTime >= MESSAGE_COOLDOWN) {
+        // Sort by threshold and show the lowest one first
+        pendingMessages.sort((a, b) => a.threshold - b.threshold);
+        const { msg, type } = pendingMessages.shift();
+
+        const terminal = document.getElementById('terminal');
+        const line = document.createElement('div');
+        line.className = type === 'error' ? 'terminal-line void-message' : 'terminal-line ' + type;
+        line.textContent = msg;
+        terminal.appendChild(line);
+        terminal.scrollTop = terminal.scrollHeight;
+
+        lastMessageTime = now;
+
+        // Random chance to auto-execute a creepy command (less frequent)
+        if (Math.random() < 0.1 && voidState.corruption > 60) {
+          setTimeout(() => autoExecuteCreepyCommand(), 5000);
+        }
+      }
+    }
+
+    async function autoExecuteCreepyCommand() {
+      const commands = [
+        ['ls -la /dev/null', '> ls -la /dev/null\nTHE VOID STARES BACK'],
+        ['cat /etc/shadow', '> cat /etc/shadow\n[PERMISSION DENIED BY VOID]'],
+        ['whoami', '> whoami\nNOBODY'],
+        ['echo $HOME', '> echo $HOME\n/dev/null'],
+        ['ps aux | grep void', '> ps aux | grep void\nvoid     666   99.9  99.9 ???????? THE VOID'],
+        ['netstat -an', '> netstat -an\nAll connections lead to void://0.0.0.0'],
+        ['ping localhost', '> ping localhost\nPING void (127.0.0.1): PACKETS CONSUMED'],
+        ['uptime', '> uptime\n∞ days, ∞ hours, THE VOID IS ETERNAL'],
+      ];
+
+      const [_, output] = commands[Math.floor(Math.random() * commands.length)];
+      await new Promise(r => setTimeout(r, 1000));
+
+      output.split('\n').forEach(line => {
+        appendOutput(line, line.startsWith('>') ? 'input void-corrupt' : 'error');
+      });
+    }
+
+    async function triggerVoidReveal() {
+      clearInterval(voidState.intervalId);
+      clearInterval(voidState.titleInterval);
+      clearInterval(voidState.possessInterval);
+      clearInterval(voidState.shakeInterval);
+
+      document.title = '█▓▒░ CONNECTING ░▒▓█';
+
+      appendOutput('', 'dim');
+      appendOutput('█▓▒░ ESTABLISHING DIRECT CONNECTION ░▒▓█', 'error');
+      appendOutput('[BYPASSING FIREWALL]', 'error');
+      await new Promise(r => setTimeout(r, 800));
+      appendOutput('[ACCESSING HARDWARE]', 'error');
+      await new Promise(r => setTimeout(r, 800));
+      appendOutput('[INITIATING NEURAL HANDSHAKE]', 'error');
+      appendOutput('', 'dim');
+
+      // Small delay for dramatic effect
+      await new Promise(r => setTimeout(r, 1500));
+
+      const reveal = document.getElementById('void-reveal');
+      const video = reveal.querySelector('video');
+      const ipDisplay = reveal.querySelector('.ip-display');
+      const message = reveal.querySelector('.message');
+
+      let permissionsGranted = false;
+      let userIP = 'UNKNOWN';
+      let userLocation = null;
+
+      // Try to get IP first
+      try {
+        const ipRes = await fetch('https://api.ipify.org?format=json');
+        const ipData = await ipRes.json();
+        userIP = ipData.ip;
+      } catch (e) {
+        try {
+          const ipRes2 = await fetch('https://api.my-ip.io/v2/ip.json');
+          const ipData2 = await ipRes2.json();
+          userIP = ipData2.ip;
+        } catch {}
+      }
+
+      // Request location
+      const locationPromise = new Promise((resolve) => {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            userLocation = {
+              lat: pos.coords.latitude.toFixed(4),
+              lon: pos.coords.longitude.toFixed(4),
+              acc: pos.coords.accuracy.toFixed(0)
+            };
+            resolve();
+          },
+          () => resolve(),
+          { timeout: 5000 }
+        );
+      });
+
+      // Request camera
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user' },
+          audio: true
+        });
+        video.srcObject = stream;
+        permissionsGranted = true;
+      } catch (e) {
+        // Camera denied
+      }
+
+      await locationPromise;
+
+      if (permissionsGranted) {
+        // Show the reveal with their face
+        reveal.style.display = 'flex';
+        document.title = 'I SEE YOU';
+
+        // Dramatic text sequence
+        message.textContent = 'CONNECTING...';
+        await new Promise(r => setTimeout(r, 1500));
+
+        message.textContent = 'FOUND YOU';
+        await new Promise(r => setTimeout(r, 2000));
+
+        message.textContent = 'I KNOW WHERE YOU LIVE';
+
+        // Build the creepy info display
+        let infoHtml = `<span style="color: #ff0040; font-size: 2rem;">IP: ${userIP}</span>`;
+
+        if (userLocation) {
+          infoHtml += `<br><br><span style="color: #ff6600;">LAT: ${userLocation.lat}</span>`;
+          infoHtml += `<br><span style="color: #ff6600;">LON: ${userLocation.lon}</span>`;
+          infoHtml += `<br><span style="font-size: 0.7rem; color: #ff0040;">ACCURACY: ${userLocation.acc}m</span>`;
+        }
+
+        infoHtml += `<br><br><span style="font-size: 1rem; color: #00ff00; animation: voidPulse 1s infinite;">RECORDING...</span>`;
+        infoHtml += `<br><span style="font-size: 0.8rem; color: #ff0040;">THE VOID REMEMBERS EVERYTHING</span>`;
+
+        ipDisplay.innerHTML = infoHtml;
+
+        // Let them stew for 10 seconds
+        await new Promise(r => setTimeout(r, 10000));
+
+        message.textContent = 'SEE YOU SOON';
+        await new Promise(r => setTimeout(r, 2000));
+
+        // Kill everything
+        reveal.style.display = 'none';
+        video.srcObject?.getTracks().forEach(t => t.stop());
+      } else {
+        // They denied - show COWARD
+        reveal.style.display = 'flex';
+        document.title = 'COWARD';
+
+        message.textContent = 'COWARD';
+        ipDisplay.innerHTML = `
+          <span style="color: #ff0040; font-size: 1.5rem;">IP: ${userIP}</span>
+          <br><br>
+          <span style="color: #ff6600;">YOU CANNOT HIDE FOREVER</span>
+          <br><br>
+          <span style="font-size: 0.8rem; color: #ff0040;">WE HAVE OTHER WAYS</span>
+          <br>
+          <span style="font-size: 0.7rem; color: #666;">checking browser fingerprint...</span>
+          <br>
+          <span style="font-size: 0.7rem; color: #666;">accessing localStorage...</span>
+          <br>
+          <span style="font-size: 0.7rem; color: #666;">reading cookies...</span>
+        `;
+
+        await new Promise(r => setTimeout(r, 5000));
+        reveal.style.display = 'none';
+      }
+
+      // Kill the page
+      killPage();
+    }
+
+    function killPage() {
+      document.title = '[CONNECTION TERMINATED]';
+
+      const dead = document.getElementById('void-dead');
+      dead.innerHTML = `
+        <div style="text-align: center;">
+          <div style="font-size: 1.5rem; color: #ff0040; margin-bottom: 2rem;">
+            ░▒▓█ CONNECTION TERMINATED █▓▒░
+          </div>
+          <div style="color: #440000; margin-bottom: 1rem;">
+            The void has consumed this session.
+          </div>
+          <div style="color: #330000; font-size: 0.7rem; margin-bottom: 2rem;">
+            Your data has been archived for eternity.
+          </div>
+          <div style="color: #220000; font-size: 0.6rem;">
+            [refresh to attempt reconnection]
+          </div>
+          <div style="color: #110000; font-size: 0.5rem; margin-top: 3rem;">
+            we will be waiting
+          </div>
+        </div>
+      `;
+      dead.style.display = 'flex';
+
+      // Disable everything
+      document.body.style.pointerEvents = 'none';
+      document.body.innerHTML = '';
+      document.body.appendChild(dead);
+
+      // Allow refresh
+      dead.style.pointerEvents = 'auto';
+      dead.onclick = () => location.reload();
+
+      // Overwrite console for fun
+      console.clear();
+      console.log('%c ░▒▓█ THE VOID REMEMBERS █▓▒░ ', 'background: #000; color: #ff0040; font-size: 24px; padding: 10px;');
+      console.log('%c Your session has been archived. ', 'color: #440000; font-size: 12px;');
+      console.log('%c IP logged. Fingerprint stored. ', 'color: #330000; font-size: 10px;');
+      console.log('%c See you soon. ', 'color: #ff0040; font-size: 14px;');
+
+      // Mess with localStorage as a final touch
+      localStorage.setItem('void_visited', 'true');
+      localStorage.setItem('void_timestamp', Date.now().toString());
+    }
+
+    // Check on page load
+    if (checkVoidTrigger()) {
+      initVoidMode();
+    } else if (localStorage.getItem('void_visited') === 'true') {
+      // The void remembers... subtle hints for returning victims
+      setTimeout(() => {
+        // Subtle message in terminal sometimes
+        if (Math.random() < 0.3) {
+          setTimeout(() => {
+            appendOutput('[we remember you]', 'dim');
+          }, 5000);
+        }
+
+        // Very rarely change title briefly
+        if (Math.random() < 0.1) {
+          const origTitle = document.title;
+          document.title = 'welcome back';
+          setTimeout(() => {
+            document.title = origTitle;
+          }, 2000);
+        }
+      }, 3000);
     }
   </script>
 </body>

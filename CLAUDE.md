@@ -67,7 +67,7 @@ Servers auto-kill after 1 hour of inactivity (no incoming traffic) unless they h
 
 ## MCP Tools
 
-The MCP server exposes: `candy_servers`, `candy_start`, `candy_stop`, `candy_logs`, `candy_register`, `candy_deregister`, `candy_portal_open`, `candy_portal_close`, `candy_portals`, `candy_input`
+The MCP server exposes: `candy_servers`, `candy_start`, `candy_restart`, `candy_stop`, `candy_logs`, `candy_register`, `candy_deregister`, `candy_portal_open`, `candy_portal_close`, `candy_portals`, `candy_input`
 
 ## Reserved Names
 

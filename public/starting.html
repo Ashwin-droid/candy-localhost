@@ -554,7 +554,9 @@
 
     document.getElementById('serverName').textContent = serverName;
     document.getElementById('killBtn').onclick = () => {
-      location.href = `http://kill.${serverName}.localhost`;
+      // candy-localhost kill handler uses <name>.kill.localhost (and <name>.k.localhost)
+      // Prefer https to match Caddy's "tls internal" config for *.kill.localhost.
+      location.href = `https://${serverName}.kill.localhost`;
     };
 
     function updatePorts(ports) {

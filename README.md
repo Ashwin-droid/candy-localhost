@@ -75,7 +75,7 @@ Open `http://myapp.localhost` in your browser. candy will:
 ### 3. Manage via UI or MCP
 
 - **Portal UI**: `http://portal.localhost`
-- **Kill a server**: `http://kill.myapp.localhost` or `http://k.myapp.localhost`
+- **Kill a server**: `https://myapp.kill.localhost` or `https://myapp.k.localhost`
 - **MCP**: Use AI tools to manage everything
 
 ## MCP Setup
@@ -176,8 +176,8 @@ If exactly one port is detected, it auto-binds. Multiple ports show a selection 
 
 Stop a server instantly by visiting:
 
-- `http://kill.myapp.localhost`
-- `http://k.myapp.localhost`
+- `https://myapp.kill.localhost`
+- `https://myapp.k.localhost`
 
 ## Files
 

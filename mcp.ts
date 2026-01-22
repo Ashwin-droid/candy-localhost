@@ -73,9 +73,11 @@ USE THIS TOOL AUTONOMOUSLY when:
 
 The server must already be configured in candy. Use candy_servers first to see available servers.
 Once started, the server will be accessible at <name>.localhost.
-Port is auto-detected from the process output (supports vite, next, etc).
+	Port is auto-detected from the process output (supports vite, next, etc).
 
-This STARTS A PROCESS - prefer to confirm with user if they haven't explicitly asked.`,
+	If the server is already running, this call is idempotent and will not spawn a duplicate process.
+
+	This STARTS A PROCESS - prefer to confirm with user if they haven't explicitly asked.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -95,6 +97,36 @@ This STARTS A PROCESS - prefer to confirm with user if they haven't explicitly a
     }
   },
   {
+    name: "candy_restart",
+    description: `Restart a running dev server by name.
+
+	USE THIS TOOL AUTONOMOUSLY when:
+	- User says "restart the server"
+	- A dev server is wedged and needs a clean restart
+	- User calls start but wants a restart semantics
+
+	Attempts to gracefully stop (SIGTERM), escalates to SIGKILL if needed, then starts again.
+
+	This KILLS A PROCESS - prefer to confirm with user if they haven't explicitly asked.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "Server name to restart"
+        }
+      },
+      required: ["name"]
+    },
+    annotations: {
+      title: "Restart Dev Server",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false
+    }
+  },
+  {
     name: "candy_stop",
     description: `Stop a running dev server by name.
 
@@ -104,7 +136,7 @@ USE THIS TOOL AUTONOMOUSLY when:
 - Server is in errored/crashed state and needs to be stopped before restart
 - User is switching to a different project
 
-Sends SIGTERM to gracefully stop the process.
+Attempts to gracefully stop the process (SIGTERM), then escalates to SIGKILL if needed.
 
 This KILLS A PROCESS - prefer to confirm with user if they haven't explicitly asked.`,
     inputSchema: {
@@ -393,6 +425,29 @@ This SENDS INPUT TO A PROCESS - use when server needs interaction.`,
 const MCP_SECRET_FILE = `${process.env.HOME}/.config/candy/mcp-secret`
 let apiKey: string | null = null
 
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+const sanitizeFetchErrorMessage = (message: string): string => {
+  let msg = message.trim()
+  // Bun often appends this suggestion; it's not actionable for end users inside MCP tool output.
+  msg = msg.replace(/For more information, pass `verbose: true` in\s*the second argument to fetch\(\)\.?/g, "").trim()
+  msg = msg.replace(/^Error:\s*/g, "").trim()
+
+  if (msg.includes("The socket connection was closed unexpectedly")) {
+    return "Daemon connection closed unexpectedly."
+  }
+  if (msg.includes("ECONNREFUSED") || msg.includes("Connection refused")) {
+    return "Could not connect to daemon (connection refused)."
+  }
+  if (msg.includes("fetch failed")) {
+    return "Request to daemon failed."
+  }
+  if (msg.includes("AbortError") || msg.includes("timed out") || msg.includes("timeout")) {
+    return "Request to daemon timed out."
+  }
+  return msg || "Request failed."
+}
+
 async function getApiKey(): Promise<string> {
   if (apiKey) return apiKey
 
@@ -407,7 +462,8 @@ async function getApiKey(): Promise<string> {
   const res = await fetch(`${DAEMON_URL}/mcp/auth`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ secret })
+    body: JSON.stringify({ secret }),
+    signal: AbortSignal.timeout(5000),
   })
 
   if (!res.ok) {
@@ -420,18 +476,90 @@ async function getApiKey(): Promise<string> {
 }
 
 async function daemonFetch(path: string, options: RequestInit = {}): Promise<any> {
-  const key = await getApiKey()
+  const url = `${DAEMON_URL}${path}`
 
-  const res = await fetch(`${DAEMON_URL}${path}`, {
-    ...options,
-    headers: {
+  const maxAttempts = 3
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let key: string
+    try {
+      key = await getApiKey()
+    } catch (e) {
+      return {
+        error: String(e),
+        hint: "Ensure the candy daemon is running (port 9999) and ~/.config/candy/mcp-secret exists."
+      }
+    }
+
+    const headers = {
       ...options.headers,
       "X-Candy-API-Key": key,
-      "Content-Type": "application/json"
-    }
-  })
+      "Content-Type": "application/json",
+    } as Record<string, string>
 
-  return res.json()
+    let res: Response
+    try {
+      res = await fetch(url, {
+        ...options,
+        headers,
+        // Avoid hanging MCP calls forever on a wedged daemon/network stack
+        signal: options.signal ?? AbortSignal.timeout(15000),
+      })
+    } catch (e) {
+      const msg = sanitizeFetchErrorMessage(String(e))
+      const retryable =
+        msg.includes("Daemon connection closed unexpectedly") ||
+        msg.includes("connection refused") ||
+        msg.includes("Request to daemon failed") ||
+        msg.includes("timed out")
+      if (retryable && attempt < maxAttempts) {
+        await sleep(150 * attempt)
+        continue
+      }
+      return {
+        error: msg,
+        hint: "Daemon unreachable. Check `systemctl status candy-localhost@$USER` or run `bun run daemon.ts`."
+      }
+    }
+
+    // If daemon restarted, the API key becomes invalid; clear and retry once.
+    if (res.status === 401) {
+      apiKey = null
+      if (attempt < maxAttempts) {
+        await sleep(100 * attempt)
+        continue
+      }
+    }
+
+    const contentType = res.headers.get("content-type") || ""
+    const parseBody = async () => {
+      if (contentType.includes("application/json")) {
+        try { return await res.json() } catch {}
+      }
+      try { return await res.text() } catch {}
+      return null
+    }
+
+    const body = await parseBody()
+
+    if (!res.ok) {
+      const errMsg =
+        (body && typeof body === "object" && "error" in body && typeof (body as any).error === "string")
+          ? (body as any).error
+          : `${res.status} ${res.statusText}`.trim()
+      return {
+        error: errMsg || "Request failed",
+        status: res.status,
+        details: body,
+        hint: res.status === 401
+          ? "Authentication failed; daemon may have restarted. Try again."
+          : undefined
+      }
+    }
+
+    return body
+  }
+
+  return { error: "Request failed after retries" }
 }
 
 // ============================================================================
@@ -443,6 +571,9 @@ async function handleServers(): Promise<any> {
     daemonFetch("/configs"),
     daemonFetch("/processes")
   ])
+
+  if (configsRes?.error) return configsRes
+  if (processesRes?.error) return processesRes
 
   const configs = configsRes.configs || {}
   const processes = processesRes.processes || {}
@@ -467,6 +598,11 @@ async function handleServers(): Promise<any> {
 async function handleStart(params: any): Promise<any> {
   const { name } = params
   return await daemonFetch(`/process/start/${name}`, { method: "POST" })
+}
+
+async function handleRestart(params: any): Promise<any> {
+  const { name } = params
+  return await daemonFetch(`/process/restart/${name}`, { method: "POST" })
 }
 
 async function handleStop(params: any): Promise<any> {
@@ -605,6 +741,9 @@ async function handleRequest(request: MCPRequest): Promise<MCPResponse | null> {
             break
           case "candy_start":
             result = await handleStart(toolArgs)
+            break
+          case "candy_restart":
+            result = await handleRestart(toolArgs)
             break
           case "candy_stop":
             result = await handleStop(toolArgs)

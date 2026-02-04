@@ -1391,15 +1391,11 @@ const controlServer = Bun.serve({
     // Void endpoints bypass auth (easter egg system needs to work across pages)
     const isVoidRoute = url.pathname.startsWith("/void/")
 
-    // CLI bypass - local CLI sends this header (only works from localhost)
-    const isCLI = req.headers.get("X-Candy-CLI") === "true" && 
-      (hostHeader === "localhost:9999" || hostHeader === "127.0.0.1:9999")
-
     // === API Routes require token validation ===
-    // MCP uses X-Candy-API-Key header (obtained via /mcp/auth)
+    // MCP/CLI uses X-Candy-API-Key header (obtained via /mcp/auth with secret)
     const mcpApiKey = req.headers.get("X-Candy-API-Key")
     const isMCP = mcpApiKey && validateMcpApiKey(mcpApiKey)
-    if (!isWebRoute && !isMCP && !isVoidRoute && !isCLI) {
+    if (!isWebRoute && !isMCP && !isVoidRoute) {
       const token = req.headers.get("X-Candy-Token")
       if (!token || !consumeToken(token)) {
         return unauthorizedResponse(corsHeaders)

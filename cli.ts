@@ -41,25 +41,59 @@ const getFolderName = (): string => {
 // Get current working directory
 const getCwd = (): string => process.cwd()
 
-// API helpers - always send CLI header for auth bypass
-const CLI_HEADERS = { 'X-Candy-CLI': 'true' }
+// API helpers - use MCP auth (reads secret from ~/.config/candy/mcp-secret)
+const MCP_SECRET_FILE = `${process.env.HOME}/.config/candy/mcp-secret`
+
+async function getApiKey(): Promise<string | null> {
+  try {
+    const secret = await Bun.file(MCP_SECRET_FILE).text()
+    // Bootstrap: get API key using secret
+    const res = await fetch(`${API}/mcp/auth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ secret: secret.trim() })
+    })
+    if (res.ok) {
+      const data = await res.json()
+      return data.apiKey
+    }
+  } catch {}
+  return null
+}
+
+let cachedApiKey: string | null = null
+
+async function getHeaders(): Promise<Record<string, string>> {
+  if (!cachedApiKey) {
+    cachedApiKey = await getApiKey()
+  }
+  if (!cachedApiKey) {
+    console.error(`${c.red}Error: Could not authenticate with daemon${c.reset}`)
+    console.error(`${c.dim}Make sure the daemon is running and ${MCP_SECRET_FILE} exists${c.reset}`)
+    process.exit(1)
+  }
+  return { 'X-Candy-API-Key': cachedApiKey }
+}
 
 async function apiGet(path: string) {
-  const res = await fetch(`${API}${path}`, { headers: CLI_HEADERS })
+  const headers = await getHeaders()
+  const res = await fetch(`${API}${path}`, { headers })
   return res.json()
 }
 
 async function apiPost(path: string, body?: any) {
+  const headers = await getHeaders()
   const res = await fetch(`${API}${path}`, {
     method: 'POST',
-    headers: { ...CLI_HEADERS, 'Content-Type': 'application/json' },
+    headers: { ...headers, 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   })
   return res.json()
 }
 
 async function apiDelete(path: string) {
-  const res = await fetch(`${API}${path}`, { method: 'DELETE', headers: CLI_HEADERS })
+  const headers = await getHeaders()
+  const res = await fetch(`${API}${path}`, { method: 'DELETE', headers })
   return res.json()
 }
 

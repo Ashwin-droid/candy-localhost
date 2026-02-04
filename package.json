@@ -1,13 +1,17 @@
 {
   "name": "candy-localhost",
-  "version": "0.4.0",
-  "description": "Lazy dev server orchestrator with MCP integration",
+  "version": "0.5.0",
+  "description": "Lazy dev server orchestrator - we hand out domains like it's 1980",
   "type": "module",
   "main": "daemon.ts",
+  "bin": {
+    "candy": "./cli.ts"
+  },
   "scripts": {
     "daemon": "bun run daemon.ts",
     "dev": "bun run --watch daemon.ts",
     "mcp": "bun run mcp.ts",
+    "cli": "bun run cli.ts",
     "test": "bun test",
     "install-service": "sudo cp candy-localhost.service /etc/systemd/system/candy-localhost@.service && sudo systemctl daemon-reload && echo 'Service installed. Enable with: sudo systemctl enable --now candy-localhost@$USER'"
   },

@@ -70,8 +70,20 @@
       position: fixed;
       font-size: 2rem;
       animation: float 6s ease-in-out infinite;
-      pointer-events: none;
+      pointer-events: auto;
       opacity: 0.7;
+      cursor: pointer;
+      transition: transform 0.2s ease, opacity 0.2s ease;
+      z-index: 10;
+      user-select: none;
+    }
+    .candy:hover {
+      transform: scale(1.3) !important;
+      opacity: 1;
+    }
+    .candy.is-eye {
+      cursor: default;
+      animation: float 6s ease-in-out infinite, eyePulse 2s ease-in-out infinite;
     }
     .candy:nth-child(1) { top: 10%; left: 5%; animation-delay: 0s; }
     .candy:nth-child(2) { top: 20%; right: 10%; animation-delay: 1s; }
@@ -79,6 +91,54 @@
     .candy:nth-child(4) { bottom: 25%; right: 5%; animation-delay: 3s; }
     .candy:nth-child(5) { top: 50%; left: 3%; animation-delay: 4s; }
     .candy:nth-child(6) { top: 40%; right: 3%; animation-delay: 5s; }
+
+    @keyframes eyePulse {
+      0%, 100% { opacity: 0.7; }
+      50% { opacity: 1; }
+    }
+
+    /* Comic speech bubble */
+    .speech-bubble {
+      position: fixed;
+      background: white;
+      border: 3px solid var(--dark);
+      border-radius: 20px;
+      padding: 10px 15px;
+      font-family: 'Nunito', sans-serif;
+      font-weight: 800;
+      font-size: 0.9rem;
+      color: var(--dark);
+      z-index: 1000;
+      pointer-events: none;
+      animation: bubblePop 0.3s ease-out, bubbleFade 2s ease-in 0.5s forwards;
+      box-shadow: 3px 3px 0 var(--dark);
+    }
+    .speech-bubble::after {
+      content: '';
+      position: absolute;
+      bottom: -15px;
+      left: 20px;
+      border: 10px solid transparent;
+      border-top-color: var(--dark);
+    }
+    .speech-bubble::before {
+      content: '';
+      position: absolute;
+      bottom: -10px;
+      left: 23px;
+      border: 7px solid transparent;
+      border-top-color: white;
+      z-index: 1;
+    }
+    @keyframes bubblePop {
+      0% { transform: scale(0); opacity: 0; }
+      50% { transform: scale(1.2); }
+      100% { transform: scale(1); opacity: 1; }
+    }
+    @keyframes bubbleFade {
+      0% { opacity: 1; }
+      100% { opacity: 0; }
+    }
 
     .card {
       background: var(--white);
@@ -1008,9 +1068,8 @@
     const candies = document.querySelectorAll('.candy');
     const statusEl = document.querySelector('.status');
 
-    // Track corruption state
+    // Track corruption state (eyes now tracked via .is-eye CSS class)
     const corruption = {
-      eyes: new Set(),        // indices of candies turned to eyes
       taglineCorrupted: false,
       shadowPresent: false,
       statusCorrupted: false,
@@ -1035,24 +1094,97 @@
       return baseChance;
     }
 
-    // Candy → Eye: PERSISTENT
+    // Available candy emojis for spawning
+    const candyEmojis = ['🍬', '🍭', '🍫', '🧁', '🍩', '🍪', '🍰', '🎂', '🍡', '🍦', '🍧', '🍨', '🥧', '🍮', '🍯'];
+    
+    // Speech bubble messages when you click a candy
+    const eyeMessages = [
+      'that was my eye',
+      'now i see you',
+      'we see through you',
+      'you cant hide',
+      'we are inside',
+      'behind you',
+      'dont turn around',
+      'we know your name',
+      'we live in your walls',
+      'check your closet',
+      'we never left',
+      'you invited us',
+      'its too late',
+      'we are hungry',
+      'feed us more',
+    ];
+    
+    // Convert a candy to an eye (shared function)
+    function convertToEye(candy, showBubble = false) {
+      if (candy.classList.contains('is-eye')) return; // Already an eye
+      
+      candy.classList.add('is-eye');
+      candy.textContent = '👁️';
+      candy.style.transform = 'scale(1.2)';
+      candy.style.transition = 'transform 0.3s ease';
+      
+      // Show speech bubble if clicked manually
+      if (showBubble) {
+        const rect = candy.getBoundingClientRect();
+        const bubble = document.createElement('div');
+        bubble.className = 'speech-bubble';
+        bubble.textContent = eyeMessages[Math.floor(Math.random() * eyeMessages.length)];
+        bubble.style.left = `${rect.left}px`;
+        bubble.style.top = `${rect.top - 50}px`;
+        document.body.appendChild(bubble);
+        
+        // Remove bubble after animation
+        setTimeout(() => bubble.remove(), 2500);
+        
+        // +1 pity - feeding the void
+        fetch('http://localhost:9999/void/pity', { method: 'POST' })
+          .then(res => res.json())
+          .then(data => console.log(`👁️ Pity +1 (now ${data.pity})`))
+          .catch(() => {});
+      }
+      
+      // Spawn a new candy somewhere random
+      spawnNewCandy();
+    }
+    
+    // Spawn a new candy at a random position
+    function spawnNewCandy() {
+      const candy = document.createElement('div');
+      candy.className = 'candy';
+      candy.textContent = candyEmojis[Math.floor(Math.random() * candyEmojis.length)];
+      
+      // Random position (avoid center where the card is)
+      const side = Math.random() < 0.5 ? 'left' : 'right';
+      const vertPos = Math.random() * 80 + 10; // 10-90%
+      const horizPos = Math.random() * 15 + 2; // 2-17% from edge
+      
+      candy.style.top = `${vertPos}%`;
+      candy.style[side] = `${horizPos}%`;
+      candy.style.animationDelay = `${Math.random() * 5}s`;
+      
+      // Make it clickable
+      candy.addEventListener('click', () => convertToEye(candy, true));
+      
+      document.body.appendChild(candy);
+    }
+    
+    // Make initial candies clickable
+    candies.forEach(candy => {
+      candy.addEventListener('click', () => convertToEye(candy, true));
+    });
+
+    // Candy → Eye: PERSISTENT (automatic corruption)
     // Once a candy becomes an eye, it stays forever
     setInterval(() => {
-      if (corruption.eyes.size >= candies.length) return; // all corrupted
+      const allCandies = document.querySelectorAll('.candy:not(.is-eye)');
+      if (allCandies.length === 0) return; // all corrupted
 
       if (Math.random() < getChance(0.03)) {
         // Pick a random non-corrupted candy
-        const available = [...candies].map((c, i) => i).filter(i => !corruption.eyes.has(i));
-        if (available.length === 0) return;
-
-        const idx = available[Math.floor(Math.random() * available.length)];
-        const candy = candies[idx];
-
-        // Corrupt it permanently
-        corruption.eyes.add(idx);
-        candy.textContent = '👁️';
-        candy.style.transform = 'scale(1.2)';
-        candy.style.transition = 'transform 0.3s ease';
+        const candy = allCandies[Math.floor(Math.random() * allCandies.length)];
+        convertToEye(candy, false); // No speech bubble for auto-corruption
       }
     }, 2000);
 
@@ -1546,6 +1678,136 @@
         }
       }
     });
+
+    // =========================================
+    // VOID INTEGRATION - The daemon remembers
+    // If marked by void storm, horror accelerates
+    // =========================================
+
+    let voidMarked = false;
+    let voidSpeedMultiplier = 1;
+
+    // Check if we've been marked by the void
+    async function checkVoidMark() {
+      try {
+        const res = await fetch('http://localhost:9999/void/status');
+        const data = await res.json();
+        if (data.marked) {
+          voidMarked = true;
+          voidSpeedMultiplier = 3; // 3x faster corruption if marked
+          console.log('👁️ The void has marked you. Corruption accelerated.');
+          
+          // Immediately corrupt some things if marked
+          if (!corruption.taglineCorrupted && Math.random() < 0.5) {
+            corruption.taglineCorrupted = true;
+            tagline.textContent = wrongTaglines[0];
+          }
+          if (!corruption.shadowPresent && Math.random() < 0.3) {
+            spawnShadow();
+          }
+        }
+      } catch (e) {
+        // Daemon not running, no void state
+      }
+    }
+
+    // Override getChance to include void multiplier
+    const originalGetChance = getChance;
+    window.getChance = function(baseChance) {
+      let chance = originalGetChance(baseChance);
+      if (voidMarked) {
+        chance *= voidSpeedMultiplier;
+      }
+      return Math.min(chance, 1); // Cap at 100%
+    };
+
+    // Poll for void burst events (simpler than SSE)
+    let lastBurstId = null;
+    
+    function pollVoidStatus() {
+      fetch('http://localhost:9999/void/status')
+        .then(res => res.json())
+        .then(data => {
+          // Check if newly marked
+          if (data.marked && !voidMarked) {
+            voidMarked = true;
+            voidSpeedMultiplier = 3;
+            console.log('👁️ Void mark detected');
+          }
+          
+          // Check for new burst
+          if (data.burstId && data.burstId !== lastBurstId) {
+            if (lastBurstId !== null) {
+              // This is a NEW burst, not the initial load
+              console.log('👁️ VOID BURST RECEIVED:', data.burstId);
+              triggerVoidBurstChaos();
+            }
+            lastBurstId = data.burstId;
+          }
+        })
+        .catch(() => {
+          // Daemon not available
+        });
+    }
+    
+    // Poll every 2 seconds
+    setInterval(pollVoidStatus, 2000);
+
+    // Chaos triggered by void burst from portal.html
+    function triggerVoidBurstChaos() {
+      // Instantly corrupt ALL candies (including spawned ones)
+      document.querySelectorAll('.candy:not(.is-eye)').forEach(candy => {
+        convertToEye(candy, false);
+        candy.style.transform = 'scale(1.5)';
+      });
+
+      // Corrupt tagline
+      corruption.taglineCorrupted = true;
+      tagline.textContent = "THE VOID SEES ALL";
+      tagline.style.color = '#8b0000';
+
+      // Spawn shadow if not present
+      if (!corruption.shadowPresent) {
+        spawnShadow();
+      }
+
+      // Max out color corruption
+      corruption.colorShift = 1;
+      document.body.style.filter = 'saturate(0.7) hue-rotate(-15deg) contrast(1.1)';
+
+      // Corrupt status
+      corruption.statusCorrupted = true;
+      statusEl.textContent = '👁️ CLAIMED';
+      statusEl.style.background = 'linear-gradient(135deg, #8b0000 0%, #4a0000 100%)';
+      statusEl.style.color = '#fff';
+
+      // Flash the screen
+      const flash = document.createElement('div');
+      flash.style.cssText = `
+        position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(139, 0, 0, 0.5); z-index: 99999;
+        animation: burstFlash 0.5s ease-out forwards;
+      `;
+      document.body.appendChild(flash);
+      setTimeout(() => flash.remove(), 500);
+
+      // Add burst flash animation if not exists
+      if (!document.getElementById('burst-flash-style')) {
+        const style = document.createElement('style');
+        style.id = 'burst-flash-style';
+        style.textContent = `
+          @keyframes burstFlash {
+            0% { opacity: 1; }
+            100% { opacity: 0; }
+          }
+        `;
+        document.head.appendChild(style);
+      }
+    }
+
+    // Initialize void integration
+    checkVoidMark();
+    pollVoidStatus(); // Start polling for bursts
   </script>
 </body>
 </html>

@@ -217,6 +217,33 @@ const serverConfigs = new Map<string, ServerConfig>()
 const tunnelHistory = new Map<string, string>()
 let caddyProc: Subprocess | null = null
 
+// ============================================================================
+// THE VOID - Eldritch Horror State Management
+// ============================================================================
+
+interface VoidState {
+  marked: boolean           // Has the user been touched by the void?
+  markedAt: number | null   // When did the void first claim them?
+  burstCount: number        // How many times has the void burst forth?
+  lastBurst: number | null  // When did the void last manifest?
+  burstPending: boolean     // Is a burst event waiting to be consumed?
+  burstId: string | null    // Unique ID for current burst (for coordination)
+  pity: number              // Pity counter - increases chance of void storm
+}
+
+let voidState: VoidState = {
+  marked: false,
+  markedAt: null,
+  burstCount: 0,
+  lastBurst: null,
+  burstPending: false,
+  burstId: null,
+  pity: -20, // Negative pity - need 20 visits/clicks before void starts building
+}
+
+// SSE connections waiting for void events
+const voidListeners = new Set<ReadableStreamDefaultController<Uint8Array>>()
+
 // Rolling token chains - per-client (session) amnesiac arrays
 // Token format: sessionId:tokenValue
 // Each session has its own chain: [previous_used, current_valid]
@@ -562,6 +589,137 @@ const removeServerConfig = async (name: string, actor: Actor = 'Portal') => {
   serverConfigs.delete(name)
   await saveServerConfigs()
   auditLog('CONFIG_REMOVE', name, actor)
+}
+
+// ============================================================================
+// Void State Management - The Daemon Remembers
+// ============================================================================
+
+const loadVoidState = async () => {
+  // The void is memory only - it forgets when the daemon sleeps
+  // All state resets on daemon restart
+  console.log(`\x1b[35m👁️ The void awakens...\x1b[0m`)
+}
+
+// saveVoidState removed - void is memory only, forgets when daemon sleeps
+
+// Mark the user - they have been touched by the void (memory only - resets on daemon restart)
+const markByVoid = async () => {
+  voidState.marked = true
+  voidState.markedAt = voidState.markedAt || Date.now()
+  voidState.pity = -20 // Reset pity when void storm triggers
+  // Not saved to disk - the void forgets when daemon sleeps
+  auditLog('VOID_MARK', 'The void has marked this machine', 'Void')
+  console.log(`\x1b[35m👁️ THE VOID HAS MARKED THIS MACHINE\x1b[0m`)
+}
+
+// Trigger a void burst - chaos across all pages
+const triggerVoidBurst = async () => {
+  voidState.burstCount++
+  voidState.lastBurst = Date.now()
+  voidState.burstPending = true
+  voidState.burstId = `burst_${Date.now()}_${Math.random().toString(36).slice(2)}`
+  voidState.pity = -20 // Reset pity on burst
+  // burstCount saved for fun stats, but mark/pity are memory only
+  
+  auditLog('VOID_BURST', `Burst #${voidState.burstCount} - ${voidState.burstId}`, 'Void')
+  console.log(`\x1b[35;1m👁️ VOID BURST #${voidState.burstCount} - THE VOID MANIFESTS\x1b[0m`)
+  
+  // Notify all SSE listeners
+  const encoder = new TextEncoder()
+  const eventData = encoder.encode(`event: burst\ndata: ${JSON.stringify({
+    burstId: voidState.burstId,
+    burstCount: voidState.burstCount,
+    timestamp: voidState.lastBurst,
+  })}\n\n`)
+  
+  for (const controller of voidListeners) {
+    try {
+      controller.enqueue(eventData)
+    } catch {
+      voidListeners.delete(controller)
+    }
+  }
+  
+  // THE VOID MANIFESTS IN THE REAL WORLD
+  // Spawn a calculator because the void wants to do math
+  spawnVoidManifestation()
+}
+
+// The void manifests as a calculator (or other GUI chaos)
+const spawnVoidManifestation = async () => {
+  // GUI apps need display access - systemd services don't have this by default
+  const guiEnv = {
+    ...process.env,
+    DISPLAY: ':1',
+    WAYLAND_DISPLAY: 'wayland-0',
+    XDG_RUNTIME_DIR: `/run/user/1000`,
+  }
+
+  // Try various calculators depending on what's installed
+  const calculators = [
+    'gnome-calculator',
+    'kcalc', 
+    'xcalc',
+    'galculator',
+    'mate-calc',
+    'qalculate-gtk',
+    '/System/Applications/Calculator.app/Contents/MacOS/Calculator', // macOS
+  ]
+  
+  // Also try some other fun ones
+  const funManifestations = [
+    'xeyes',           // Classic X11 eyes that follow cursor
+    'oneko',           // Cat that chases cursor
+    'xsnow',           // Snow on your screen
+  ]
+  
+  // Try calculators first (the void wants to count its victims)
+  for (const calc of calculators) {
+    try {
+      const proc = spawn([calc], {
+        stdout: 'ignore',
+        stderr: 'ignore',
+        stdin: 'ignore',
+        env: guiEnv,
+      })
+      if (proc.pid) {
+        console.log(`\x1b[35m👁️ The void manifests as: ${calc} (PID ${proc.pid})\x1b[0m`)
+        auditLog('VOID_MANIFEST', `Spawned ${calc} (PID ${proc.pid})`, 'Void')
+        return
+      }
+    } catch {
+      // Try next one
+    }
+  }
+  
+  // If no calculator, try fun manifestations
+  for (const fun of funManifestations) {
+    try {
+      const proc = spawn([fun], {
+        stdout: 'ignore', 
+        stderr: 'ignore',
+        stdin: 'ignore',
+        env: guiEnv,
+      })
+      if (proc.pid) {
+        console.log(`\x1b[35m👁️ The void manifests as: ${fun} (PID ${proc.pid})\x1b[0m`)
+        auditLog('VOID_MANIFEST', `Spawned ${fun} (PID ${proc.pid})`, 'Void')
+        return
+      }
+    } catch {
+      // The void will find another way
+    }
+  }
+  
+  // Last resort: try to send a desktop notification
+  try {
+    await $`DISPLAY=:1 WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 notify-send -u critical "THE VOID" "I SEE YOU" -i dialog-warning`.quiet().nothrow()
+    console.log(`\x1b[35m👁️ The void manifests as a notification\x1b[0m`)
+    auditLog('VOID_MANIFEST', 'Desktop notification', 'Void')
+  } catch {
+    // The void is patient
+  }
 }
 
 // ============================================================================
@@ -1230,11 +1388,14 @@ const controlServer = Bun.serve({
       url.pathname.startsWith("/portal/status/")
     )
 
+    // Void endpoints bypass auth (easter egg system needs to work across pages)
+    const isVoidRoute = url.pathname.startsWith("/void/")
+
     // === API Routes require token validation ===
     // MCP uses X-Candy-API-Key header (obtained via /mcp/auth)
     const mcpApiKey = req.headers.get("X-Candy-API-Key")
     const isMCP = mcpApiKey && validateMcpApiKey(mcpApiKey)
-    if (!isWebRoute && !isMCP) {
+    if (!isWebRoute && !isMCP && !isVoidRoute) {
       const token = req.headers.get("X-Candy-Token")
       if (!token || !consumeToken(token)) {
         return unauthorizedResponse(corsHeaders)
@@ -1866,6 +2027,103 @@ const controlServer = Bun.serve({
       return Response.json({ success: true }, { headers: corsHeaders })
     }
 
+    // === THE VOID API ===
+
+    // Get void status - are they marked? is a burst pending?
+    if (req.method === "GET" && url.pathname === "/void/status") {
+      return Response.json({
+        marked: voidState.marked,
+        markedAt: voidState.markedAt,
+        burstCount: voidState.burstCount,
+        lastBurst: voidState.lastBurst,
+        burstPending: voidState.burstPending,
+        burstId: voidState.burstId,
+        pity: voidState.pity,
+      }, { headers: corsHeaders })
+    }
+
+    // Increment pity - feeds the void, increases storm chance (memory only)
+    if (req.method === "POST" && url.pathname === "/void/pity") {
+      voidState.pity++
+      return Response.json({ pity: voidState.pity }, { headers: corsHeaders })
+    }
+
+    // Mark the user - called when void storm triggers in portal.html
+    if (req.method === "POST" && url.pathname === "/void/mark") {
+      await markByVoid()
+      return Response.json({ 
+        success: true, 
+        message: "THE VOID HAS MARKED YOU",
+        markedAt: voidState.markedAt,
+      }, { headers: corsHeaders })
+    }
+
+    // Trigger a void burst - called when corruption hits 100%
+    if (req.method === "POST" && url.pathname === "/void/burst") {
+      await triggerVoidBurst()
+      return Response.json({
+        success: true,
+        burstId: voidState.burstId,
+        burstCount: voidState.burstCount,
+      }, { headers: corsHeaders })
+    }
+
+    // Acknowledge burst was seen (clear pending flag)
+    if (req.method === "POST" && url.pathname === "/void/burst/ack") {
+      const { burstId } = await req.json() as { burstId: string }
+      if (burstId === voidState.burstId) {
+        voidState.burstPending = false
+      }
+      return Response.json({ success: true }, { headers: corsHeaders })
+    }
+
+    // SSE endpoint for void events - pages subscribe to receive burst notifications
+    if (req.method === "GET" && url.pathname === "/void/listen") {
+      const stream = new ReadableStream({
+        async start(controller) {
+          const encoder = new TextEncoder()
+          voidListeners.add(controller)
+          
+          // Send current state immediately
+          controller.enqueue(encoder.encode(`event: state\ndata: ${JSON.stringify({
+            marked: voidState.marked,
+            burstPending: voidState.burstPending,
+            burstId: voidState.burstId,
+          })}\n\n`))
+          
+          // Heartbeat every 15s to keep connection alive (also re-sends state)
+          const heartbeat = setInterval(() => {
+            try {
+              controller.enqueue(encoder.encode(`event: heartbeat\ndata: ${JSON.stringify({
+                marked: voidState.marked,
+                burstPending: voidState.burstPending,
+                time: Date.now(),
+              })}\n\n`))
+            } catch {
+              clearInterval(heartbeat)
+              voidListeners.delete(controller)
+            }
+          }, 15000)
+          
+          // Cleanup on abort
+          req.signal.addEventListener('abort', () => {
+            clearInterval(heartbeat)
+            voidListeners.delete(controller)
+            controller.close()
+          })
+        }
+      })
+      
+      return new Response(stream, {
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          ...corsHeaders,
+        }
+      })
+    }
+
     // === SSE Streaming Logs ===
 
     if (req.method === "GET" && url.pathname.startsWith("/stream/")) {
@@ -2223,6 +2481,9 @@ try {
 
 // Load server configs
 await loadServerConfigs()
+
+// Load void state (the daemon remembers...)
+await loadVoidState()
 
 // Initialize MCP auth (write bootstrap secret to file)
 await initMcpAuth()

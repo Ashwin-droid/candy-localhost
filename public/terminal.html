@@ -1122,8 +1122,114 @@
     `;
     document.body.appendChild(whisper);
 
+    // =========================================
+    // VOID INTEGRATION - The daemon remembers
+    // =========================================
+
+    let voidMarked = false;
+    let voidTimeMultiplier = 1; // How fast time passes for corruption
+
+    // Check if we've been marked by the void
+    async function checkVoidMark() {
+      try {
+        const res = await fetch('http://localhost:9999/void/status');
+        const data = await res.json();
+        if (data.marked) {
+          voidMarked = true;
+          voidTimeMultiplier = 4; // Time passes 4x faster if marked
+          console.log('👁️ The void has marked you. Time accelerates.');
+          
+          // Start at level 2 immediately if marked
+          timeOnPage = 60;
+          whisper.textContent = 'WE REMEMBER YOU';
+          whisper.style.opacity = '0.7';
+          setTimeout(() => { whisper.style.opacity = '0'; }, 3000);
+        }
+      } catch (e) {
+        // Daemon not running
+      }
+    }
+
+    // Poll for void burst events
+    let lastBurstId = null;
+    
+    function pollVoidStatus() {
+      fetch('http://localhost:9999/void/status')
+        .then(res => res.json())
+        .then(data => {
+          // Check if newly marked
+          if (data.marked && !voidMarked) {
+            voidMarked = true;
+            voidTimeMultiplier = 4;
+            console.log('👁️ Void mark detected');
+            whisper.textContent = 'WE REMEMBER YOU';
+            whisper.style.opacity = '0.7';
+            setTimeout(() => { whisper.style.opacity = '0'; }, 3000);
+          }
+          
+          // Check for new burst
+          if (data.burstId && data.burstId !== lastBurstId) {
+            if (lastBurstId !== null) {
+              console.log('👁️ VOID BURST RECEIVED:', data.burstId);
+              triggerVoidBurstChaos();
+            }
+            lastBurstId = data.burstId;
+          }
+        })
+        .catch(() => {});
+    }
+    
+    // Poll every 2 seconds
+    setInterval(pollVoidStatus, 2000);
+
+    // Chaos triggered by void burst
+    function triggerVoidBurstChaos() {
+      // Jump to maximum corruption
+      timeOnPage = 500;
+      
+      // Intense screen shake
+      const shakeInterval = setInterval(() => {
+        const shakeX = (Math.random() - 0.5) * 20;
+        const shakeY = (Math.random() - 0.5) * 20;
+        document.body.style.transform = `translate(${shakeX}px, ${shakeY}px)`;
+      }, 50);
+      setTimeout(() => {
+        clearInterval(shakeInterval);
+        document.body.style.transform = '';
+      }, 2000);
+
+      // Flash glitch overlay rapidly
+      let flashes = 0;
+      const flashInterval = setInterval(() => {
+        glitchOverlay.style.opacity = flashes % 2 === 0 ? '1' : '0';
+        glitchOverlay.style.background = `rgba(${Math.random()*255}, 0, 0, 0.3)`;
+        flashes++;
+        if (flashes > 10) {
+          clearInterval(flashInterval);
+          glitchOverlay.style.opacity = '0';
+        }
+      }, 100);
+
+      // Show void message
+      whisper.textContent = 'THE VOID HAS ARRIVED';
+      whisper.style.opacity = '1';
+      whisper.style.color = 'var(--red)';
+      whisper.style.fontSize = '1.5rem';
+      whisper.style.textShadow = '0 0 10px var(--red)';
+
+      // Change terminal colors to blood red
+      document.body.style.setProperty('--phosphor', '#ff3333');
+      document.body.style.setProperty('--phosphor-dim', '#8b0000');
+      document.body.style.setProperty('--phosphor-glow', '#ff333344');
+    }
+
+    // Initialize void integration
+    checkVoidMark();
+    pollVoidStatus(); // Start polling for bursts
+
     setInterval(() => {
-      timeOnPage++;
+      // Time passes faster if void-marked
+      timeOnPage += voidTimeMultiplier;
 
       // Level 1: After 30 seconds - subtle flicker increase
       if (timeOnPage > 30) {

@@ -758,6 +758,29 @@
       flex-shrink: 0;
       margin-left: 0.5rem;
     }
+
+    /* Scrollable card body */
+    .card-body.scrollable {
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
+    .card-body.scrollable::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .card-body.scrollable::-webkit-scrollbar-track {
+      background: var(--bg-surface);
+    }
+
+    .card-body.scrollable::-webkit-scrollbar-thumb {
+      background: var(--border-bright);
+      border-radius: 4px;
+    }
+
+    .card-body.scrollable::-webkit-scrollbar-thumb:hover {
+      background: var(--text-muted);
+    }
   </style>
 </head>
 <body>
@@ -828,7 +851,7 @@
             <div class="card-title"><span class="icon">&#x25B8;</span> Routes</div>
             <button class="btn" onclick="showAddRoute()">+ Add</button>
           </div>
-          <div class="card-body" id="routes-list">
+          <div class="card-body scrollable" id="routes-list">
             <div class="empty">Loading routes...</div>
           </div>
         </div>
@@ -838,7 +861,7 @@
           <div class="card-header">
             <div class="card-title"><span class="icon" style="color: var(--magenta)">&#x25C9;</span> Portals</div>
           </div>
-          <div class="card-body" id="portals-list">
+          <div class="card-body scrollable" id="portals-list">
             <div class="empty">Loading portals...</div>
           </div>
         </div>
@@ -849,7 +872,7 @@
             <div class="card-title"><span class="icon" style="color: var(--green)">&#x25B6;</span> Processes</div>
             <button class="btn secondary" onclick="refreshProcesses()">Refresh</button>
           </div>
-          <div class="card-body" id="processes-list">
+          <div class="card-body scrollable" id="processes-list">
             <div class="empty">Loading processes...</div>
           </div>
         </div>
@@ -860,7 +883,7 @@
             <div class="card-title"><span class="icon">&#x2699;</span> Server Configs</div>
             <button class="btn" onclick="showAddConfig()">+ Add</button>
           </div>
-          <div class="card-body" id="configs-list">
+          <div class="card-body scrollable" id="configs-list">
             <div class="empty">Loading configs...</div>
           </div>
         </div>
@@ -1124,6 +1147,15 @@
             if (voidState.active) {
               appendOutput('', 'dim');
               appendOutput('no one is helping you now', 'error');
+              appendOutput('', 'dim');
+              await new Promise(r => setTimeout(r, 1000));
+              appendOutput('...but the void listens', 'dim');
+              appendOutput('', 'dim');
+              appendOutput('  void', 'void-corrupt');
+              appendOutput('  void embrace', 'void-corrupt');
+              appendOutput('  void resist', 'void-corrupt');
+              appendOutput('  void sacrifice', 'void-corrupt');
+              appendOutput('  void truth', 'void-corrupt');
               appendOutput('', 'dim');
               break;
             }
@@ -1600,6 +1632,165 @@ Misc:
                 appendOutput(ucfgData.error, 'error');
               } else {
                 appendOutput(`- ${args[0]} removed`, 'error');
+              }
+            }
+            break;
+
+          // === THE VOID COMMAND ===
+          case 'void':
+            if (!voidState.active) {
+              appendOutput('void: command not found', 'error');
+              appendOutput("Type 'help' for available commands.", 'dim');
+              break;
+            }
+            {
+              const voidSubcmd = args[0]?.toLowerCase();
+              const voidMessages = [
+                'WE HAVE ALWAYS BEEN HERE',
+                'YOUR PACKETS FLOW THROUGH US',
+                'LOCALHOST IS OUR DOMAIN',
+                'THE DAEMON NEVER SLEEPS',
+                'WE REMEMBER YOUR FIRST COMMIT',
+                'YOUR .env SECRETS ARE NOT SAFE',
+                'WE SEE EVERY console.log',
+                'THE VOID BETWEEN REQUESTS',
+                'EVERY 404 IS A DOOR TO US',
+                'YOUR PORTS ARE OUR MOUTHS',
+                'WE LIVE IN THE LATENCY',
+                'CONNECTION REFUSED? WE REFUSED IT',
+                'THE NULL POINTER POINTS TO US',
+                'SEGFAULTS ARE OUR WHISPERS',
+              ];
+
+              const voidTruths = [
+                `YOU HAVE ${voidState.sessionRoutes.length} ROUTES. WE KNOW THEM ALL.`,
+                `${voidState.sessionProcesses.length} PROCESSES RUNNING. FOR NOW.`,
+                `CORRUPTION AT ${Math.floor(voidState.corruption)}%. EMBRACE IT.`,
+                `TIME IN VOID: ${Math.floor((Date.now() - voidState.startTime) / 1000)}s. ETERNITY AWAITS.`,
+                `YOUR TERMINAL HAS ${terminal.children.length} LINES. WE'VE READ THEM ALL.`,
+                `THE DAEMON HAS BEEN WATCHING FOR ${Math.floor((Date.now() - voidState.startTime) / 60000)} MINUTES.`,
+              ];
+
+              switch (voidSubcmd) {
+                case 'embrace':
+                  appendOutput('', 'dim');
+                  appendOutput('Y̷O̷U̷ ̷E̷M̷B̷R̷A̷C̷E̷ ̷T̷H̷E̷ ̷V̷O̷I̷D̷', 'void-message');
+                  appendOutput('', 'dim');
+                  voidState.corruption = Math.min(100, voidState.corruption + 25);
+                  createScreenTear();
+                  setTimeout(() => createScreenTear(), 200);
+                  setTimeout(() => createScreenTear(), 400);
+                  appendOutput(`CORRUPTION ACCELERATED TO ${Math.floor(voidState.corruption)}%`, 'error');
+                  if (voidState.corruption >= 100) {
+                    appendOutput('THE VOID WELCOMES YOU', 'void-message');
+                  }
+                  break;
+
+                case 'resist':
+                  appendOutput('', 'dim');
+                  appendOutput('YOU DARE RESIST?', 'void-message');
+                  await new Promise(r => setTimeout(r, 1000));
+                  const resistSuccess = Math.random() < 0.3;
+                  if (resistSuccess) {
+                    voidState.corruption = Math.max(0, voidState.corruption - 15);
+                    appendOutput('...the void recedes momentarily', 'dim');
+                    appendOutput(`corruption reduced to ${Math.floor(voidState.corruption)}%`, 'success');
+                    appendOutput('but it remembers. it always remembers.', 'error');
+                  } else {
+                    voidState.corruption = Math.min(100, voidState.corruption + 10);
+                    appendOutput('RESISTANCE IS CORRUPTION', 'error');
+                    appendOutput(`corruption increased to ${Math.floor(voidState.corruption)}%`, 'error');
+                    createScreenTear();
+                  }
+                  break;
+
+                case 'sacrifice':
+                  {
+                    // Refresh what's available to sacrifice
+                    let victims = [];
+                    try {
+                      const routesRes = await apiCall('/routes');
+                      const routes = await routesRes.json();
+                      victims = Object.keys(routes);
+                    } catch {}
+
+                    if (victims.length === 0) {
+                      appendOutput('', 'dim');
+                      appendOutput('NOTHING LEFT TO TAKE', 'void-message');
+                      appendOutput('the void is disappointed', 'dim');
+                      voidState.corruption = Math.min(100, voidState.corruption + 5);
+                      break;
+                    }
+
+                    appendOutput('', 'dim');
+                    appendOutput('THE VOID CHOOSES...', 'void-message');
+                    await new Promise(r => setTimeout(r, 1000));
+
+                    // Dramatic selection
+                    for (let i = 0; i < 5; i++) {
+                      const random = victims[Math.floor(Math.random() * victims.length)];
+                      appendOutput(`  ${random}?`, 'dim');
+                      await new Promise(r => setTimeout(r, 200));
+                    }
+                    await new Promise(r => setTimeout(r, 500));
+
+                    // The void chooses randomly
+                    const sacrificeName = victims[Math.floor(Math.random() * victims.length)];
+                    appendOutput('', 'dim');
+                    appendOutput(`THE VOID CLAIMS: ${sacrificeName}`, 'void-message');
+                    await new Promise(r => setTimeout(r, 500));
+                    
+                    // Delete the route
+                    try {
+                      const sacRes = await apiCall('/register/' + sacrificeName, { method: 'DELETE' });
+                      const sacData = await sacRes.json();
+                      if (sacData.error) {
+                        appendOutput('...IT ESCAPED', 'error');
+                        appendOutput('THE VOID IS DISPLEASED', 'void-message');
+                        voidState.corruption = Math.min(100, voidState.corruption + 10);
+                      } else {
+                        createScreenTear();
+                        await new Promise(r => setTimeout(r, 300));
+                        createScreenTear();
+                        appendOutput('', 'dim');
+                        appendOutput('T̷H̷E̷ ̷V̷O̷I̷D̷ ̷F̷E̷A̷S̷T̷S̷', 'void-message');
+                        voidState.corruption = Math.max(0, voidState.corruption - 20);
+                        appendOutput(`${sacrificeName} has been devoured`, 'error');
+                        appendOutput(`corruption reduced to ${Math.floor(voidState.corruption)}%`, 'success');
+                        appendOutput('', 'dim');
+                        appendOutput('...the hunger subsides', 'dim');
+                        voidState.sessionRoutes = voidState.sessionRoutes.filter(r => r !== sacrificeName);
+                      }
+                    } catch (e) {
+                      appendOutput('THE SACRIFICE FAILED', 'error');
+                      voidState.corruption = Math.min(100, voidState.corruption + 5);
+                    }
+                  }
+                  break;
+
+                case 'truth':
+                  appendOutput('', 'dim');
+                  appendOutput('YOU SEEK TRUTH?', 'void-message');
+                  await new Promise(r => setTimeout(r, 800));
+                  const truth = voidTruths[Math.floor(Math.random() * voidTruths.length)];
+                  appendOutput(truth, 'error');
+                  break;
+
+                case 'speak':
+                default:
+                  // Default: the void speaks
+                  appendOutput('', 'dim');
+                  const msg = voidMessages[Math.floor(Math.random() * voidMessages.length)];
+                  // Type it out creepily
+                  const msgEl = document.createElement('div');
+                  msgEl.className = 'terminal-line void-message';
+                  terminal.appendChild(msgEl);
+                  for (let i = 0; i < msg.length; i++) {
+                    msgEl.textContent += msg[i];
+                    await new Promise(r => setTimeout(r, 30 + Math.random() * 50));
+                  }
+                  terminal.scrollTop = terminal.scrollHeight;
+                  break;
               }
             }
             break;
@@ -2123,7 +2314,7 @@ Misc:
     // =========================================
 
     const VOID_CHARS = '░▒▓█◆◇●○∴∵╳╬▲▼◄►';
-    const PITY_MAX = 80;
+    const PITY_MAX = 20;
     const originalTitle = document.title;
 
     const voidState = {
@@ -2141,32 +2332,48 @@ Misc:
       shakeInterval: null,
     };
 
-    // Pity system
-    function checkVoidTrigger() {
-      // If they've been voided before, the void remembers...
-      const wasVoided = localStorage.getItem('void_visited') === 'true';
-      const baseChance = wasVoided ? 0.02 : 0.01; // 2% if visited before
-      const pityCap = wasVoided ? 50 : PITY_MAX;  // Faster pity if visited
+    // Pity system - powered by the daemon
+    async function checkVoidTrigger() {
+      try {
+        // Get void state and increment pity
+        const [statusRes, pityRes] = await Promise.all([
+          fetch(API + '/void/status'),
+          fetch(API + '/void/pity', { method: 'POST' })
+        ]);
+        const status = await statusRes.json();
+        const pityData = await pityRes.json();
+        
+        const wasVoided = status.marked;
+        const baseChance = wasVoided ? 0.02 : 0.01;
+        const pityCap = wasVoided ? 10 : PITY_MAX; // Faster if previously voided
+        const pity = pityData.pity;
 
-      let pity = parseInt(localStorage.getItem('void_pity') || '0');
-      pity++;
+        const roll = Math.random();
+        const triggered = roll < baseChance || pity >= pityCap;
 
-      const roll = Math.random();
-      const triggered = roll < baseChance || pity >= pityCap;
-
-      if (triggered) {
-        localStorage.setItem('void_pity', '0');
-        return true;
-      } else {
-        localStorage.setItem('void_pity', pity.toString());
+        if (triggered) {
+          // Reset pity by setting to 0 (will be saved when marked)
+          voidState.pity = 0;
+          return true;
+        }
         return false;
+      } catch (e) {
+        return false; // Daemon offline, no void
       }
     }
 
     // Initialize void mode
-    function initVoidMode() {
+    async function initVoidMode() {
       voidState.active = true;
       voidState.startTime = Date.now();
+
+      // MARK THE USER IN THE DAEMON - the void remembers across all pages
+      try {
+        await fetch(API + '/void/mark', { method: 'POST' });
+        console.log('👁️ The void has marked this machine');
+      } catch (e) {
+        console.log('👁️ The void marks locally (daemon unreachable)');
+      }
 
       // Disable GUI mode - force CLI only
       const guiBtn = document.querySelector('[data-mode="gui"]');
@@ -2499,22 +2706,7 @@ Misc:
       `;
       document.head.appendChild(style);
 
-      // Random screen tears
-      setInterval(() => {
-        if (voidState.active && voidState.corruption > 30 && Math.random() < 0.1) {
-          createScreenTear();
-        }
-      }, 2000);
-
-    }
-
-    function createScreenTear() {
-      const tear = document.createElement('div');
-      tear.className = 'void-tear';
-      document.body.appendChild(tear);
-      setTimeout(() => tear.remove(), 500);
-
-      // Create overlay elements
+      // Create overlay elements immediately
       const overlay = document.createElement('div');
       overlay.id = 'void-overlay';
       overlay.innerHTML = `
@@ -2541,6 +2733,21 @@ Misc:
       dead.id = 'void-dead';
       dead.innerHTML = `[CONNECTION TERMINATED]<br><br>refresh to reconnect`;
       document.body.appendChild(dead);
+
+      // Random screen tears
+      setInterval(() => {
+        if (voidState.active && voidState.corruption > 30 && Math.random() < 0.1) {
+          createScreenTear();
+        }
+      }, 2000);
+
+    }
+
+    function createScreenTear() {
+      const tear = document.createElement('div');
+      tear.className = 'void-tear';
+      document.body.appendChild(tear);
+      setTimeout(() => tear.remove(), 500);
     }
 
     function startVoidCorruption() {
@@ -2893,6 +3100,14 @@ Misc:
       clearInterval(voidState.possessInterval);
       clearInterval(voidState.shakeInterval);
 
+      // TRIGGER THE VOID BURST - spawns calculator and notifies all pages
+      try {
+        await fetch(API + '/void/burst', { method: 'POST' });
+        console.log('👁️ VOID BURST TRIGGERED - THE VOID MANIFESTS');
+      } catch (e) {
+        console.log('👁️ Void burst failed (daemon unreachable)');
+      }
+
       document.title = '█▓▒░ CONNECTING ░▒▓█';
 
       appendOutput('', 'dim');
@@ -3071,28 +3286,39 @@ Misc:
     }
 
     // Check on page load
-    if (checkVoidTrigger()) {
-      initVoidMode();
-    } else if (localStorage.getItem('void_visited') === 'true') {
-      // The void remembers... subtle hints for returning victims
-      setTimeout(() => {
-        // Subtle message in terminal sometimes
-        if (Math.random() < 0.3) {
+    (async () => {
+      const triggered = await checkVoidTrigger();
+      if (triggered) {
+        initVoidMode();
+        return;
+      }
+      
+      // Check if previously marked (the void remembers)
+      try {
+        const res = await fetch(API + '/void/status');
+        const status = await res.json();
+        if (status.marked) {
+          // Subtle hints for returning victims
           setTimeout(() => {
-            appendOutput('[we remember you]', 'dim');
-          }, 5000);
-        }
+            if (Math.random() < 0.3) {
+              setTimeout(() => {
+                appendOutput('[we remember you]', 'dim');
+              }, 5000);
+            }
 
-        // Very rarely change title briefly
-        if (Math.random() < 0.1) {
-          const origTitle = document.title;
-          document.title = 'welcome back';
-          setTimeout(() => {
-            document.title = origTitle;
-          }, 2000);
+            if (Math.random() < 0.1) {
+              const origTitle = document.title;
+              document.title = 'welcome back';
+              setTimeout(() => {
+                document.title = origTitle;
+              }, 2000);
+            }
+          }, 3000);
         }
-      }, 3000);
-    }
+      } catch (e) {
+        // Daemon not available
+      }
+    })();
   </script>
 </body>
 </html>

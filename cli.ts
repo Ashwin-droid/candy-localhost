@@ -161,31 +161,95 @@ function printControls() {
   console.log()
 }
 
-// Stream logs via SSE
+// Stream logs via SSE (Bun CLI runtime has no browser EventSource)
 async function streamLogs(name: string, onData: (data: string) => void, onStatus: (status: any) => void) {
-  const eventSource = new EventSource(`${API}/stream/${name}`)
-  
-  eventSource.onmessage = (event) => {
+  let closed = false
+  let activeController: AbortController | null = null
+
+  const handleSseBlock = (block: string) => {
+    let eventType = 'message'
+    const dataLines: string[] = []
+
+    for (const line of block.split(/\r?\n/)) {
+      if (!line || line.startsWith(':')) continue
+
+      const idx = line.indexOf(':')
+      const field = idx === -1 ? line : line.slice(0, idx)
+      let value = idx === -1 ? '' : line.slice(idx + 1)
+      if (value.startsWith(' ')) value = value.slice(1)
+
+      if (field === 'event') eventType = value
+      if (field === 'data') dataLines.push(value)
+    }
+
+    if (dataLines.length === 0) return
+    const payload = dataLines.join('\n')
+
+    if (eventType === 'status') {
+      try {
+        onStatus(JSON.parse(payload))
+      } catch {}
+      return
+    }
+
     try {
-      const data = JSON.parse(event.data)
+      const data = JSON.parse(payload)
       onData(data)
     } catch {
-      onData(event.data)
+      onData(payload)
     }
   }
-  
-  eventSource.addEventListener('status', (event: any) => {
-    try {
-      const status = JSON.parse(event.data)
-      onStatus(status)
-    } catch {}
-  })
-  
-  eventSource.onerror = () => {
-    // Will auto-reconnect
+
+  const connect = async () => {
+    while (!closed) {
+      activeController = new AbortController()
+      try {
+        const headers = await getHeaders()
+        const res = await fetch(`${API}/stream/${name}`, {
+          headers,
+          signal: activeController.signal,
+        })
+
+        if (!res.ok || !res.body) {
+          throw new Error(`SSE stream failed: ${res.status}`)
+        }
+
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        while (!closed) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+
+          const events = buffer.split(/\r?\n\r?\n/)
+          buffer = events.pop() || ''
+          for (const event of events) {
+            handleSseBlock(event)
+          }
+        }
+
+        buffer += decoder.decode()
+        if (buffer.trim()) {
+          handleSseBlock(buffer)
+        }
+      } catch {
+        // Reconnect unless caller closed the stream.
+      }
+
+      if (!closed) {
+        await new Promise(resolve => setTimeout(resolve, 750))
+      }
+    }
   }
-  
-  return () => eventSource.close()
+
+  void connect()
+
+  return () => {
+    closed = true
+    activeController?.abort()
+  }
 }
 
 // Interactive dev mode

@@ -108,14 +108,20 @@ async function checkDaemon(): Promise<boolean> {
 }
 
 // Get config for current folder (by matching cwd)
-async function getConfigForCwd(): Promise<{ name: string; cwd: string; cmd: string } | null> {
+async function getConfigForCwd(): Promise<{ name: string; cwd: string; cmd: string; configId?: string } | null> {
   try {
     const { configs } = await apiGet('/configs')
     const cwd = getCwd()
     
     for (const [name, config] of Object.entries(configs)) {
-      if ((config as any).cwd === cwd) {
-        return { name, ...(config as any) }
+      const cfg = config as any
+      if (cfg.cwd === cwd) {
+        return { name, cwd: cfg.cwd, cmd: cfg.cmd, configId: cfg.id }
+      }
+      const variants = Array.isArray(cfg.variants) ? cfg.variants : []
+      const match = variants.find((v: any) => v.cwd === cwd)
+      if (match) {
+        return { name, cwd: match.cwd, cmd: match.cmd, configId: match.id }
       }
     }
     return null
@@ -253,16 +259,22 @@ async function streamLogs(name: string, onData: (data: string) => void, onStatus
 }
 
 // Interactive dev mode
-async function devMode(name: string, cmd: string | null, isNew: boolean) {
+async function devMode(name: string, cmd: string | null, isNew: boolean, configId?: string) {
+  let resolvedConfigId = configId
   // Register config if new
   if (cmd && isNew) {
     console.log(`${c.dim}Registering ${name}...${c.reset}`)
-    await apiPost('/config', { name, cwd: getCwd(), cmd })
+    const registered = await apiPost('/config', { name, cwd: getCwd(), cmd })
+    if (registered?.config?.id) {
+      resolvedConfigId = registered.config.id
+    }
   }
   
   // Start the process
   console.log(`${c.dim}Starting ${name}...${c.reset}`)
-  const startResult = await apiPost(`/process/start/${name}`)
+  const startBody: Record<string, any> = {}
+  if (resolvedConfigId) startBody.configId = resolvedConfigId
+  const startResult = await apiPost(`/process/start/${name}`, startBody)
   
   if (startResult.error) {
     console.error(`${c.red}Error: ${startResult.error}${c.reset}`)
@@ -421,7 +433,7 @@ async function cmdDev(args: string[]) {
   } else if (existingConfig) {
     // No command but we have saved config - use it
     console.log(`${c.dim}Using saved config: ${existingConfig.cmd}${c.reset}`)
-    await devMode(existingConfig.name, null, false)
+    await devMode(existingConfig.name, null, false, existingConfig.configId)
   } else {
     // No command and no saved config - try to detect from package.json
     try {

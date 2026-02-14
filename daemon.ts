@@ -153,6 +153,7 @@ const msg = {
 // ============================================================================
 
 interface ServerConfig {
+  id: string
   cwd: string
   cmd: string
 }
@@ -212,10 +213,19 @@ const PORT_DETECTION_TIMEOUT = 10000  // 10 seconds
 const routes = new Map<string, number | string>()
 const portals = new Map<string, { proc: Subprocess | null, port: number, url?: string, pid?: number }>()
 const processes = new Map<string, ManagedProcess>()
-const serverConfigs = new Map<string, ServerConfig>()
+const serverConfigs = new Map<string, ServerConfig[]>()
 // Historical mapping: tunnel domain -> server name (persists after portal close)
 const tunnelHistory = new Map<string, string>()
 let caddyProc: Subprocess | null = null
+
+const makeConfigId = () => `cfg_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`
+const getConfigsForName = (name: string): ServerConfig[] => serverConfigs.get(name) || []
+const getConfigById = (name: string, configId?: string): ServerConfig | null => {
+  const configs = getConfigsForName(name)
+  if (configs.length === 0) return null
+  if (!configId) return configs[0]
+  return configs.find(c => c.id === configId) || null
+}
 
 // ============================================================================
 // THE VOID - Eldritch Horror State Management
@@ -540,12 +550,27 @@ const loadServerConfigs = async () => {
     await $`mkdir -p ${CANDY_CONFIG_DIR}`.quiet().nothrow()
     const file = Bun.file(SERVERS_CONFIG)
     if (await file.exists()) {
-      const content = await file.json() as Record<string, ServerConfig>
+      const content = await file.json() as Record<string, ServerConfig | ServerConfig[] | { cwd: string, cmd: string } | { cwd: string, cmd: string }[]>
       serverConfigs.clear()
-      for (const [name, config] of Object.entries(content)) {
-        serverConfigs.set(name, config)
+      for (const [name, rawConfig] of Object.entries(content)) {
+        const items = Array.isArray(rawConfig) ? rawConfig : [rawConfig]
+        const normalized: ServerConfig[] = []
+        for (const item of items) {
+          if (!item || typeof item !== "object") continue
+          const cwd = (item as any).cwd
+          const cmd = (item as any).cmd
+          if (!cwd || !cmd) continue
+          const id = typeof (item as any).id === "string" && (item as any).id.length > 0
+            ? (item as any).id
+            : makeConfigId()
+          normalized.push({ id, cwd, cmd })
+        }
+        if (normalized.length > 0) {
+          serverConfigs.set(name, normalized)
+        }
       }
-      console.log(`\x1b[90mLoaded ${serverConfigs.size} server configs\x1b[0m`)
+      const totalConfigs = [...serverConfigs.values()].reduce((acc, cfgs) => acc + cfgs.length, 0)
+      console.log(`\x1b[90mLoaded ${totalConfigs} server configs across ${serverConfigs.size} names\x1b[0m`)
     }
   } catch (e) {
     console.log(`\x1b[33mNo server configs found or invalid format\x1b[0m`)
@@ -554,9 +579,9 @@ const loadServerConfigs = async () => {
 
 // Save server configs to ~/.config/candy/servers.json
 const saveServerConfigs = async () => {
-  const data: Record<string, ServerConfig> = {}
-  for (const [name, config] of serverConfigs) {
-    data[name] = config
+  const data: Record<string, ServerConfig[]> = {}
+  for (const [name, configs] of serverConfigs) {
+    data[name] = configs
   }
   await $`mkdir -p ${CANDY_CONFIG_DIR}`.quiet().nothrow()
   await Bun.write(SERVERS_CONFIG, JSON.stringify(data, null, 2))
@@ -566,29 +591,42 @@ const saveServerConfigs = async () => {
 const addServerConfig = async (name: string, cwd: string, cmd: string, actor: Actor = 'Portal') => {
   // Expand tilde in cwd
   const expandedCwd = cwd.replace(/^~/, process.env.HOME || '')
-  serverConfigs.set(name, { cwd: expandedCwd, cmd })
+  const configs = getConfigsForName(name)
+  const dupe = configs.find(cfg => cfg.cwd === expandedCwd && cfg.cmd === cmd)
+  if (!dupe) {
+    configs.push({ id: makeConfigId(), cwd: expandedCwd, cmd })
+    serverConfigs.set(name, configs)
+  }
   await saveServerConfigs()
   auditLog('CONFIG_ADD', `${name}: ${cmd} in ${expandedCwd}`, actor)
 }
 
 // Remove a server config
-const removeServerConfig = async (name: string, actor: Actor = 'Portal') => {
+const removeServerConfig = async (name: string, actor: Actor = 'Portal', configId?: string) => {
   // Stop the process if running
   const proc = processes.get(name)
   if (proc && (proc.status === 'running' || proc.status === 'starting')) {
-    await stopProcess(name, actor)
+    if (!configId || proc.config.id === configId) {
+      await stopProcess(name, actor)
+    }
   }
 
-  // Clear logs
-  await clearLogs(name)
-
-  // Remove from processes map
-  processes.delete(name)
-
-  // Delete config
-  serverConfigs.delete(name)
+  if (configId) {
+    const remaining = getConfigsForName(name).filter(cfg => cfg.id !== configId)
+    if (remaining.length > 0) {
+      serverConfigs.set(name, remaining)
+    } else {
+      await clearLogs(name)
+      processes.delete(name)
+      serverConfigs.delete(name)
+    }
+  } else {
+    await clearLogs(name)
+    processes.delete(name)
+    serverConfigs.delete(name)
+  }
   await saveServerConfigs()
-  auditLog('CONFIG_REMOVE', name, actor)
+  auditLog('CONFIG_REMOVE', configId ? `${name}:${configId}` : name, actor)
 }
 
 // ============================================================================
@@ -744,8 +782,8 @@ const extractPorts = (output: string): number[] => {
 }
 
 // Spawn a dev server process using Bun.Terminal for proper PTY support
-const spawnProcess = async (name: string, actor: Actor = 'System'): Promise<ManagedProcess> => {
-  const config = serverConfigs.get(name)
+const spawnProcess = async (name: string, actor: Actor = 'System', configId?: string): Promise<ManagedProcess> => {
+  const config = getConfigById(name, configId)
   if (!config) {
     throw new Error(`No config found for server: ${name}`)
   }
@@ -770,7 +808,7 @@ const spawnProcess = async (name: string, actor: Actor = 'System'): Promise<Mana
   }
 
   processes.set(name, managed)
-  auditLog('PROCESS_START', `${name}: ${config.cmd}`, actor)
+  auditLog('PROCESS_START', `${name}:${config.id} ${config.cmd}`, actor)
 
   // Collected output for port detection
   let collectedOutput = ''
@@ -996,6 +1034,7 @@ const stopProcess = async (name: string, actor: Actor = 'System'): Promise<boole
 
 // Restart a managed process
 const restartProcess = async (name: string, actor: Actor = 'System'): Promise<ManagedProcess | null> => {
+  const prev = processes.get(name)
   const stopped = await stopProcess(name, actor)
   if (!stopped) return null
 
@@ -1006,7 +1045,7 @@ const restartProcess = async (name: string, actor: Actor = 'System'): Promise<Ma
     return null
   }
 
-  return spawnProcess(name, actor)
+  return spawnProcess(name, actor, prev?.config.id)
 }
 
 const restartLocks = new Map<string, Promise<void>>()
@@ -1015,12 +1054,13 @@ const scheduleRestart = (name: string, actor: Actor) => {
   if (restartLocks.has(name)) return
 
   const task = (async () => {
+    const prev = processes.get(name)
     try {
       await stopProcess(name, actor)
       // Small delay before restart
       await new Promise(r => setTimeout(r, 500))
       if (serverConfigs.has(name)) {
-        await spawnProcess(name, actor)
+        await spawnProcess(name, actor, prev?.config.id)
       }
     } finally {
       restartLocks.delete(name)
@@ -1872,6 +1912,9 @@ const controlServer = Bun.serve({
           uptime: formatUptime(proc.startedAt),
           exitCode: proc.exitCode,
           detectedPorts: proc.detectedPorts,
+          configId: proc.config.id,
+          cwd: proc.config.cwd,
+          cmd: proc.config.cmd,
         }
       }
       return Response.json({ success: true, processes: processList }, { headers: corsHeaders })
@@ -1884,23 +1927,41 @@ const controlServer = Bun.serve({
       }
       try {
         const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+        const body = await req.json().catch(() => ({})) as { configId?: string }
+        const requestedConfigId = body?.configId
+        const configs = getConfigsForName(name)
+        if (configs.length > 1 && !requestedConfigId) {
+          return Response.json({
+            success: false,
+            error: `Multiple configs found for ${name}. Choose a configId.`,
+            configs: configs.map(c => ({ id: c.id, cwd: c.cwd, cmd: c.cmd }))
+          }, { status: 409, headers: corsHeaders })
+        }
         const existing = processes.get(name)
         if (existing && (existing.status === 'running' || existing.status === 'starting')) {
-          // Start is intentionally idempotent: avoid spawning duplicates that orphan old processes.
-          return Response.json({
-            success: true,
-            data: {
-              name,
-              status: existing.status,
-              port: existing.port,
-              pid: existing.pid,
-              detectedPorts: existing.detectedPorts,
-            },
-            message: `${name} is already ${existing.status}`
-          }, { headers: corsHeaders })
+          // Single active config rule: starting a different variant switches active process.
+          if (requestedConfigId && existing.config.id !== requestedConfigId) {
+            await stopProcess(name, actor)
+          } else {
+            // Idempotent when requesting the active variant.
+            return Response.json({
+              success: true,
+              data: {
+                name,
+                status: existing.status,
+                port: existing.port,
+                pid: existing.pid,
+                detectedPorts: existing.detectedPorts,
+                configId: existing.config.id,
+                cwd: existing.config.cwd,
+                cmd: existing.config.cmd,
+              },
+              message: `${name} is already ${existing.status}`
+            }, { headers: corsHeaders })
+          }
         }
 
-        const managed = await spawnProcess(name, actor)
+        const managed = await spawnProcess(name, actor, requestedConfigId)
         return Response.json({
           success: true,
           data: {
@@ -1909,6 +1970,9 @@ const controlServer = Bun.serve({
             port: managed.port,
             pid: managed.pid,
             detectedPorts: managed.detectedPorts,
+            configId: managed.config.id,
+            cwd: managed.config.cwd,
+            cmd: managed.config.cmd,
           }
         }, { headers: corsHeaders })
       } catch (e) {
@@ -2003,9 +2067,17 @@ const controlServer = Bun.serve({
     // === Config Management API ===
 
     if (req.method === "GET" && url.pathname === "/configs") {
-      const configs: Record<string, ServerConfig> = {}
-      for (const [name, config] of serverConfigs) {
-        configs[name] = config
+      const configs: Record<string, any> = {}
+      for (const [name, entries] of serverConfigs) {
+        if (entries.length === 0) continue
+        const first = entries[0]
+        configs[name] = {
+          id: first.id,
+          cwd: first.cwd,
+          cmd: first.cmd,
+          count: entries.length,
+          variants: entries.map(c => ({ id: c.id, cwd: c.cwd, cmd: c.cmd })),
+        }
       }
       return Response.json({ success: true, configs }, { headers: corsHeaders })
     }
@@ -2017,13 +2089,16 @@ const controlServer = Bun.serve({
       }
       const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
       await addServerConfig(name, cwd, cmd, actor)
-      return Response.json({ success: true }, { headers: corsHeaders })
+      const added = getConfigsForName(name).slice(-1)[0]
+      return Response.json({ success: true, config: added }, { headers: corsHeaders })
     }
 
     if (req.method === "DELETE" && url.pathname.startsWith("/config/")) {
-      const name = url.pathname.split("/")[2]
+      const parts = url.pathname.split("/")
+      const name = parts[2]
+      const configId = parts[3]
       const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
-      await removeServerConfig(name, actor)
+      await removeServerConfig(name, actor, configId)
       return Response.json({ success: true }, { headers: corsHeaders })
     }
 
@@ -2367,7 +2442,7 @@ const controlServer = Bun.serve({
           return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
         }
 
-        // Check if there's a managed process for this domain
+        const configs = getConfigsForName(domain)
         const managed = processes.get(domain)
 
         if (managed) {
@@ -2388,7 +2463,11 @@ const controlServer = Bun.serve({
             // Show starting page with streaming logs (preserve path for refresh)
             const rawHtml = await Bun.file(import.meta.dir + "/public/starting.html").text()
             const html = injectVars(rawHtml, {
+              mode: "starting",
               name: domain,
+              configId: managed.config.id,
+              cwd: managed.config.cwd,
+              cmd: managed.config.cmd,
               detectedPorts: managed.detectedPorts,
               returnPath: url.pathname + url.search,
             })
@@ -2408,14 +2487,26 @@ const controlServer = Bun.serve({
         }
 
         // Check if there's a server config (lazy loading)
-        if (serverConfigs.has(domain)) {
+        if (configs.length > 0) {
           if (isRootPath) {
             domainHits.set(domain, (domainHits.get(domain) || 0) + 1)
           }
 
+          // Multiple variants and nothing active yet -> ask which variant to start.
+          if (configs.length > 1) {
+            const rawHtml = await Bun.file(import.meta.dir + "/public/starting.html").text()
+            const html = injectVars(rawHtml, {
+              mode: "chooser",
+              name: domain,
+              variants: configs.map(c => ({ id: c.id, cwd: c.cwd, cmd: c.cmd })),
+              returnPath: url.pathname + url.search,
+            })
+            return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
+          }
+
           // Spawn the server! (Page actor - direct browser access)
           try {
-            const newProcess = await spawnProcess(domain, 'Page')
+            const newProcess = await spawnProcess(domain, 'Page', configs[0].id)
 
             if (newProcess.status === 'running' && newProcess.port) {
               // Auto-detected port - redirect preserving path (Caddy will take over)
@@ -2425,7 +2516,11 @@ const controlServer = Bun.serve({
             // Show starting page (preserve path for refresh)
             const rawHtml = await Bun.file(import.meta.dir + "/public/starting.html").text()
             const html = injectVars(rawHtml, {
+              mode: "starting",
               name: domain,
+              configId: newProcess.config.id,
+              cwd: newProcess.config.cwd,
+              cmd: newProcess.config.cmd,
               detectedPorts: newProcess.detectedPorts,
               returnPath: url.pathname + url.search,
             })

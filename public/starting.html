@@ -449,7 +449,7 @@
           <div class="spinner"></div>
           <div class="spinner-inner"></div>
         </div>
-        <h1>Starting <span class="domain" id="serverName">server</span>.localhost</h1>
+        <h1 id="pageTitle">Starting <span class="domain" id="serverName">server</span>.localhost</h1>
       </div>
       <div class="status-pill detecting" id="statusPill">
         <span class="status-dot"></span>
@@ -472,17 +472,17 @@
 
       <div class="sidebar">
         <div class="card">
-          <div class="card-title">Port Selection</div>
+          <div class="card-title" id="selectionTitle">Port Selection</div>
           <div class="port-grid" id="detectedPorts">
             <span class="no-ports">Scanning for ports...</span>
           </div>
-          <div class="input-group">
+          <div class="input-group" id="manualPortGroup">
             <input type="number" id="manualPort" placeholder="Enter port" min="1024" max="65535">
             <button onclick="setPort()">Connect</button>
           </div>
         </div>
 
-        <div class="card actions-card">
+        <div class="card actions-card" id="actionsCard">
           <button class="action-btn" onclick="location.reload()">
             <svg viewBox="0 0 24 24"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
             Retry Detection
@@ -507,10 +507,12 @@
 
   <script>
     const API = 'http://localhost:9999';
-    const vars = window.CANDY_VARS || { name: 'unknown', detectedPorts: [], returnPath: '/' };
+    const vars = window.CANDY_VARS || { mode: 'starting', name: 'unknown', detectedPorts: [], returnPath: '/', variants: [] };
     let currentToken = window.CANDY_TOKEN;
+    const mode = vars.mode || 'starting';
     const serverName = vars.name;
     const returnPath = vars.returnPath || '/';
+    const variants = Array.isArray(vars.variants) ? vars.variants : [];
 
     // Token management - rolling one-time-use tokens
     async function refreshToken() {
@@ -559,6 +561,60 @@
       location.href = `https://${serverName}.kill.localhost`;
     };
 
+    function renderChooser() {
+      document.title = 'Choose Config';
+      const title = document.getElementById('pageTitle');
+      title.textContent = 'Choose config for ';
+      const span = document.createElement('span');
+      span.className = 'domain';
+      span.textContent = serverName;
+      title.appendChild(span);
+      title.appendChild(document.createTextNode('.localhost'));
+
+      document.getElementById('statusText').textContent = 'Select one variant to start';
+      document.getElementById('selectionTitle').textContent = 'Config Variants';
+      document.getElementById('manualPortGroup').style.display = 'none';
+      document.getElementById('actionsCard').style.display = 'none';
+      const logsEl = document.getElementById('logsContent');
+      logsEl.textContent = 'Multiple configs are registered for this name.\nPick one to start. All traffic will route to the chosen running config.';
+
+      const container = document.getElementById('detectedPorts');
+      container.innerHTML = '';
+      if (!variants.length) {
+        container.innerHTML = '<span class="no-ports">No variants available.</span>';
+        return;
+      }
+
+      for (const variant of variants) {
+        const btn = document.createElement('button');
+        btn.className = 'port-btn';
+        btn.textContent = variant.cwd || variant.id || 'variant';
+        btn.title = `${variant.id || ''} ${variant.cmd || ''}`.trim();
+        btn.onclick = () => selectVariant(variant.id);
+        container.appendChild(btn);
+      }
+    }
+
+    async function selectVariant(configId) {
+      try {
+        const res = await apiCall(`/process/start/${serverName}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ configId })
+        });
+
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          alert(data.error || 'Failed to start selected config');
+          return;
+        }
+        location.href = `https://${serverName}.localhost${returnPath}`;
+      } catch (e) {
+        alert('Failed to start selected config: ' + e.message);
+      }
+    }
+    window.selectVariant = selectVariant;
+
     function updatePorts(ports) {
       const container = document.getElementById('detectedPorts');
       if (ports && ports.length > 0) {
@@ -570,7 +626,11 @@
       }
     }
 
-    updatePorts(vars.detectedPorts);
+    if (mode === 'chooser') {
+      renderChooser();
+    } else {
+      updatePorts(vars.detectedPorts);
+    }
 
     async function selectPort(port) {
       document.getElementById('manualPort').value = port;
@@ -602,44 +662,48 @@
       }
     }
 
-    const eventSource = new EventSource(API + `/stream/${serverName}`);
+    let eventSource = null;
+    if (mode === 'starting') {
+      eventSource = new EventSource(API + `/stream/${serverName}`);
 
-    eventSource.onmessage = (event) => {
-      const content = JSON.parse(event.data);
-      const logsEl = document.getElementById('logsContent');
-      logsEl.textContent += content;
-      logsEl.scrollTop = logsEl.scrollHeight;
-    };
+      eventSource.onmessage = (event) => {
+        const content = JSON.parse(event.data);
+        const logsEl = document.getElementById('logsContent');
+        logsEl.textContent += content;
+        logsEl.scrollTop = logsEl.scrollHeight;
+      };
 
-    eventSource.addEventListener('status', (event) => {
-      const status = JSON.parse(event.data);
-      const statusPill = document.getElementById('statusPill');
-      const statusText = document.getElementById('statusText');
+      eventSource.addEventListener('status', (event) => {
+        const status = JSON.parse(event.data);
+        const statusPill = document.getElementById('statusPill');
+        const statusText = document.getElementById('statusText');
 
-      if (status.status === 'running' && status.port) {
-        statusText.textContent = `Port ${status.port} ready`;
-        statusPill.className = 'status-pill success';
-        document.getElementById('detectedPort').textContent = status.port;
-        document.getElementById('redirectOverlay').classList.add('visible');
-        eventSource.close();
-        setTimeout(() => {
-          location.href = `https://${serverName}.localhost${returnPath}`;
-        }, 1200);
-      } else if (status.status === 'errored' || status.status === 'dead') {
-        statusText.textContent = 'Process stopped';
-        eventSource.close();
-        setTimeout(() => location.reload(), 1500);
-      } else {
-        updatePorts(status.detectedPorts);
-      }
-    });
+        if (status.status === 'running' && status.port) {
+          statusText.textContent = `Port ${status.port} ready`;
+          statusPill.className = 'status-pill success';
+          document.getElementById('detectedPort').textContent = status.port;
+          document.getElementById('redirectOverlay').classList.add('visible');
+          eventSource.close();
+          setTimeout(() => {
+            location.href = `https://${serverName}.localhost${returnPath}`;
+          }, 1200);
+        } else if (status.status === 'errored' || status.status === 'dead') {
+          statusText.textContent = 'Process stopped';
+          eventSource.close();
+          setTimeout(() => location.reload(), 1500);
+        } else {
+          updatePorts(status.detectedPorts);
+        }
+      });
 
-    eventSource.onerror = () => {
-      document.getElementById('statusText').textContent = 'Connection lost';
-    };
+      eventSource.onerror = () => {
+        document.getElementById('statusText').textContent = 'Connection lost';
+      };
+    }
 
     // PTY input - send all keystrokes to terminal
     document.addEventListener('keydown', async (e) => {
+      if (mode !== 'starting') return;
       // Don't capture if typing in an input field
       if (e.target.tagName === 'INPUT') return;
 

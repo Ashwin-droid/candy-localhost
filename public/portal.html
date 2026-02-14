@@ -1171,7 +1171,7 @@ Domain Allocation:
 
 Dev Servers:
   servers, sv                List all server configs.
-  start <name>               Start a dev server.
+  start <name> [configId]    Start a dev server (switch active variant if needed).
   stop <name>                Stop a running server.
   restart <name>             Restart a server.
   proc <name>                Show process details.
@@ -1181,7 +1181,7 @@ Dev Servers:
 
 Server Config:
   config <name> <cwd> <cmd>  Register a server config.
-  unconfig <name>            Remove a server config.
+  unconfig <name> [configId] Remove one variant or all configs.
 
 Tunneling:
   portal, p [name] <port>    Open a tunnel.
@@ -1408,7 +1408,11 @@ Misc:
                   const port = proc?.port ? `:${proc.port}` : '';
                   const statusColor = status === 'running' ? 'success' : status === 'errored' ? 'error' : 'dim';
                   appendOutput(`  ${name.padEnd(15)} ${status.padEnd(10)}${port}`, statusColor);
-                  appendOutput(`    ${cfg.cmd} in ${cfg.cwd}`, 'dim');
+                  const variants = Array.isArray(cfg.variants) && cfg.variants.length ? cfg.variants : [cfg];
+                  variants.forEach(v => {
+                    const active = proc?.configId === v.id ? ' [active]' : '';
+                    appendOutput(`    [${v.id}] ${v.cmd} in ${v.cwd}${active}`, 'dim');
+                  });
                 });
               }
             }
@@ -1416,18 +1420,27 @@ Misc:
 
           case 'start':
             if (!args[0]) {
-              appendOutput('Usage: start <name>', 'error');
+              appendOutput('Usage: start <name> [configId]', 'error');
               break;
             }
             {
-              appendOutput(`Starting ${args[0]}...`, 'dim');
-              const startRes = await apiCall(`/process/start/${args[0]}`, { method: 'POST' });
+              const configId = args[1];
+              appendOutput(`Starting ${args[0]}${configId ? ` (${configId})` : ''}...`, 'dim');
+              const startRes = await apiCall(`/process/start/${args[0]}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(configId ? { configId } : {})
+              });
               const startData = await startRes.json();
-              if (startData.error) {
+              if (startRes.status === 409 && startData.configs?.length) {
+                appendOutput(startData.error, 'error');
+                appendOutput('Available config variants:', 'dim');
+                startData.configs.forEach(c => appendOutput(`  ${c.id}  ${c.cmd} in ${c.cwd}`, 'output'));
+              } else if (startData.error) {
                 appendOutput(startData.error, 'error');
               } else {
                 const d = startData.data || startData;
-                appendOutput(`▶ ${d.name} running on :${d.port} (PID ${d.pid})`, 'success');
+                appendOutput(`▶ ${d.name} [${d.configId || 'default'}] running on :${d.port} (PID ${d.pid})`, 'success');
               }
             }
             break;
@@ -1483,13 +1496,18 @@ Misc:
                 appendOutput(`Server '${args[0]}' not found.`, 'error');
               } else {
                 appendOutput(`Server: ${args[0]}`, 'output');
-                appendOutput(`  Command:  ${cfg2.cmd}`, 'dim');
-                appendOutput(`  CWD:      ${cfg2.cwd}`, 'dim');
+                const variants = Array.isArray(cfg2.variants) && cfg2.variants.length ? cfg2.variants : [cfg2];
+                appendOutput(`  Configs:  ${variants.length}`, 'dim');
+                variants.forEach(v => {
+                  const active = proc2?.configId === v.id ? ' [active]' : '';
+                  appendOutput(`    [${v.id}] ${v.cmd} in ${v.cwd}${active}`, 'dim');
+                });
                 if (proc2) {
                   const statusColor = proc2.status === 'running' ? 'success' : proc2.status === 'errored' ? 'error' : 'dim';
                   appendOutput(`  Status:   ${proc2.status}`, statusColor);
                   appendOutput(`  Port:     ${proc2.port || 'N/A'}`, 'dim');
                   appendOutput(`  PID:      ${proc2.pid || 'N/A'}`, 'dim');
+                  appendOutput(`  ConfigId: ${proc2.configId || 'N/A'}`, 'dim');
                   if (proc2.startedAt) {
                     const uptime = Math.floor((Date.now() - new Date(proc2.startedAt).getTime()) / 1000);
                     const m = Math.floor(uptime / 60);
@@ -1622,16 +1640,17 @@ Misc:
 
           case 'unconfig':
             if (!args[0]) {
-              appendOutput('Usage: unconfig <name>', 'error');
+              appendOutput('Usage: unconfig <name> [configId]', 'error');
               break;
             }
             {
-              const ucfgRes = await apiCall(`/config/${args[0]}`, { method: 'DELETE' });
+              const configId = args[1];
+              const ucfgRes = await apiCall(`/config/${args[0]}${configId ? '/' + configId : ''}`, { method: 'DELETE' });
               const ucfgData = await ucfgRes.json();
               if (ucfgData.error) {
                 appendOutput(ucfgData.error, 'error');
               } else {
-                appendOutput(`- ${args[0]} removed`, 'error');
+                appendOutput(`- ${args[0]}${configId ? ` [${configId}]` : ''} removed`, 'error');
               }
             }
             break;
@@ -1827,6 +1846,21 @@ Misc:
     });
 
     // GUI Functions
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function escapeJsSingle(value) {
+      return String(value ?? '')
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'");
+    }
+
     async function refreshAll() {
       await checkStatus().then(data => {
         if (data) {
@@ -2018,7 +2052,8 @@ Misc:
             const statusClass = p.status;
             const portInfo = p.port ? `:${p.port}` : '';
             const pidInfo = p.pid ? `PID ${p.pid}` : '';
-            const meta = [portInfo, pidInfo].filter(Boolean).join(' • ');
+            const cfgInfo = p.configId ? `cfg ${p.configId}` : '';
+            const meta = [portInfo, pidInfo, cfgInfo].filter(Boolean).join(' • ');
 
             return `
               <div class="process-item">
@@ -2047,12 +2082,18 @@ Misc:
       }
     }
 
-    async function startProcess(name) {
+    async function startProcess(name, configId = null) {
       try {
-        toast(`Starting ${name}...`, 'info');
-        const res = await apiCall(`/process/start/${name}`, { method: 'POST' });
+        toast(`Starting ${name}${configId ? ` (${configId})` : ''}...`, 'info');
+        const res = await apiCall(`/process/start/${name}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(configId ? { configId } : {})
+        });
         const data = await res.json();
-        if (data.error) {
+        if (res.status === 409 && data.configs?.length) {
+          toast('Multiple variants found. Pick one from the Configs panel.', 'error');
+        } else if (data.error) {
           toast(data.error, 'error');
         } else {
           toast(data.message || `${name} started`, 'success');
@@ -2106,34 +2147,43 @@ Misc:
         if (names.length === 0) {
           list.innerHTML = '<div class="empty">No server configs. Add one to get started.</div>';
         } else {
-          list.innerHTML = names.map(name => {
+          const html = [];
+          names.forEach(name => {
             const c = configs[name];
-            return `
-              <div class="config-item">
-                <div class="config-info">
-                  <div class="config-name">${name}.localhost</div>
-                  <div class="config-details">
-                    <span class="label">cwd:</span> ${c.cwd}<br>
-                    <span class="label">cmd:</span> ${c.cmd}
+            const variants = Array.isArray(c.variants) && c.variants.length ? c.variants : [c];
+            variants.forEach((variant, idx) => {
+              const heading = idx === 0
+                ? `${escapeHtml(name)}.localhost${variants.length > 1 ? ` <span style="color: var(--text-dim);">(${variants.length} variants)</span>` : ''}`
+                : `${escapeHtml(name)}.localhost <span style="color: var(--text-dim);">(variant)</span>`;
+              html.push(`
+                <div class="config-item">
+                  <div class="config-info">
+                    <div class="config-name">${heading}</div>
+                    <div class="config-details">
+                      <span class="label">id:</span> ${escapeHtml(variant.id)}<br>
+                      <span class="label">cwd:</span> ${escapeHtml(variant.cwd)}<br>
+                      <span class="label">cmd:</span> ${escapeHtml(variant.cmd)}
+                    </div>
+                  </div>
+                  <div class="config-actions">
+                    <button class="btn-icon success" onclick="startProcess('${escapeJsSingle(name)}', '${escapeJsSingle(variant.id)}')" title="Start">▶</button>
+                    <button class="btn-icon danger" onclick="deleteConfig('${escapeJsSingle(name)}', '${escapeJsSingle(variant.id)}')" title="Delete">×</button>
                   </div>
                 </div>
-                <div class="config-actions">
-                  <button class="btn-icon success" onclick="startProcess('${name}')" title="Start">▶</button>
-                  <button class="btn-icon danger" onclick="deleteConfig('${name}')" title="Delete">×</button>
-                </div>
-              </div>
-            `;
-          }).join('');
+              `);
+            });
+          });
+          list.innerHTML = html.join('');
         }
       } catch (e) {
         document.getElementById('configs-list').innerHTML = '<div class="empty">Failed to load configs.</div>';
       }
     }
 
-    async function deleteConfig(name) {
-      if (!confirm(`Delete config for ${name}?`)) return;
+    async function deleteConfig(name, configId = null) {
+      if (!confirm(`Delete config for ${name}${configId ? ` (${configId})` : ''}?`)) return;
       try {
-        const res = await apiCall('/config/' + name, { method: 'DELETE' });
+        const res = await apiCall('/config/' + name + (configId ? '/' + configId : ''), { method: 'DELETE' });
         const data = await res.json();
         if (data.error) {
           toast(data.error, 'error');

@@ -213,4 +213,4 @@ All endpoints require `X-Candy-Token` header (obtained via `/session`).
 
 ## License
 
-WTFPL
+GPL-3.0

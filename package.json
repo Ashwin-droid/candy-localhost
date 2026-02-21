@@ -2,6 +2,7 @@
   "name": "candy-localhost",
   "version": "0.5.0",
   "description": "Lazy dev server orchestrator - we hand out domains like it's 1980",
+  "license": "GPL-3.0-only",
   "type": "module",
   "main": "daemon.ts",
   "bin": {
@@ -19,3 +20,4 @@
     "@types/bun": "latest"
   }
 }
+

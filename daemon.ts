@@ -702,7 +702,6 @@ const spawnVoidManifestation = async () => {
     'galculator',
     'mate-calc',
     'qalculate-gtk',
-    '/System/Applications/Calculator.app/Contents/MacOS/Calculator', // macOS
   ]
   
   // Also try some other fun ones

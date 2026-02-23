@@ -5,6 +5,10 @@
   "license": "GPL-3.0-only",
   "type": "module",
   "main": "daemon.ts",
+  "exports": {
+    ".": "./daemon.ts",
+    "./sdk": "./sdk.ts"
+  },
   "bin": {
     "candy": "./cli.ts"
   },

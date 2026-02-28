@@ -618,6 +618,136 @@ async function cmdDaemon() {
   await import(daemonPath)
 }
 
+// Domain management
+async function cmdDomain(args: string[]) {
+  if (!await checkDaemon()) {
+    console.error(`${c.red}Error: candy daemon not running${c.reset}`)
+    process.exit(1)
+  }
+
+  const sub = args[0]
+
+  if (sub === 'list' || sub === 'ls' || !sub) {
+    const res = await apiGet('/domains')
+    if (!res.configured) {
+      console.log(`${c.dim}Domain config not set up.${c.reset}`)
+      console.log(`${c.dim}Run: candy domain config --zone <domain> --tunnel <name>${c.reset}`)
+      return
+    }
+    console.log(`${c.cyan}${c.bold}Bound Domains${c.reset} ${c.dim}(*.${res.zone?.domain})${c.reset}`)
+    console.log(`${c.dim}Tunnel: ${res.tunnel?.name} (${res.tunnel?.id?.slice(0, 8)}...)${c.reset}`)
+    console.log()
+    const bindings = Object.values(res.bindings || {})
+    if (bindings.length === 0) {
+      console.log(`${c.dim}No bound domains yet.${c.reset}`)
+    } else {
+      for (const b of bindings as any[]) {
+        console.log(`  ${c.green}${b.fqdn}${c.reset} -> ${c.cyan}${b.serverName}${c.reset}`)
+      }
+    }
+  } else if (sub === 'bind' || sub === 'b') {
+    const subdomain = args[1]
+    let serverName: string | undefined
+    const serverIdx = args.indexOf('--server')
+    if (serverIdx !== -1 && args[serverIdx + 1]) {
+      serverName = args[serverIdx + 1]
+    } else {
+      serverName = args[2]
+    }
+    if (!subdomain) {
+      console.error(`${c.red}Usage: candy domain bind <subdomain> [--server <name>]${c.reset}`)
+      process.exit(1)
+    }
+    if (!serverName) {
+      // Default to subdomain as server name
+      serverName = subdomain
+    }
+    console.log(`${c.dim}Binding ${subdomain} -> ${serverName}...${c.reset}`)
+    const res = await apiPost('/domains/bind', { subdomain, serverName })
+    if (res?.warning) {
+      console.log(`${c.yellow}${res.message}${c.reset}`)
+      console.log(`${c.dim}Existing records:${c.reset}`)
+      for (const r of res.existingRecords || []) {
+        console.log(`  ${c.dim}${r.type} -> ${r.content}${c.reset}`)
+      }
+      // Ask for confirmation
+      const rl = await import('readline')
+      const readline = rl.createInterface({ input: process.stdin, output: process.stdout })
+      const answer = await new Promise<string>(resolve => {
+        readline.question(`${c.yellow}Override? (y/N): ${c.reset}`, resolve)
+      })
+      readline.close()
+      if (answer.toLowerCase() !== 'y') {
+        console.log(`${c.dim}Cancelled.${c.reset}`)
+        return
+      }
+      // Retry with force
+      const forceRes = await apiPost('/domains/bind', { subdomain, serverName, force: true })
+      if (forceRes?.error) {
+        console.error(`${c.red}${forceRes.error}${c.reset}`)
+      } else {
+        console.log(`${c.green}${forceRes.message}${c.reset}`)
+        console.log(`${c.dim}${forceRes.binding?.fqdn}${c.reset}`)
+      }
+    } else if (res?.error) {
+      console.error(`${c.red}${res.error}${c.reset}`)
+    } else {
+      console.log(`${c.green}${res.message}${c.reset}`)
+      console.log(`${c.dim}${res.binding?.fqdn}${c.reset}`)
+    }
+  } else if (sub === 'unbind' || sub === 'u') {
+    const subdomain = args[1]
+    if (!subdomain) {
+      console.error(`${c.red}Usage: candy domain unbind <subdomain>${c.reset}`)
+      process.exit(1)
+    }
+    console.log(`${c.dim}Unbinding ${subdomain}...${c.reset}`)
+    const res = await apiDelete(`/domains/unbind/${subdomain}`)
+    if (res?.error) {
+      console.error(`${c.red}${res.error}${c.reset}`)
+    } else {
+      console.log(`${c.magenta}${res.message}${c.reset}`)
+    }
+  } else if (sub === 'config') {
+    // Parse flags
+    let zone = '', tunnel = '', tunnelId = '', credentialsFile = ''
+    for (let i = 1; i < args.length; i++) {
+      if (args[i] === '--zone' && args[i + 1]) { zone = args[++i]; continue }
+      if (args[i] === '--tunnel' && args[i + 1]) { tunnel = args[++i]; continue }
+      if (args[i] === '--tunnel-id' && args[i + 1]) { tunnelId = args[++i]; continue }
+      if (args[i] === '--credentials' && args[i + 1]) { credentialsFile = args[++i]; continue }
+    }
+    if (!zone && !tunnel) {
+      console.error(`${c.red}Usage: candy domain config --zone <domain> --tunnel <name> [--tunnel-id <id>] [--credentials <path>]${c.reset}`)
+      process.exit(1)
+    }
+    const body: any = {}
+    if (zone) {
+      // Fetch zone ID from CF API if only domain provided
+      body.zone = { domain: zone, id: '' }
+    }
+    if (tunnel || tunnelId) {
+      body.tunnel = {
+        name: tunnel || '',
+        id: tunnelId || '',
+        credentialsFile: credentialsFile || '',
+      }
+    }
+    const res = await apiPost('/domains/config', body)
+    if (res?.error) {
+      console.error(`${c.red}${res.error}${c.reset}`)
+    } else {
+      console.log(`${c.green}Domain config updated${c.reset}`)
+      if (res.zone?.domain) console.log(`  ${c.dim}zone: ${res.zone.domain}${c.reset}`)
+      if (res.tunnel?.name) console.log(`  ${c.dim}tunnel: ${res.tunnel.name}${c.reset}`)
+    }
+  } else {
+    console.error(`${c.red}Unknown domain subcommand: ${sub}${c.reset}`)
+    console.error(`${c.dim}Usage: candy domain [list|bind|unbind|config]${c.reset}`)
+    process.exit(1)
+  }
+}
+
 function printHelp() {
   console.log(`${c.cyan}${c.bold}🍬 candy-localhost${c.reset} ${c.dim}v${VERSION}${c.reset}`)
   console.log(`${c.dim}we hand out domains like it's 1980${c.reset}`)
@@ -631,6 +761,7 @@ function printHelp() {
   console.log(`  ${c.cyan}candy portal${c.reset} [name]          Open tunnel for server`)
   console.log(`  ${c.cyan}candy list${c.reset}                   List all registered configs`)
   console.log(`  ${c.cyan}candy route${c.reset} [add|rm]          Manage domain routes (--persistent|-p)`)
+  console.log(`  ${c.cyan}candy domain${c.reset} [list|bind|unbind|config]  Manage bound domains`)
   console.log(`  ${c.cyan}candy mcp${c.reset}                    Start MCP server (stdio) for AI integration`)
   console.log(`  ${c.cyan}candy daemon${c.reset}                 Run the daemon (use systemd for production)`)
   console.log()
@@ -643,6 +774,9 @@ function printHelp() {
   console.log()
   console.log(`  ${c.dim}# Custom route name${c.reset}`)
   console.log(`  ${c.cyan}candy dev npm start --name api${c.reset}`)
+  console.log()
+  console.log(`  ${c.dim}# Bind a subdomain to a server${c.reset}`)
+  console.log(`  ${c.cyan}candy domain bind myapp --server inkspired${c.reset}`)
   console.log()
   console.log(`${c.dim}The daemon runs the server - this CLI is just a window into it.${c.reset}`)
   console.log(`${c.dim}Multiple terminals/AIs can watch the same logs simultaneously.${c.reset}`)
@@ -689,6 +823,10 @@ switch (command) {
   case '--version':
   case '-v':
     console.log(`candy-localhost v${VERSION}`)
+    break
+  case 'domain':
+  case 'domains':
+    cmdDomain(args.slice(1))
     break
   case 'route':
   case 'routes': {

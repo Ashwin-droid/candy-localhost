@@ -506,6 +506,59 @@
       text-decoration: underline;
     }
 
+    /* Domain items */
+    .domain-item {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      padding: 0.75rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .domain-item:last-child {
+      border-bottom: none;
+    }
+
+    .domain-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .domain-name {
+      color: var(--yellow);
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .domain-name::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--yellow);
+      box-shadow: 0 0 10px var(--yellow);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    .domain-server {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+    }
+
+    .domain-fqdn a {
+      color: var(--cyan-dim);
+      text-decoration: none;
+      font-size: 0.75rem;
+    }
+
+    .domain-fqdn a:hover {
+      color: var(--cyan);
+      text-decoration: underline;
+    }
+
     /* Add form */
     .add-form {
       display: flex;
@@ -911,6 +964,17 @@
           </div>
         </div>
 
+        <!-- Domains Card -->
+        <div class="card" id="domains-card">
+          <div class="card-header">
+            <div class="card-title"><span class="icon" style="color: var(--yellow)">&#x2600;</span> Bound Domains</div>
+            <button class="btn" onclick="showBindDomain()">+ Bind</button>
+          </div>
+          <div class="card-body scrollable" id="domains-list">
+            <div class="empty">Loading domains...</div>
+          </div>
+        </div>
+
         <!-- Processes Card -->
         <div class="card">
           <div class="card-header">
@@ -1024,6 +1088,45 @@
     </div>
   </div>
 
+  <!-- Bind Domain Modal -->
+  <div id="bind-domain-modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; align-items: center; justify-content: center;">
+    <div class="card" style="width: 450px;">
+      <div class="card-header">
+        <div class="card-title">Bind Domain</div>
+        <button class="btn-icon" onclick="hideBindDomain()">&times;</button>
+      </div>
+      <div class="card-body">
+        <div id="bind-domain-warning" style="display: none; background: rgba(255, 204, 0, 0.1); border: 1px solid rgba(255, 204, 0, 0.3); border-radius: 4px; padding: 0.75rem; margin-bottom: 1rem; font-size: 0.8rem;">
+          <div id="bind-domain-warning-text" style="color: var(--yellow);"></div>
+          <div id="bind-domain-warning-records" style="color: var(--text-dim); font-size: 0.7rem; margin-top: 0.5rem;"></div>
+          <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
+            <button class="btn" style="font-size: 0.7rem; padding: 0.35rem 0.75rem; background: var(--yellow); color: var(--bg-deep);" onclick="forceBindDomain()">Replace them 🔪</button>
+            <button class="btn secondary" style="font-size: 0.7rem; padding: 0.35rem 0.75rem;" onclick="hideBindDomain()">Never mind</button>
+          </div>
+        </div>
+        <form id="bind-domain-form" onsubmit="submitBindDomain(event)" style="display: flex; flex-direction: column; gap: 1rem;">
+          <div>
+            <label style="font-size: 0.75rem; color: var(--text-dim); display: block; margin-bottom: 0.5rem;">Subdomain</label>
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+              <input type="text" id="bind-subdomain" class="input-field" placeholder="myapp" required pattern="[a-zA-Z0-9-]+" style="flex: 1;">
+              <span style="color: var(--text-dim);" id="bind-domain-suffix">.domain.com</span>
+            </div>
+          </div>
+          <div>
+            <label style="font-size: 0.75rem; color: var(--text-dim); display: block; margin-bottom: 0.5rem;">Server</label>
+            <select id="bind-server" class="input-field" required style="width: 100%;">
+              <option value="">Select a server...</option>
+            </select>
+          </div>
+          <div style="display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 0.5rem;">
+            <button type="button" class="btn secondary" onclick="hideBindDomain()">Cancel</button>
+            <button type="submit" class="btn">Bind Domain</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
   <!-- Logs Modal -->
   <div id="logs-modal" style="display: none; position: fixed; inset: 0; background: rgba(5,5,8,0.92); z-index: 100; align-items: center; justify-content: center; backdrop-filter: blur(4px);">
     <div class="card" style="width: 85vw; max-width: 1000px; height: 75vh; display: flex; flex-direction: column; box-shadow: 0 0 60px rgba(0,229,255,0.08), 0 0 120px rgba(255,0,170,0.04);">
@@ -1055,7 +1158,9 @@
 
   <script>
     const API = '';
-    const TLD = location.hostname.endsWith('.candy') ? 'candy' : 'localhost';
+    const _host = location.hostname;
+    const _isBoundDomain = !_host.endsWith('.candy') && !_host.endsWith('.localhost');
+    const TLD = _host.endsWith('.candy') ? 'candy' : _host.endsWith('.localhost') ? 'localhost' : null;
     const SCHEME = 'https';
     const terminal = document.getElementById('terminal');
     const cliInput = document.getElementById('cli-input');
@@ -1240,6 +1345,11 @@ Tunneling:
   portal, p [name] <port>    Open a tunnel.
   portals, ps                List active portals.
   close, c <name>            Close a portal.
+
+Bound Domains:
+  domains, dom               List bound domains.
+  bind <sub> <server>        Bind subdomain to server.
+  unbind <sub>               Unbind a subdomain.
 
 Surveillance:
   logs [count]               View activity logs.
@@ -1435,6 +1545,75 @@ Misc:
                   const childColor = child.alive ? 'success' : 'error';
                   appendLink(`  ${prefix} ${child.name}`, child.url, `  ${child.total} req`, childColor);
                 });
+              }
+            }
+            break;
+
+          // === Bound Domain Commands ===
+
+          case 'domains':
+          case 'dom':
+            {
+              const domRes = await apiCall('/domains');
+              const domData = await domRes.json();
+              if (!domData.configured) {
+                appendOutput('Bound domains not configured.', 'dim');
+                appendOutput('Set up via CLI: candy domain config --zone domain.com --tunnel candy', 'dim');
+              } else {
+                appendOutput(`Zone: ${domData.zone?.domain || 'N/A'}  Tunnel: ${domData.tunnel?.name || 'N/A'}`, 'output');
+                const bindings = Object.values(domData.bindings || {});
+                if (bindings.length === 0) {
+                  appendOutput('No bound domains.', 'dim');
+                } else {
+                  bindings.forEach(b => {
+                    appendOutput(`  ${b.fqdn} -> ${b.serverName}`, 'success');
+                  });
+                }
+              }
+            }
+            break;
+
+          case 'bind':
+            if (args.length < 2) {
+              appendOutput('Usage: bind <subdomain> <serverName> [--force]', 'error');
+              break;
+            }
+            {
+              const forceFlag = args.includes('--force') || args.includes('-f');
+              const bindArgs = args.filter(a => a !== '--force' && a !== '-f');
+              appendOutput(`Binding ${bindArgs[0]} -> ${bindArgs[1]}...`, 'dim');
+              const bindRes = await apiCall('/domains/bind', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ subdomain: bindArgs[0], serverName: bindArgs[1], force: forceFlag })
+              });
+              const bindData = await bindRes.json();
+              if (bindData.warning) {
+                appendOutput(bindData.message, 'error');
+                appendOutput('Use: bind <subdomain> <serverName> --force to override', 'dim');
+              } else if (bindData.error) {
+                appendOutput(bindData.error, 'error');
+              } else {
+                appendOutput(bindData.message || 'Domain bound', 'success');
+                if (bindData.binding) {
+                  appendOutput(`  ${bindData.binding.fqdn} -> ${bindData.binding.serverName}`, 'dim');
+                }
+              }
+            }
+            break;
+
+          case 'unbind':
+            if (!args[0]) {
+              appendOutput('Usage: unbind <subdomain>', 'error');
+              break;
+            }
+            {
+              const unbindRes = await apiCall('/domains/unbind/' + args[0], { method: 'DELETE' });
+              const unbindData = await unbindRes.json();
+              if (unbindData.error) {
+                appendOutput(unbindData.error, 'error');
+              } else {
+                appendOutput(unbindData.message || `${args[0]} unbound`, 'portal');
               }
             }
             break;
@@ -1926,6 +2105,7 @@ Misc:
       });
       await refreshRoutes();
       await refreshPortals();
+      await refreshDomains();
       await refreshProcesses();
       await refreshConfigs();
     }
@@ -2437,6 +2617,183 @@ Misc:
         toast('Failed to add config', 'error');
       }
     }
+
+    // =========================================
+    // BOUND DOMAINS
+    // =========================================
+
+    let domainZone = null;
+    let pendingBindSubdomain = null;
+    let pendingBindServer = null;
+
+    async function refreshDomains() {
+      try {
+        const res = await apiCall('/domains');
+        const data = await res.json();
+        const list = document.getElementById('domains-list');
+        const card = document.getElementById('domains-card');
+
+        if (!data.configured) {
+          list.innerHTML = '<div class="empty">Not configured. Set up via CLI:<br><code style="color: var(--cyan);">candy domain config --zone domain.com --tunnel candy</code></div>';
+          return;
+        }
+
+        domainZone = data.zone;
+        const suffix = document.getElementById('bind-domain-suffix');
+        if (suffix && domainZone) suffix.textContent = '.' + domainZone.domain;
+
+        const bindings = Object.values(data.bindings || {});
+        if (bindings.length === 0) {
+          list.innerHTML = '<div class="empty">No bound domains yet.</div>';
+        } else {
+          list.innerHTML = bindings.map(b => `
+            <div class="domain-item">
+              <div class="domain-header">
+                <span class="domain-name">${escapeHtml(b.subdomain)}</span>
+                <button class="btn-icon danger" onclick="unbindDomain('${escapeJsSingle(b.subdomain)}')" title="Unbind">&times;</button>
+              </div>
+              <div class="domain-fqdn">
+                <a href="https://${escapeHtml(b.fqdn)}" target="_blank">${escapeHtml(b.fqdn)}</a>
+              </div>
+              <div class="domain-server">server: <span style="color: var(--cyan);">${escapeHtml(b.serverName)}</span></div>
+            </div>
+          `).join('');
+        }
+      } catch (e) {
+        document.getElementById('domains-list').innerHTML = '<div class="empty">Failed to load domains.</div>';
+      }
+    }
+
+    async function showBindDomain() {
+      // Reset state
+      document.getElementById('bind-domain-warning').style.display = 'none';
+      document.getElementById('bind-domain-form').style.display = 'flex';
+      document.getElementById('bind-subdomain').value = '';
+      pendingBindSubdomain = null;
+      pendingBindServer = null;
+
+      // Populate server dropdown from configs
+      try {
+        const res = await apiCall('/configs');
+        const data = await res.json();
+        const configs = data.configs || {};
+        const select = document.getElementById('bind-server');
+        select.innerHTML = '<option value="">Select a server...</option>';
+        for (const name of Object.keys(configs).filter(k => k !== 'success')) {
+          const opt = document.createElement('option');
+          opt.value = name;
+          opt.textContent = name;
+          select.appendChild(opt);
+        }
+      } catch {}
+
+      // Set domain suffix
+      if (domainZone) {
+        document.getElementById('bind-domain-suffix').textContent = '.' + domainZone.domain;
+      }
+
+      document.getElementById('bind-domain-modal').style.display = 'flex';
+      document.getElementById('bind-subdomain').focus();
+    }
+
+    function hideBindDomain() {
+      document.getElementById('bind-domain-modal').style.display = 'none';
+      pendingBindSubdomain = null;
+      pendingBindServer = null;
+    }
+
+    async function submitBindDomain(e) {
+      e.preventDefault();
+      const subdomain = document.getElementById('bind-subdomain').value.trim();
+      const serverName = document.getElementById('bind-server').value;
+
+      if (!subdomain || !serverName) {
+        toast('Fill in all fields', 'error');
+        return;
+      }
+
+      try {
+        toast('Binding domain...', 'info');
+        const res = await apiCall('/domains/bind', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ subdomain, serverName })
+        });
+        const data = await res.json();
+
+        if (data.warning) {
+          // Show warning with existing records
+          pendingBindSubdomain = subdomain;
+          pendingBindServer = serverName;
+          document.getElementById('bind-domain-warning-text').textContent = data.message;
+          const recordsHtml = (data.existingRecords || [])
+            .map(r => `${r.type} -> ${r.content}`)
+            .join('<br>');
+          document.getElementById('bind-domain-warning-records').innerHTML = recordsHtml;
+          document.getElementById('bind-domain-warning').style.display = 'block';
+          document.getElementById('bind-domain-form').style.display = 'none';
+        } else if (data.error) {
+          toast(data.error, 'error');
+        } else {
+          toast(data.message || 'Domain bound', 'success');
+          hideBindDomain();
+          refreshAll();
+        }
+      } catch (e) {
+        toast('Failed to bind domain', 'error');
+      }
+    }
+
+    async function forceBindDomain() {
+      if (!pendingBindSubdomain || !pendingBindServer) return;
+
+      try {
+        toast('Overriding DNS records...', 'info');
+        const res = await apiCall('/domains/bind', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            subdomain: pendingBindSubdomain,
+            serverName: pendingBindServer,
+            force: true
+          })
+        });
+        const data = await res.json();
+
+        if (data.error) {
+          toast(data.error, 'error');
+        } else {
+          toast(data.message || 'Domain bound', 'success');
+          hideBindDomain();
+          refreshAll();
+        }
+      } catch (e) {
+        toast('Failed to bind domain', 'error');
+      }
+    }
+
+    async function unbindDomain(subdomain) {
+      if (!confirm(`Unbind ${subdomain}?`)) return;
+
+      try {
+        toast('Unbinding domain...', 'info');
+        const res = await apiCall('/domains/unbind/' + subdomain, { method: 'DELETE' });
+        const data = await res.json();
+        if (data.error) {
+          toast(data.error, 'error');
+        } else {
+          toast(data.message || 'Domain unbound', 'success');
+          refreshAll();
+        }
+      } catch (e) {
+        toast('Failed to unbind domain', 'error');
+      }
+    }
+
+    // Close bind domain modal on backdrop click
+    document.getElementById('bind-domain-modal').addEventListener('click', (e) => {
+      if (e.target.id === 'bind-domain-modal') hideBindDomain();
+    });
 
     // =========================================
     // THE VOID INCURSION

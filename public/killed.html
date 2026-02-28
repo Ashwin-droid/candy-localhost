@@ -262,15 +262,17 @@
   </div>
 
   <script>
-    const TLD = location.hostname.endsWith('.candy') ? 'candy' : 'localhost';
+    const _host = location.hostname;
+    const _isBoundDomain = !_host.endsWith('.candy') && !_host.endsWith('.localhost');
+    const TLD = _host.endsWith('.candy') ? 'candy' : _host.endsWith('.localhost') ? 'localhost' : null;
     const SCHEME = 'https';
     const vars = window.CANDY_VARS || { name: 'unknown' };
     const serverName = vars.name;
 
     document.getElementById('serverName').textContent = serverName;
-    document.getElementById('domainLink').textContent = `${serverName}.${TLD}`;
-    document.getElementById('restartBtn').href = `${SCHEME}://${serverName}.${TLD}`;
-    document.getElementById('portalLink').href = `${SCHEME}://portal.${TLD}`;
+    document.getElementById('domainLink').textContent = `${_isBoundDomain ? _host : serverName + '.' + TLD}`;
+    document.getElementById('restartBtn').href = `${SCHEME}://${_isBoundDomain ? _host : serverName + '.' + TLD}`;
+    document.getElementById('portalLink').href = `${SCHEME}://portal.${_isBoundDomain ? 'localhost' : TLD}`;
   </script>
 </body>
 </html>

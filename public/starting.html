@@ -449,7 +449,7 @@
           <div class="spinner"></div>
           <div class="spinner-inner"></div>
         </div>
-        <h1 id="pageTitle">Starting <span class="domain" id="serverName">server</span><span class="tld-suffix">.localhost</span></h1>
+        <h1 id="pageTitle">Starting <span class="domain" id="serverName">server</span><span class="tld-suffix" id="tldSuffix">.localhost</span></h1>
       </div>
       <div class="status-pill detecting" id="statusPill">
         <span class="status-dot"></span>
@@ -507,13 +507,23 @@
 
   <script>
     const API = '';
-    const TLD = location.hostname.endsWith('.candy') ? 'candy' : 'localhost';
+    // Detect TLD: .candy, .localhost, or bound domain (keep full hostname for redirects)
+    const _host = location.hostname;
+    const _isBoundDomain = !_host.endsWith('.candy') && !_host.endsWith('.localhost');
+    const TLD = _host.endsWith('.candy') ? 'candy' : _host.endsWith('.localhost') ? 'localhost' : null;
     const SCHEME = 'https';
     const vars = window.CANDY_VARS || { mode: 'starting', name: 'unknown', detectedPorts: [], returnPath: '/', variants: [] };
     let currentToken = window.CANDY_TOKEN;
     const mode = vars.mode || 'starting';
     const serverName = vars.name;
     const returnPath = vars.returnPath || '/';
+    // Update TLD suffix display for bound domains
+    if (_isBoundDomain) {
+      const suffix = document.getElementById('tldSuffix');
+      if (suffix) suffix.textContent = '';
+      const nameEl = document.getElementById('serverName');
+      if (nameEl) nameEl.textContent = _host;
+    }
     const variants = Array.isArray(vars.variants) ? vars.variants : [];
 
     // Token management - rolling one-time-use tokens
@@ -561,7 +571,7 @@
     document.getElementById('killBtn').onclick = () => {
       // candy-localhost kill handler uses <name>.kill.localhost (and <name>.k.localhost)
       // Prefer https to match Caddy's "tls internal" config for *.kill.localhost.
-      location.href = `${SCHEME}://${serverName}.kill.${TLD}`;
+      location.href = `${SCHEME}://${_isBoundDomain ? _host : serverName + '.kill.' + TLD}`;
     };
 
     function renderChooser() {
@@ -611,7 +621,7 @@
           alert(data.error || 'Failed to start selected config');
           return;
         }
-        location.href = `${SCHEME}://${serverName}.${TLD}${returnPath}`;
+        location.href = `${SCHEME}://${_isBoundDomain ? _host : serverName + '.' + TLD}${returnPath}`;
       } catch (e) {
         alert('Failed to start selected config: ' + e.message);
       }
@@ -655,7 +665,7 @@
         });
 
         if (res.ok) {
-          location.href = `${SCHEME}://${serverName}.${TLD}${returnPath}`;
+          location.href = `${SCHEME}://${_isBoundDomain ? _host : serverName + '.' + TLD}${returnPath}`;
         } else {
           const data = await res.json();
           alert('Failed to set port: ' + (data.error || 'Unknown error'));
@@ -688,7 +698,7 @@
           document.getElementById('redirectOverlay').classList.add('visible');
           eventSource.close();
           setTimeout(() => {
-            location.href = `${SCHEME}://${serverName}.${TLD}${returnPath}`;
+            location.href = `${SCHEME}://${_isBoundDomain ? _host : serverName + '.' + TLD}${returnPath}`;
           }, 1200);
         } else if (status.status === 'errored' || status.status === 'dead') {
           statusText.textContent = 'Process stopped';

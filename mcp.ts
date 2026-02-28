@@ -417,6 +417,70 @@ This SENDS INPUT TO A PROCESS - use when server needs interaction.`,
     }
   },
   {
+    name: "candy_domain",
+    description: `Manage bound domains — real subdomains on the user's Cloudflare-managed domain that route through a named tunnel.
+
+USE THIS TOOL when:
+- User wants to expose a dev server on a real subdomain
+- User asks about bound domains or CF tunnel domains
+- User wants to bind/unbind a subdomain
+
+Actions:
+- list: Show all bound domains and config status
+- bind: Bind a subdomain to a server config (creates DNS + ingress)
+- unbind: Remove a subdomain binding (deletes DNS + ingress)
+- config: Set up zone/tunnel configuration (one-time setup)
+
+This MODIFIES DNS AND TUNNEL CONFIG - confirm with user before bind/unbind.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["list", "bind", "unbind", "config"],
+          description: "Action to perform"
+        },
+        subdomain: {
+          type: "string",
+          description: "Subdomain name for bind/unbind (e.g. 'myapp')"
+        },
+        serverName: {
+          type: "string",
+          description: "Server config name to bind to (e.g. 'inkspired')"
+        },
+        force: {
+          type: "boolean",
+          description: "Force override existing DNS records"
+        },
+        zone: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            domain: { type: "string" }
+          },
+          description: "Zone config for setup (config action)"
+        },
+        tunnel: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            name: { type: "string" },
+            credentialsFile: { type: "string" }
+          },
+          description: "Tunnel config for setup (config action)"
+        }
+      },
+      required: ["action"]
+    },
+    annotations: {
+      title: "Manage Bound Domains",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true
+    }
+  },
+  {
     name: "candy_route",
     description: "Add, remove, or list domain routes. Use persistent flag for routes that survive daemon restarts.",
     inputSchema: {
@@ -789,6 +853,38 @@ async function handleRequest(request: MCPRequest): Promise<MCPResponse | null> {
           case "candy_portal_close":
             result = await handlePortalClose(toolArgs)
             break
+          case "candy_domain": {
+            const { action: domAction, subdomain, serverName, force, zone, tunnel } = toolArgs as any
+            if (domAction === "list") {
+              result = await daemonFetch("/domains")
+            } else if (domAction === "bind") {
+              if (!subdomain || !serverName) {
+                result = { error: "subdomain and serverName are required for bind" }
+              } else {
+                result = await daemonFetch("/domains/bind", {
+                  method: "POST",
+                  body: JSON.stringify({ subdomain, serverName, force: force || false })
+                })
+              }
+            } else if (domAction === "unbind") {
+              if (!subdomain) {
+                result = { error: "subdomain is required for unbind" }
+              } else {
+                result = await daemonFetch(`/domains/unbind/${subdomain}`, { method: "DELETE" })
+              }
+            } else if (domAction === "config") {
+              const body: any = {}
+              if (zone) body.zone = zone
+              if (tunnel) body.tunnel = tunnel
+              result = await daemonFetch("/domains/config", {
+                method: "POST",
+                body: JSON.stringify(body)
+              })
+            } else {
+              result = { error: "Unknown action. Use: list, bind, unbind, config" }
+            }
+            break
+          }
           case "candy_route": {
             const { action: routeAction, name: routeName, port: routePort, persistent: routePersistent } = toolArgs as any
             if (routeAction === "list") {

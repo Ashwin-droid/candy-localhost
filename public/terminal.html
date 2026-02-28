@@ -732,6 +732,12 @@
           </div>
 
           <label class="alleyway-option">
+            <input type="checkbox" id="persistent">
+            <span class="checkbox-custom"></span>
+            <span class="checkbox-label">persist allocation</span>
+            <span class="checkbox-hint">( survives daemon restart )</span>
+          </label>
+          <label class="alleyway-option">
             <input type="checkbox" id="alleyway">
             <span class="checkbox-custom"></span>
             <span class="checkbox-label">open an alleyway</span>
@@ -924,6 +930,7 @@
     }
 
     const alleywayCheckbox = document.getElementById('alleyway');
+    const persistentCheckbox = document.getElementById('persistent');
     const portalMessage = document.getElementById('portalMessage');
 
     form.addEventListener('submit', async (e) => {
@@ -1009,11 +1016,12 @@
         }
 
         const openAlleyway = alleywayCheckbox.checked;
+        const persistent = persistentCheckbox.checked;
         showLoading();
 
         try {
           // Step 1: Register the domain
-          const registerBody = isUrl ? { name: domainName, target } : { name: domainName, port };
+          const registerBody = isUrl ? { name: domainName, target, persistent } : { name: domainName, port, persistent };
           const registerRes = await apiCall('/register', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

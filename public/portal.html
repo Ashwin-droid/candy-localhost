@@ -387,6 +387,23 @@
       color: var(--text-dim);
     }
 
+    .route-badges {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .route-persistent {
+      font-size: 0.6rem;
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      background: rgba(0, 229, 255, 0.12);
+      color: var(--cyan-dim);
+      cursor: default;
+    }
+
     .route-actions {
       display: flex;
       gap: 0.5rem;
@@ -420,6 +437,20 @@
     .btn-icon.portal:hover {
       border-color: var(--magenta);
       color: var(--magenta);
+    }
+
+    .btn-icon.pin {
+      color: var(--text-muted);
+    }
+
+    .btn-icon.pin.active {
+      color: var(--cyan-dim);
+      border-color: var(--cyan-dim);
+    }
+
+    .btn-icon.pin:hover {
+      border-color: var(--cyan);
+      color: var(--cyan);
     }
 
     /* Portal items */
@@ -781,6 +812,20 @@
     .card-body.scrollable::-webkit-scrollbar-thumb:hover {
       background: var(--text-muted);
     }
+
+    .persistent-toggle {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      cursor: pointer;
+      font-size: 0.8rem;
+      color: var(--text-dim);
+    }
+
+    .persistent-toggle input[type="checkbox"] {
+      accent-color: var(--cyan);
+      margin: 0;
+    }
   </style>
 </head>
 <body>
@@ -924,6 +969,12 @@
           <div>
             <label style="font-size: 0.75rem; color: var(--text-dim); display: block; margin-bottom: 0.5rem;">Port</label>
             <input type="number" id="add-port" class="input-field" placeholder="3000" required min="1" max="65535" style="width: 100%;">
+          </div>
+          <div>
+            <label class="persistent-toggle">
+              <input type="checkbox" id="add-persistent">
+              Persistent route (survives daemon restart)
+            </label>
           </div>
           <div style="display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 0.5rem;">
             <button type="button" class="btn secondary" onclick="hideAddRoute()">Cancel</button>
@@ -1288,7 +1339,8 @@ Misc:
               routeNames.forEach(name => {
                 const r = routes[name];
                 const target = r.isRestricted ? r.target + ' [RESTRICTED]' : ':' + r.target;
-                appendOutput(`  ${name}.${TLD} -> ${target}`, r.isRestricted ? 'error' : 'success');
+                const pin = r.persistent ? ' [PINNED]' : '';
+                appendOutput(`  ${name}.${TLD} -> ${target}${pin}`, r.isRestricted ? 'error' : 'success');
               });
             }
             break;
@@ -1891,14 +1943,17 @@ Misc:
           list.innerHTML = names.map(name => {
             const r = routes[name];
             const target = r.isRestricted ? r.target : ':' + r.target;
+            const persistentBadge = r.persistent ? '<span class="route-persistent">pinned</span>' : '';
             return `
               <div class="route-item">
                 <div class="route-info">
                   <span class="route-name">${name}</span>
+                  ${persistentBadge}
                   <span class="route-arrow">→</span>
                   <span class="route-port">${target}</span>
                 </div>
                 <div class="route-actions">
+                  <button class="btn-icon pin ${r.persistent ? 'active' : ''}" onclick="togglePersistent('${name}', ${!r.persistent})" title="${r.persistent ? 'Unpin route' : 'Pin route (persistent)'}">📌</button>
                   <button class="btn-icon portal" onclick="openPortal('${name}', ${r.target})" title="Open Portal">◉</button>
                   <button class="btn-icon danger" onclick="deleteRoute('${name}')" title="Delete">×</button>
                 </div>
@@ -1984,6 +2039,25 @@ Misc:
       }
     }
 
+    async function togglePersistent(name, persistent) {
+      try {
+        const res = await apiCall('/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, persistent })
+        });
+        const data = await res.json();
+        if (data.error) {
+          toast(data.error, 'error');
+        } else {
+          toast(persistent ? `${name} pinned` : `${name} unpinned`, 'success');
+          refreshRoutes();
+        }
+      } catch (e) {
+        toast('Failed to update route', 'error');
+      }
+    }
+
     function showAddRoute() {
       document.getElementById('add-route-modal').style.display = 'flex';
       document.getElementById('add-name').focus();
@@ -1993,18 +2067,20 @@ Misc:
       document.getElementById('add-route-modal').style.display = 'none';
       document.getElementById('add-name').value = '';
       document.getElementById('add-port').value = '';
+      document.getElementById('add-persistent').checked = false;
     }
 
     async function submitAddRoute(e) {
       e.preventDefault();
       const name = document.getElementById('add-name').value;
       const port = parseInt(document.getElementById('add-port').value);
+      const persistent = document.getElementById('add-persistent').checked;
 
       try {
         const res = await apiCall('/register', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, port })
+          body: JSON.stringify({ name, port, persistent })
         });
         const data = await res.json();
         if (data.error) {

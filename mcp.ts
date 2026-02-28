@@ -415,8 +415,34 @@ This SENDS INPUT TO A PROCESS - use when server needs interaction.`,
       idempotentHint: false,
       openWorldHint: false
     }
-  }
-]
+  },
+  {
+    name: "candy_route",
+    description: "Add, remove, or list domain routes. Use persistent flag for routes that survive daemon restarts.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          description: "Action: add, remove, or list"
+        },
+        name: {
+          type: "string",
+          description: "Route name (becomes <name>.localhost)"
+        },
+        port: {
+          type: "number",
+          description: "Port to route to"
+        },
+        persistent: {
+          type: "boolean",
+          description: "If true, route survives daemon restarts"
+        }
+      },
+      required: ["action"]
+    }
+  },
+  ]
 
 // ============================================================================
 // Daemon API Client
@@ -763,6 +789,21 @@ async function handleRequest(request: MCPRequest): Promise<MCPResponse | null> {
           case "candy_portal_close":
             result = await handlePortalClose(toolArgs)
             break
+          case "candy_route": {
+            const { action: routeAction, name: routeName, port: routePort, persistent: routePersistent } = toolArgs as any
+            if (routeAction === "list") {
+              const res = await fetch(`${API}/routes`, { headers: authHeaders() }).then(r => r.json())
+              const entries = Object.entries(res as Record<string, any>)
+              result = entries.length === 0 ? "No routes" : entries.map(([n, r]: [string, any]) => `${n}.localhost -> ${typeof r.target === "string" ? r.target : ":" + r.target}${r.persistent ? " [persistent]" : ""}`).join("\n")
+            } else if (routeAction === "add") {
+              const res = await fetch(`${API}/register`, { method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() }, body: JSON.stringify({ name: routeName, port: routePort, persistent: routePersistent || false }) }).then(r => r.json())
+              result = (res as any).error ? `Error: ${(res as any).error}` : `Route added: ${routeName}.localhost -> :${routePort}${routePersistent ? " (persistent)" : ""}`
+            } else if (routeAction === "remove") {
+              const res = await fetch(`${API}/register/${routeName}`, { method: "DELETE", headers: authHeaders() }).then(r => r.json())
+              result = (res as any).error ? `Error: ${(res as any).error}` : `Route removed: ${routeName}.localhost`
+            } else { result = "Unknown action" }
+            break
+          }
           case "candy_portals":
             result = await handlePortals()
             break

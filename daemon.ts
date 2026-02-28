@@ -186,6 +186,7 @@ const CADDYFILE = `${CADDY_CONFIG_DIR}/Caddyfile`
 const CADDY_LOG = `${CADDY_CONFIG_DIR}/access.log`
 const PID_FILE = `${CADDY_CONFIG_DIR}/candy.pid`
 const SERVERS_CONFIG = `${CANDY_CONFIG_DIR}/servers.json`
+const ROUTES_FILE = `${CANDY_CONFIG_DIR}/routes.json`
 const MCP_SECRET_FILE = `${CANDY_CONFIG_DIR}/mcp-secret`
 const LOGS_DIR = "/tmp/candy-logs"
 const AUDIT_LOG = `${LOGS_DIR}/_audit.log`
@@ -214,7 +215,7 @@ const PORT_DETECTION_TIMEOUT = 10000  // 10 seconds
 // State Maps
 // ============================================================================
 
-const routes = new Map<string, number | string>()
+const routes = new Map<string, { target: number | string, persistent: boolean }>()
 const portals = new Map<string, { proc: Subprocess | null, port: number, url?: string, pid?: number }>()
 const processes = new Map<string, ManagedProcess>()
 const serverConfigs = new Map<string, ServerConfig[]>()
@@ -854,8 +855,9 @@ const spawnProcess = async (name: string, actor: Actor = 'System', configId?: st
         auditLog('STATE', `${name}: starting -> running (port ${managed.port})`, 'System')
         clearInterval(checkInterval)
 
-        // Add route and sync
-        routes.set(name, managed.port)
+        // Add route and sync (preserve persistent flag if route already exists)
+        const existing = routes.get(name)
+        routes.set(name, { target: managed.port, persistent: existing?.persistent || false })
         await syncCaddy()
         auditLog('ROUTE_AUTO', `${name}.localhost -> :${managed.port}`)
         return
@@ -1034,8 +1036,11 @@ const stopProcess = async (name: string, actor: Actor = 'System'): Promise<boole
   // Clear logs for fresh restart
   await clearLogs(name)
 
-  // Remove route
-  routes.delete(name)
+  // Remove route (keep persistent routes — they survive process stops)
+  const route = routes.get(name)
+  if (!route?.persistent) {
+    routes.delete(name)
+  }
 
   // Also kill associated portal/tunnel if exists
   const portal = portals.get(name)
@@ -1101,7 +1106,8 @@ const setProcessPort = async (name: string, port: number, actor: Actor = 'Portal
   managed.port = port
   managed.status = 'running'
 
-  routes.set(name, port)
+  const existingRoute = routes.get(name)
+  routes.set(name, { target: port, persistent: existingRoute?.persistent || false })
   await syncCaddy()
   auditLog('STATE', `${name}: ${prevStatus} -> running (port ${port}, manual)`, actor)
 
@@ -1224,10 +1230,10 @@ const loadRoutes = async () => {
 
     const matches = content.matchAll(/^([\w-]+)\.localhost \{\s*reverse_proxy\s+(\S+)/gm)
     for (const [, name, target] of matches) {
-      if (target.startsWith("localhost:")) {
-        routes.set(name, parseInt(target.replace("localhost:", "")))
-      } else {
-        routes.set(name, target)
+      const t = target.startsWith("localhost:") ? parseInt(target.replace("localhost:", "")) : target
+      // Don't overwrite persistent routes loaded earlier
+      if (!routes.has(name)) {
+        routes.set(name, { target: t, persistent: false })
       }
     }
 
@@ -1245,6 +1251,29 @@ const loadRoutes = async () => {
   } catch {}
 }
 
+// Load persistent routes from routes.json (survives daemon restarts)
+const loadPersistentRoutes = async () => {
+  try {
+    const content = await Bun.file(ROUTES_FILE).text()
+    const data = JSON.parse(content) as Record<string, number | string>
+    for (const [name, target] of Object.entries(data)) {
+      routes.set(name, { target, persistent: true })
+    }
+  } catch {}
+}
+
+// Save only persistent routes to routes.json
+const savePersistentRoutes = async () => {
+  const data: Record<string, number | string> = {}
+  for (const [name, route] of routes) {
+    if (route.persistent) {
+      data[name] = route.target
+    }
+  }
+  await $`mkdir -p ${CANDY_CONFIG_DIR}`.quiet().nothrow()
+  await Bun.write(ROUTES_FILE, JSON.stringify(data, null, 2))
+}
+
 // Write Caddyfile and reload
 const syncCaddy = async () => {
   let content = `# candy-localhost routes
@@ -1258,8 +1287,8 @@ const syncCaddy = async () => {
 }
 
 `
-  for (const [name, target] of routes) {
-    const proxyTarget = typeof target === "number" ? `localhost:${target}` : target
+  for (const [name, route] of routes) {
+    const proxyTarget = typeof route.target === "number" ? `localhost:${route.target}` : route.target
     content += `${name}.localhost {
   tls internal
   reverse_proxy ${proxyTarget}
@@ -1271,8 +1300,8 @@ const syncCaddy = async () => {
 
   // .candy route blocks (Tailscale - HTTP only, bound to Tailscale IP)
   if (tailscaleIp) {
-    for (const [name, target] of routes) {
-      const proxyTarget = typeof target === "number" ? `localhost:${target}` : target
+    for (const [name, route] of routes) {
+      const proxyTarget = typeof route.target === "number" ? `localhost:${route.target}` : route.target
       content += `${name}.candy {
   bind ${tailscaleIp}
   tls internal
@@ -1535,15 +1564,17 @@ const controlServer = Bun.serve({
       const routeTarget = isRestricted ? body.target! : body.port!
 
       if (!isRestricted) {
-        const existingRoute = [...routes.entries()].find(([n, p]) => p === routeTarget && n !== name)
+        const existingRoute = [...routes.entries()].find(([n, r]) => r.target === routeTarget && n !== name)
         if (existingRoute) {
           const m = pick(msg.portCollision)
           return Response.json({ error: m, details: `${existingRoute[0]} has :${routeTarget}` }, { status: 409, headers: corsHeaders })
         }
       }
 
-      routes.set(name, routeTarget)
+      const persistent = body.persistent === true
+      routes.set(name, { target: routeTarget, persistent })
       await syncCaddy()
+      if (persistent) await savePersistentRoutes()
 
       if (isRestricted) {
         log("RESTRICTED", `${name}.localhost -> ${routeTarget}`)
@@ -1576,8 +1607,10 @@ const controlServer = Bun.serve({
         await stopProcess(name, actor)
       }
 
+      const wasRoute = routes.get(name)
       routes.delete(name)
       await syncCaddy()
+      if (wasRoute?.persistent) await savePersistentRoutes()
       const m = pick(msg.removed)
       log("REMOVE", `${name}.localhost`)
       return Response.json({ status: "removed", message: m }, { headers: corsHeaders })
@@ -1596,9 +1629,10 @@ const controlServer = Bun.serve({
         return Response.json({ error: `New identity '${newName}' already exists.`, details: newName }, { status: 409, headers: corsHeaders })
       }
 
-      const port = routes.get(oldName)!
+      const routeData = routes.get(oldName)!
       routes.delete(oldName)
-      routes.set(newName, port)
+      routes.set(newName, routeData)
+      if (routeData.persistent) await savePersistentRoutes()
 
       if (portals.has(oldName)) {
         const portalData = portals.get(oldName)!
@@ -1613,12 +1647,13 @@ const controlServer = Bun.serve({
     }
 
     if (req.method === "GET" && url.pathname === "/routes") {
-      const routeList: Record<string, { target: number | string, isRestricted: boolean }> = {}
-      for (const [name, target] of routes) {
+      const routeList: Record<string, { target: number | string, isRestricted: boolean, persistent: boolean }> = {}
+      for (const [name, route] of routes) {
         if (isReserved(name)) continue  // hide reserved
         routeList[name] = {
-          target,
-          isRestricted: typeof target === "string"
+          target: route.target,
+          isRestricted: typeof route.target === "string",
+          persistent: route.persistent
         }
       }
       return Response.json(routeList, { headers: corsHeaders })
@@ -1668,7 +1703,7 @@ const controlServer = Bun.serve({
       }
 
       if (!routes.has(portalName)) {
-        routes.set(portalName, port)
+        routes.set(portalName, { target: port, persistent: false })
         await syncCaddy()
       }
 
@@ -1725,9 +1760,9 @@ const controlServer = Bun.serve({
       const batchTargets: { name: string, port: number }[] = []
 
       if (!targets || targets.length === 0) {
-        for (const [name, target] of routes) {
-          if (typeof target === "string") continue
-          if (!portals.has(name)) batchTargets.push({ name, port: target })
+        for (const [name, route] of routes) {
+          if (typeof route.target === "string") continue
+          if (!portals.has(name)) batchTargets.push({ name, port: route.target as number })
         }
         if (batchTargets.length === 0) {
           return Response.json({ error: pick(msg.noRoutes) }, { status: 400, headers: corsHeaders })
@@ -1742,12 +1777,13 @@ const controlServer = Bun.serve({
             while (portals.has(`anon-${anonCounter}`) || batchTargets.some(t => t.name === `anon-${anonCounter}`)) anonCounter++
             batchTargets.push({ name: `anon-${anonCounter}`, port })
           } else {
-            const routeTarget = routes.get(arg)
-            if (!routeTarget || typeof routeTarget === "string") continue
+            const routeData = routes.get(arg)
+            if (!routeData || typeof routeData.target === "string") continue
             if (portals.has(arg)) continue
-            const existingPortal = [...portals.entries()].find(([, p]) => p.port === routeTarget)
-            if (existingPortal || batchTargets.some(t => t.port === routeTarget)) continue
-            batchTargets.push({ name: arg, port: routeTarget })
+            const routePort = routeData.target as number
+            const existingPortal = [...portals.entries()].find(([, p]) => p.port === routePort)
+            if (existingPortal || batchTargets.some(t => t.port === routePort)) continue
+            batchTargets.push({ name: arg, port: routePort })
           }
         }
       }
@@ -2537,7 +2573,8 @@ const controlServer = Bun.serve({
           if (managed.status === 'running' && managed.port) {
             // This usually means a race: we marked the process running before Caddy finished reloading.
             // Never redirect users to localhost:<port>; keep them on the domain and ensure the route exists.
-            routes.set(domain, managed.port)
+            const existRoute = routes.get(domain)
+            routes.set(domain, { target: managed.port, persistent: existRoute?.persistent || false })
             await syncCaddy()
             return Response.redirect(`${domainUrl(domain)}${url.pathname}${url.search}`, 302)
           }
@@ -2666,7 +2703,10 @@ await loadVoidState()
 // Initialize MCP auth (write bootstrap secret to file)
 await initMcpAuth()
 
-// Create fresh Caddyfile (don't load previous routes - clean slate)
+// Load persistent routes first (survive daemon restarts)
+await loadPersistentRoutes()
+
+// Create fresh Caddyfile (includes persistent routes)
 await syncCaddy()
 
 // Now start Caddy

@@ -729,6 +729,12 @@
           </div>
 
           <label class="alleyway-option">
+            <input type="checkbox" id="persistent">
+            <span class="checkbox-custom"></span>
+            <span class="checkbox-label">Keep it forever!</span>
+            <span class="checkbox-hint">(survives restarts)</span>
+          </label>
+          <label class="alleyway-option">
             <input type="checkbox" id="alleyway">
             <span class="checkbox-custom"></span>
             <span class="checkbox-label">Share with friends!</span>
@@ -835,6 +841,7 @@
     const loadingText = document.getElementById('loadingText');
     const loadingSubtext = document.getElementById('loadingSubtext');
     const alleywayCheckbox = document.getElementById('alleyway');
+    const persistentCheckbox = document.getElementById('persistent');
     const portalMessage = document.getElementById('portalMessage');
     const quickModeBtn = document.getElementById('quickModeBtn');
     const lazyModeBtn = document.getElementById('lazyModeBtn');
@@ -991,11 +998,12 @@
         }
 
         const openAlleyway = alleywayCheckbox.checked;
+        const persistent = persistentCheckbox.checked;
         showLoading();
 
         try {
           // Step 1: Register the domain
-          const registerBody = isUrl ? { name: domainName, target } : { name: domainName, port };
+          const registerBody = isUrl ? { name: domainName, target, persistent } : { name: domainName, port, persistent };
           const registerRes = await apiCall('/register', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

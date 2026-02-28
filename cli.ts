@@ -630,6 +630,7 @@ function printHelp() {
   console.log(`  ${c.cyan}candy logs${c.reset} [name]            Tail logs (current folder or by name)`)
   console.log(`  ${c.cyan}candy portal${c.reset} [name]          Open tunnel for server`)
   console.log(`  ${c.cyan}candy list${c.reset}                   List all registered configs`)
+  console.log(`  ${c.cyan}candy route${c.reset} [add|rm]          Manage domain routes (--persistent|-p)`)
   console.log(`  ${c.cyan}candy mcp${c.reset}                    Start MCP server (stdio) for AI integration`)
   console.log(`  ${c.cyan}candy daemon${c.reset}                 Run the daemon (use systemd for production)`)
   console.log()
@@ -689,6 +690,55 @@ switch (command) {
   case '-v':
     console.log(`candy-localhost v${VERSION}`)
     break
+  case 'route':
+  case 'routes': {
+    const sub = args[0]
+    if (sub === 'add' || sub === 'a') {
+      const name = args[1]
+      const port = parseInt(args[2])
+      const persistent = args.includes('--persistent') || args.includes('-p')
+      if (!name || !port) {
+        console.error(`${c.red}Usage: candy route add <name> <port> [--persistent|-p]${c.reset}`)
+        process.exit(1)
+      }
+      const res = await apiPost('/register', { name, port, persistent })
+      if (res?.error) {
+        console.error(`${c.red}${res.error}${c.reset}`)
+      } else {
+        console.log(`${c.green}+ ${name}.localhost -> :${port}${persistent ? ' (persistent)' : ''}${c.reset}`)
+      }
+    } else if (sub === 'rm' || sub === 'remove') {
+      const name = args[1]
+      if (!name) {
+        console.error(`${c.red}Usage: candy route rm <name>${c.reset}`)
+        process.exit(1)
+      }
+      const res = await fetch(`${API}/register/${name}`, { method: 'DELETE' }).then(r => r.json()).catch(() => null)
+      if (res?.error) {
+        console.error(`${c.red}${res.error}${c.reset}`)
+      } else {
+        console.log(`${c.red}- ${name}.localhost${c.reset}`)
+      }
+    } else {
+      // List routes
+      const res = await fetch(`${API}/routes`).then(r => r.json()).catch(() => null)
+      if (!res) {
+        console.error(`${c.red}Daemon not running${c.reset}`)
+        process.exit(1)
+      }
+      const names = Object.keys(res)
+      if (names.length === 0) {
+        console.log(`${c.dim}No routes registered${c.reset}`)
+      } else {
+        for (const name of names) {
+          const r = res[name]
+          const flags = r.persistent ? ` ${c.cyan}[persistent]${c.reset}` : ''
+          console.log(`  ${c.green}${name}.localhost${c.reset} -> ${r.isRestricted ? r.target : ':' + r.target}${flags}`)
+        }
+      }
+    }
+    break
+  }
   default:
     if (command) {
       console.error(`${c.red}Unknown command: ${command}${c.reset}`)

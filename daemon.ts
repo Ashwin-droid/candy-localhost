@@ -188,9 +188,12 @@ const PID_FILE = `${CADDY_CONFIG_DIR}/candy.pid`
 const SERVERS_CONFIG = `${CANDY_CONFIG_DIR}/servers.json`
 const ROUTES_FILE = `${CANDY_CONFIG_DIR}/routes.json`
 const MCP_SECRET_FILE = `${CANDY_CONFIG_DIR}/mcp-secret`
+const DOMAINS_CONFIG = `${CANDY_CONFIG_DIR}/domains.json`
 const LOGS_DIR = "/tmp/candy-logs"
 const AUDIT_LOG = `${LOGS_DIR}/_audit.log`
 const DNS_CONFIG_FILE = `${CANDY_CONFIG_DIR}/candy-dns.json`
+const CLOUDFLARED_SYSTEM_CONFIG = `/etc/cloudflared/config.yml`
+const CLOUDFLARED_USER_CONFIG = `${process.env.HOME}/.cloudflared/config.yml`
 
 // Tailscale state (discovered at startup)
 let tailscaleIp: string | null = null
@@ -210,6 +213,107 @@ const PORT_PATTERNS = [
 ]
 
 const PORT_DETECTION_TIMEOUT = 10000  // 10 seconds
+
+// ============================================================================
+// Bound Domains Config
+// ============================================================================
+
+interface DomainBinding {
+  subdomain: string
+  fqdn: string
+  serverName: string
+  boundAt: string
+}
+
+interface DomainConfig {
+  tunnel: { id: string; name: string; credentialsFile: string }
+  zone: { id: string; domain: string }
+  cfApiToken: string
+  bindings: Record<string, DomainBinding>
+}
+
+let domainConfig: DomainConfig | null = null
+
+const loadDomainConfig = async (): Promise<DomainConfig | null> => {
+  try {
+    const file = Bun.file(DOMAINS_CONFIG)
+    if (await file.exists()) {
+      domainConfig = await file.json() as DomainConfig
+      const count = Object.keys(domainConfig.bindings || {}).length
+      console.log(`\x1b[90mLoaded domain config: ${domainConfig.zone?.domain || '(no zone)'} with ${count} bindings\x1b[0m`)
+      return domainConfig
+    }
+  } catch (e) {
+    console.log(`\x1b[33mNo domain config found or invalid format\x1b[0m`)
+  }
+  return null
+}
+
+const saveDomainConfig = async () => {
+  if (!domainConfig) return
+  await $`mkdir -p ${CANDY_CONFIG_DIR}`.quiet().nothrow()
+  await Bun.write(DOMAINS_CONFIG, JSON.stringify(domainConfig, null, 2))
+}
+
+// Resolve an incoming Host header to a bound domain's server name
+// Returns the server name if the host matches a binding's FQDN, null otherwise
+const resolveBindingFromHost = (host: string): { serverName: string; binding: DomainBinding } | null => {
+  if (!domainConfig?.bindings) return null
+  // Strip port if present
+  const cleanHost = host.replace(/:\d+$/, '')
+  for (const binding of Object.values(domainConfig.bindings)) {
+    if (binding.fqdn === cleanHost) {
+      return { serverName: binding.serverName, binding }
+    }
+  }
+  return null
+}
+
+// Write ingress rules to cloudflared config files and restart the service
+const syncCloudflaredIngress = async () => {
+  if (!domainConfig?.tunnel?.id) return
+
+  // Build ingress rules from bindings
+  const ingressRules: { hostname: string; service: string }[] = []
+  for (const binding of Object.values(domainConfig.bindings || {})) {
+    ingressRules.push({
+      hostname: binding.fqdn,
+      service: 'http://localhost:9999',
+    })
+  }
+
+  // Build YAML content
+  let yaml = `tunnel: ${domainConfig.tunnel.id}\n`
+  yaml += `credentials-file: ${domainConfig.tunnel.credentialsFile}\n`
+  yaml += `\ningress:\n`
+  for (const rule of ingressRules) {
+    yaml += `  - hostname: ${rule.hostname}\n`
+    yaml += `    service: ${rule.service}\n`
+  }
+  // Catch-all must always be last
+  yaml += `  - service: http_status:404\n`
+
+  // Write to both system and user config
+  try {
+    await Bun.write(CLOUDFLARED_USER_CONFIG, yaml)
+  } catch (e) {
+    console.log(`\x1b[33mFailed to write user cloudflared config: ${e}\x1b[0m`)
+  }
+  try {
+    await $`sudo tee ${CLOUDFLARED_SYSTEM_CONFIG} > /dev/null`.quiet().nothrow().stdin(yaml)
+  } catch (e) {
+    console.log(`\x1b[33mFailed to write system cloudflared config: ${e}\x1b[0m`)
+  }
+}
+
+const restartCloudflared = async () => {
+  try {
+    await $`sudo systemctl restart cloudflared`.quiet().nothrow()
+    console.log(`\x1b[90mCloudflared restarted\x1b[0m`)
+  } catch (e) {
+    console.log(`\x1b[31mFailed to restart cloudflared: ${e}\x1b[0m`)
+  }
+}
 
 // ============================================================================
 // State Maps
@@ -1708,7 +1812,7 @@ const controlServer = Bun.serve({
       }
 
       const cfProc = spawn({
-        cmd: ["cloudflared", "tunnel", "--no-tls-verify", "--url", `https://${portalName}.localhost`],
+        cmd: ["cloudflared", "tunnel", "--config", "/dev/null", "--no-tls-verify", "--url", `https://${portalName}.localhost`],
         stdout: "pipe",
         stderr: "pipe",
       })
@@ -1794,7 +1898,7 @@ const controlServer = Bun.serve({
 
       const results = await Promise.all(batchTargets.map(async ({ name, port }) => {
         const proc = spawn({
-          cmd: ["cloudflared", "tunnel", "--no-tls-verify", "--url", `https://${name}.localhost`],
+          cmd: ["cloudflared", "tunnel", "--config", "/dev/null", "--no-tls-verify", "--url", `https://${name}.localhost`],
           stdout: "pipe",
           stderr: "pipe",
         })
@@ -2216,6 +2320,188 @@ const controlServer = Bun.serve({
       return Response.json({ success: true }, { headers: corsHeaders })
     }
 
+    // === Bound Domains API ===
+
+    if (req.method === "GET" && url.pathname === "/domains") {
+      if (!domainConfig) {
+        return Response.json({ configured: false, bindings: {} }, { headers: corsHeaders })
+      }
+      return Response.json({
+        configured: true,
+        tunnel: domainConfig.tunnel,
+        zone: domainConfig.zone,
+        bindings: domainConfig.bindings || {},
+      }, { headers: corsHeaders })
+    }
+
+    if (req.method === "POST" && url.pathname === "/domains/bind") {
+      if (!domainConfig?.zone?.domain || !domainConfig?.tunnel?.id) {
+        return Response.json({ error: "Domain config not set up. Run POST /domains/config first." }, { status: 400, headers: corsHeaders })
+      }
+
+      const { subdomain, serverName, force } = await req.json() as { subdomain: string; serverName: string; force?: boolean }
+      if (!subdomain || !serverName) {
+        return Response.json({ error: "subdomain and serverName are required" }, { status: 400, headers: corsHeaders })
+      }
+
+      const fqdn = `${subdomain}.${domainConfig.zone.domain}`
+
+      // Check if serverName has a config registered
+      if (!serverConfigs.has(serverName)) {
+        return Response.json({ error: `No server config found for '${serverName}'. Register it first.` }, { status: 404, headers: corsHeaders })
+      }
+
+      // Check for existing DNS records via CF API
+      if (!force && domainConfig.cfApiToken) {
+        try {
+          const checkRes = await fetch(
+            `https://api.cloudflare.com/client/v4/zones/${domainConfig.zone.id}/dns_records?name=${fqdn}`,
+            { headers: { Authorization: `Bearer ${domainConfig.cfApiToken}` }, signal: AbortSignal.timeout(10000) }
+          )
+          if (checkRes.ok) {
+            const checkData = await checkRes.json() as any
+            const existingRecords = checkData.result || []
+            // Only warn about non-candy CNAME records (records we didn't create)
+            const tunnelTarget = `${domainConfig.tunnel.id}.cfargotunnel.com`
+            const foreignRecords = existingRecords.filter((r: any) => !(r.type === 'CNAME' && r.content === tunnelTarget))
+            if (foreignRecords.length > 0) {
+              return Response.json({
+                warning: true,
+                message: `Oh? Someone's already living at ${fqdn}... I could remove this record for you, just say the word.`,
+                existingRecords: foreignRecords.map((r: any) => ({ type: r.type, content: r.content, id: r.id })),
+                fqdn,
+              }, { headers: corsHeaders })
+            }
+          }
+        } catch (e) {
+          auditLog('DOMAIN_DNS_CHECK_FAIL', `${fqdn}: ${e}`, 'System')
+        }
+      }
+
+      // Create DNS CNAME record via cloudflared CLI
+      try {
+        await $`cloudflared tunnel route dns ${domainConfig.tunnel.name} ${fqdn}`.quiet().nothrow()
+      } catch (e) {
+        auditLog('DOMAIN_DNS_ROUTE_FAIL', `${fqdn}: ${e}`, 'System')
+      }
+
+      // Save binding
+      if (!domainConfig.bindings) domainConfig.bindings = {}
+      domainConfig.bindings[subdomain] = {
+        subdomain,
+        fqdn,
+        serverName,
+        boundAt: new Date().toISOString(),
+      }
+      await saveDomainConfig()
+
+      // Sync ingress and restart cloudflared
+      await syncCloudflaredIngress()
+      await restartCloudflared()
+
+      auditLog('DOMAIN_BIND', `${fqdn} -> ${serverName}`, isMCP ? 'AI' : 'Portal')
+      return Response.json({
+        message: `Welcome home, ${fqdn}~`,
+        binding: domainConfig.bindings[subdomain],
+      }, { headers: corsHeaders })
+    }
+
+    if (req.method === "DELETE" && url.pathname.startsWith("/domains/unbind/")) {
+      if (!domainConfig) {
+        return Response.json({ error: "Domain config not set up." }, { status: 400, headers: corsHeaders })
+      }
+
+      const subdomain = url.pathname.split("/")[3]
+      const binding = domainConfig.bindings?.[subdomain]
+      if (!binding) {
+        return Response.json({ error: `No binding found for '${subdomain}'.` }, { status: 404, headers: corsHeaders })
+      }
+
+      // Delete DNS CNAME record via CF API
+      if (domainConfig.cfApiToken && domainConfig.zone?.id) {
+        try {
+          const listRes = await fetch(
+            `https://api.cloudflare.com/client/v4/zones/${domainConfig.zone.id}/dns_records?name=${binding.fqdn}`,
+            { headers: { Authorization: `Bearer ${domainConfig.cfApiToken}` }, signal: AbortSignal.timeout(10000) }
+          )
+          if (listRes.ok) {
+            const listData = await listRes.json() as any
+            for (const record of (listData.result || [])) {
+              await fetch(
+                `https://api.cloudflare.com/client/v4/zones/${domainConfig.zone.id}/dns_records/${record.id}`,
+                { method: 'DELETE', headers: { Authorization: `Bearer ${domainConfig.cfApiToken}` }, signal: AbortSignal.timeout(10000) }
+              ).catch(() => {})
+            }
+          }
+        } catch (e) {
+          auditLog('DOMAIN_DNS_DELETE_FAIL', `${binding.fqdn}: ${e}`, 'System')
+        }
+      }
+
+      // Remove binding
+      delete domainConfig.bindings[subdomain]
+      await saveDomainConfig()
+
+      // Sync ingress and restart cloudflared
+      await syncCloudflaredIngress()
+      await restartCloudflared()
+
+      auditLog('DOMAIN_UNBIND', `${binding.fqdn}`, isMCP ? 'AI' : 'Portal')
+      return Response.json({
+        message: `You want me to let them go? ...fine. But they were mine first.`,
+        subdomain,
+        fqdn: binding.fqdn,
+      }, { headers: corsHeaders })
+    }
+
+    if (req.method === "POST" && url.pathname === "/domains/config") {
+      const body = await req.json() as { zone?: { id: string; domain: string }; tunnel?: { id: string; name: string; credentialsFile: string }; cfApiToken?: string }
+
+      if (!domainConfig) {
+        domainConfig = {
+          tunnel: { id: '', name: '', credentialsFile: '' },
+          zone: { id: '', domain: '' },
+          cfApiToken: '',
+          bindings: {},
+        }
+      }
+
+      if (body.zone) {
+        domainConfig.zone = { ...domainConfig.zone, ...body.zone }
+
+        // If zone ID is missing but domain is provided, try to look it up via CF API
+        if (!domainConfig.zone.id && domainConfig.zone.domain && domainConfig.cfApiToken) {
+          try {
+            const zoneRes = await fetch(
+              `https://api.cloudflare.com/client/v4/zones?name=${domainConfig.zone.domain}`,
+              { headers: { Authorization: `Bearer ${domainConfig.cfApiToken}` }, signal: AbortSignal.timeout(10000) }
+            )
+            if (zoneRes.ok) {
+              const zoneData = await zoneRes.json() as any
+              if (zoneData.result?.[0]?.id) {
+                domainConfig.zone.id = zoneData.result[0].id
+              }
+            }
+          } catch {}
+        }
+      }
+      if (body.tunnel) {
+        domainConfig.tunnel = { ...domainConfig.tunnel, ...body.tunnel }
+      }
+      if (body.cfApiToken) {
+        domainConfig.cfApiToken = body.cfApiToken
+      }
+
+      await saveDomainConfig()
+      auditLog('DOMAIN_CONFIG', `zone: ${domainConfig.zone.domain}, tunnel: ${domainConfig.tunnel.name}`, isMCP ? 'AI' : 'Portal')
+
+      return Response.json({
+        message: "Domain config updated",
+        zone: domainConfig.zone,
+        tunnel: { id: domainConfig.tunnel.id, name: domainConfig.tunnel.name },
+      }, { headers: corsHeaders })
+    }
+
     // === THE VOID API ===
 
     // Get void status - are they marked? is a burst pending?
@@ -2494,7 +2780,7 @@ const controlServer = Bun.serve({
 
         // Start cloudflared tunnel
         const tunnelProc = spawn({
-          cmd: ['cloudflared', 'tunnel', '--no-tls-verify', '--url', `https://${serverName}.localhost`],
+          cmd: ['cloudflared', 'tunnel', '--config', '/dev/null', '--no-tls-verify', '--url', `https://${serverName}.localhost`],
           stdout: 'pipe',
           stderr: 'pipe',
         })
@@ -2547,14 +2833,44 @@ const controlServer = Bun.serve({
       }
     }
 
-    // Main routing logic for *.localhost
+    // Bound domain proxy for non-GET requests (POST, PUT, DELETE, etc.)
+    // GET requests are handled below in the main routing logic
+    if (req.method !== "GET") {
+      const boundProxy = resolveBindingFromHost(reqHost)
+      if (boundProxy) {
+        const managed = processes.get(boundProxy.serverName)
+        if (managed?.status === 'running' && managed.port) {
+          managed.lastActivity = Date.now()
+          try {
+            const proxyRes = await fetch(`http://localhost:${managed.port}${url.pathname}${url.search}`, {
+              method: req.method,
+              headers: req.headers,
+              body: req.body,
+              signal: AbortSignal.timeout(30000),
+            })
+            return new Response(proxyRes.body, { status: proxyRes.status, headers: proxyRes.headers })
+          } catch (e) {
+            return new Response(`Proxy error: ${e}`, { status: 502 })
+          }
+        }
+        return Response.json({ error: `Server '${boundProxy.serverName}' is not running.` }, { status: 503, headers: corsHeaders })
+      }
+    }
+
+    // Main routing logic for *.localhost and bound domains
     if (req.method === "GET") {
       try {
-        const domain = reqHost.replace(/\.(localhost|candy)$/, "")
+        // Check if this is a bound domain request (e.g. inksp.inkspired.ai)
+        const boundMatch = resolveBindingFromHost(reqHost)
+        const domain = boundMatch ? boundMatch.serverName : reqHost.replace(/\.(localhost|candy)$/, "")
+        const isBoundDomain = !!boundMatch
         const isRootPath = url.pathname === "/" || url.pathname === ""
 
+        // For bound domains, build redirect URL using the FQDN
+        const boundDomainUrl = (path: string) => isBoundDomain ? `https://${boundMatch!.binding.fqdn}${path}` : `${domainUrl(domain)}${path}`
+
         // Portal UI at portal.localhost (only root)
-        if (domain === "portal" && isRootPath) {
+        if (domain === "portal" && isRootPath && !isBoundDomain) {
           domainHits.set(domain, (domainHits.get(domain) || 0) + 1)
           const rawHtml = await Bun.file(import.meta.dir + "/public/portal.html").text()
           const html = injectToken(rawHtml)
@@ -2572,7 +2888,23 @@ const controlServer = Bun.serve({
           // Process exists - check its status
           if (managed.status === 'running' && managed.port) {
             // This usually means a race: we marked the process running before Caddy finished reloading.
-            // Never redirect users to localhost:<port>; keep them on the domain and ensure the route exists.
+            // For bound domains, CF tunnel always routes to :9999 so we proxy directly.
+            if (isBoundDomain) {
+              managed.lastActivity = Date.now()
+              try {
+                const proxyRes = await fetch(`http://localhost:${managed.port}${url.pathname}${url.search}`, {
+                  headers: req.headers,
+                  signal: AbortSignal.timeout(30000),
+                })
+                return new Response(proxyRes.body, {
+                  status: proxyRes.status,
+                  headers: proxyRes.headers,
+                })
+              } catch (e) {
+                return new Response(`Proxy error: ${e}`, { status: 502 })
+              }
+            }
+            // For .localhost, ensure the route exists and redirect (Caddy takes over)
             const existRoute = routes.get(domain)
             routes.set(domain, { target: managed.port, persistent: existRoute?.persistent || false })
             await syncCaddy()
@@ -2629,6 +2961,18 @@ const controlServer = Bun.serve({
             const newProcess = await spawnProcess(domain, 'Page', configs[0].id)
 
             if (newProcess.status === 'running' && newProcess.port) {
+              if (isBoundDomain) {
+                newProcess.lastActivity = Date.now()
+                try {
+                  const proxyRes = await fetch(`http://localhost:${newProcess.port}${url.pathname}${url.search}`, {
+                    headers: req.headers,
+                    signal: AbortSignal.timeout(30000),
+                  })
+                  return new Response(proxyRes.body, { status: proxyRes.status, headers: proxyRes.headers })
+                } catch (e) {
+                  return new Response(`Proxy error: ${e}`, { status: 502 })
+                }
+              }
               // Auto-detected port - redirect preserving path (Caddy will take over)
               return Response.redirect(`${domainUrl(domain)}${url.pathname}${url.search}`, 302)
             }
@@ -2648,6 +2992,17 @@ const controlServer = Bun.serve({
           } catch (e) {
             return new Response(`Failed to start server: ${e}`, { status: 500 })
           }
+        }
+
+        // For bound domains with no server config, show an error
+        if (isBoundDomain) {
+          return new Response(`<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Server Not Found</title>
+<style>body{font-family:system-ui;background:#0a0a0f;color:#e0e0e8;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.box{text-align:center;padding:2rem}h1{font-size:1.2rem;margin-bottom:1rem;color:#ff3366}</style>
+</head><body><div class="box"><h1>No server config for '${domain}'</h1><p>This domain is bound but the server '${domain}' has no config registered.</p></div></body></html>`, {
+            headers: { "Content-Type": "text/html; charset=utf-8" },
+            status: 404
+          })
         }
 
         // No config exists - redirect non-root paths to root for registration
@@ -2696,6 +3051,9 @@ try {
 
 // Load server configs
 await loadServerConfigs()
+
+// Load bound domain config
+await loadDomainConfig()
 
 // Load void state (the daemon remembers...)
 await loadVoidState()

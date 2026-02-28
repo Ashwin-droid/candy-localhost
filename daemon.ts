@@ -189,6 +189,10 @@ const SERVERS_CONFIG = `${CANDY_CONFIG_DIR}/servers.json`
 const MCP_SECRET_FILE = `${CANDY_CONFIG_DIR}/mcp-secret`
 const LOGS_DIR = "/tmp/candy-logs"
 const AUDIT_LOG = `${LOGS_DIR}/_audit.log`
+const DNS_CONFIG_FILE = `${CANDY_CONFIG_DIR}/candy-dns.json`
+
+// Tailscale state (discovered at startup)
+let tailscaleIp: string | null = null
 
 // Reserved domain names (cannot be used for servers/routes)
 const RESERVED_NAMES = new Set(['portal', 'k', 'kill', 'p'])
@@ -280,13 +284,13 @@ const updateActivityFromCaddyLogs = async () => {
     const newContent = content.slice(lastLogPosition)
     lastLogPosition = content.length
 
-    // Parse Caddy JSON logs for requests to *.localhost
+    // Parse Caddy JSON logs for requests to *.localhost and *.candy
     for (const line of newContent.split('\n')) {
       if (!line.trim()) continue
       try {
         const log = JSON.parse(line)
         const host = log.request?.host || ''
-        const match = host.match(/^([a-z0-9-]+)\.localhost/)
+        const match = host.match(/^([a-z0-9-]+)\.(localhost|candy)/)
         if (match) {
           const serverName = match[1]
           const proc = processes.get(serverName)
@@ -347,6 +351,25 @@ const exchangeMcpSecret = (secret: string): string | null => {
   const apiKey = `mcp_${crypto.randomUUID()}`
   mcpApiKeys.add(apiKey)
   return apiKey
+}
+
+// Discover Tailscale IPv4 address
+const discoverTailscaleIp = async (): Promise<string | null> => {
+  try {
+    const result = await $`tailscale ip -4`.text()
+    return result.trim() || null
+  } catch { return null }
+}
+
+// Sync DNS config file for candy-dns daemon
+const syncDnsConfig = async () => {
+  if (!tailscaleIp) return
+  const servers = [...routes.keys()]
+  await Bun.write(DNS_CONFIG_FILE, JSON.stringify({
+    tailscaleIp,
+    tld: "candy",
+    servers
+  }, null, 2))
 }
 
 // Generate a random token value
@@ -1246,6 +1269,21 @@ const syncCaddy = async () => {
 `
   }
 
+  // .candy route blocks (Tailscale - HTTP only, bound to Tailscale IP)
+  if (tailscaleIp) {
+    for (const [name, target] of routes) {
+      const proxyTarget = typeof target === "number" ? `localhost:${target}` : target
+      content += `${name}.candy {
+  bind ${tailscaleIp}
+  tls internal
+  reverse_proxy ${proxyTarget}
+  log
+}
+
+`
+    }
+  }
+
   // Tunnel domains (trycloudflare.com) - route to local ports
   for (const [name, { port, url }] of portals) {
     if (url) {
@@ -1279,6 +1317,26 @@ const syncCaddy = async () => {
 
 `
 
+  // .candy kill/portal subdomains (Tailscale)
+  if (tailscaleIp) {
+    content += `*.kill.candy, *.k.candy {
+  bind ${tailscaleIp}
+  tls internal
+  reverse_proxy localhost:9999
+  log
+}
+
+`
+    content += `*.portal.candy, *.p.candy {
+  bind ${tailscaleIp}
+  tls internal
+  reverse_proxy localhost:9999
+  log
+}
+
+`
+  }
+
   // Everything else goes to daemon (portal, unregistered domains, etc)
   content += `*.localhost {
   tls internal
@@ -1287,6 +1345,18 @@ const syncCaddy = async () => {
 }
 
 `
+
+  // .candy catch-all (Tailscale) - portal UI, unregistered domains
+  if (tailscaleIp) {
+    content += `*.candy {
+  bind ${tailscaleIp}
+  tls internal
+  reverse_proxy localhost:9999
+  log
+}
+
+`
+  }
 
   if (portals.size > 0) {
     const portalData: Record<string, { port: number, url: string, pid: number }> = {}
@@ -1312,6 +1382,9 @@ const syncCaddy = async () => {
   } catch (e) {
     console.log("\x1b[31mFailed to reload Caddy - is it running?\x1b[0m")
   }
+
+  // Sync DNS config for candy-dns daemon
+  await syncDnsConfig()
 }
 
 // Parse Caddy access logs for stats
@@ -1322,8 +1395,8 @@ const getCaddyStats = async () => {
     for (const line of logContent.trim().split("\n").filter(l => l.trim())) {
       try {
         const entry = JSON.parse(line)
-        // Strip port and .localhost suffix
-        const host = entry.request?.host?.replace(/:\d+$/, '').replace(".localhost", "") || ""
+        // Strip port and .localhost/.candy suffix
+        const host = entry.request?.host?.replace(/:\d+$/, '').replace(/\.(localhost|candy)$/, "") || ""
         if (!host) continue
         const current = caddyHits.get(host) || { total: 0, tunnel: 0, lastSeen: 0 }
         current.total++
@@ -1346,7 +1419,7 @@ const getTrafficLogs = async (domain: string, count: number = 20) => {
     for (const line of allLines) {
       try {
         const entry = JSON.parse(line)
-        const host = entry.request?.host?.replace(".localhost", "") || ""
+        const host = entry.request?.host?.replace(/\.(localhost|candy)$/, "") || ""
         if (host === domain) {
           logs.push({
             time: entry.ts ? new Date(entry.ts * 1000).toISOString() : null,
@@ -1364,8 +1437,13 @@ const getTrafficLogs = async (domain: string, count: number = 20) => {
 
 // Strict CORS headers - localhost only
 const getCorsHeaders = (origin: string | null) => {
-  // Only allow *.localhost origins
-  const allowed = origin && (origin.endsWith('.localhost') || origin === 'http://localhost:9999' || origin.match(/^https?:\/\/[a-z0-9-]+\.localhost(:\d+)?$/))
+  // Allow *.localhost and *.candy origins
+  const allowed = origin && (
+    origin.endsWith('.localhost') ||
+    origin === 'http://localhost:9999' ||
+    origin.match(/^https?:\/\/[a-z0-9-]+\.localhost(:\d+)?$/) ||
+    (tailscaleIp && origin.match(/^https?:\/\/[a-z0-9-]+\.candy$/))
+  )
   return {
     "Access-Control-Allow-Origin": allowed ? origin : "",
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
@@ -1416,7 +1494,8 @@ const controlServer = Bun.serve({
     // Also allow SSE streams and portal status polling without token (read-only)
     // Allow all GET requests from *.localhost domains (not direct API calls)
     const hostHeader = req.headers.get("host") || ""
-    const isLocalhostDomain = hostHeader.endsWith(".localhost") || hostHeader.endsWith(".localhost:9999")
+    const isCandyDomain = hostHeader.endsWith(".candy")
+    const isLocalhostDomain = hostHeader.endsWith(".localhost") || hostHeader.endsWith(".localhost:9999") || isCandyDomain
     const isWebRoute = req.method === "GET" && (
       isLocalhostDomain ||
       url.pathname === "/" ||
@@ -2302,11 +2381,16 @@ const controlServer = Bun.serve({
     }
 
     // Parse host header
-    const reqHost = req.headers.get("host")?.replace(":9999", "") || ""
+    const reqHost = req.headers.get("host")?.replace(":9999", "").replace(":80", "") || ""
+
+    // Detect if request is coming via .candy TLD (Tailscale)
+    const isCandy = reqHost.endsWith(".candy")
+    // Build a domain URL with the correct scheme/TLD
+    const domainUrl = (name: string) => isCandy ? `https://${name}.candy` : `https://${name}.localhost`
 
     // Handle kill hostnames:
     // - <name>.kill.localhost / <name>.k.localhost
-    const killSuffixMatch = reqHost.match(/^([a-z0-9-]+)\.(kill|k)\.localhost$/)
+    const killSuffixMatch = reqHost.match(/^([a-z0-9-]+)\.(kill|k)\.(localhost|candy)$/)
     if (killSuffixMatch && req.method === "GET") {
       const serverName = killSuffixMatch[1]
 
@@ -2322,14 +2406,14 @@ const controlServer = Bun.serve({
         const html = injectVars(rawHtml, { name: serverName })
         return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
       } catch {
-        return new Response(`Process "${serverName}" killed. <a href="http://portal.localhost">Return to portal</a>`, {
+        return new Response(`Process "${serverName}" killed. <a href="${domainUrl("portal")}">Return to portal</a>`, {
           headers: { "Content-Type": "text/html; charset=utf-8" }
         })
       }
     }
 
     // Handle portal subdomain: <name>.portal.localhost or <name>.p.localhost
-    const portalMatch = reqHost.match(/^([a-z0-9-]+)\.(portal|p)\.localhost$/)
+    const portalMatch = reqHost.match(/^([a-z0-9-]+)\.(portal|p)\.(localhost|candy)$/)
     if (portalMatch && req.method === "GET") {
       const serverName = portalMatch[1]
 
@@ -2342,8 +2426,8 @@ const controlServer = Bun.serve({
           ? `Server "${serverName}" is not running.`
           : `Server "${serverName}" does not exist.`
         const action = hasConfig
-          ? `<a href="https://${serverName}.localhost" class="btn">Start Server</a>`
-          : `<a href="https://portal.localhost" class="btn">Go to Portal</a>`
+          ? `<a href="${domainUrl(serverName)}" class="btn">Start Server</a>`
+          : `<a href="${domainUrl("portal")}" class="btn">Go to Portal</a>`
 
         return new Response(`<!DOCTYPE html>
 <html><head>
@@ -2430,7 +2514,7 @@ const controlServer = Bun.serve({
     // Main routing logic for *.localhost
     if (req.method === "GET") {
       try {
-        const domain = reqHost.replace(".localhost", "")
+        const domain = reqHost.replace(/\.(localhost|candy)$/, "")
         const isRootPath = url.pathname === "/" || url.pathname === ""
 
         // Portal UI at portal.localhost (only root)
@@ -2452,10 +2536,10 @@ const controlServer = Bun.serve({
           // Process exists - check its status
           if (managed.status === 'running' && managed.port) {
             // This usually means a race: we marked the process running before Caddy finished reloading.
-            // Never redirect users to localhost:<port>; keep them on <name>.localhost and ensure the route exists.
+            // Never redirect users to localhost:<port>; keep them on the domain and ensure the route exists.
             routes.set(domain, managed.port)
             await syncCaddy()
-            return Response.redirect(`https://${domain}.localhost${url.pathname}${url.search}`, 302)
+            return Response.redirect(`${domainUrl(domain)}${url.pathname}${url.search}`, 302)
           }
 
           if (managed.status === 'starting') {
@@ -2509,7 +2593,7 @@ const controlServer = Bun.serve({
 
             if (newProcess.status === 'running' && newProcess.port) {
               // Auto-detected port - redirect preserving path (Caddy will take over)
-              return Response.redirect(`https://${domain}.localhost${url.pathname}${url.search}`, 302)
+              return Response.redirect(`${domainUrl(domain)}${url.pathname}${url.search}`, 302)
             }
 
             // Show starting page (preserve path for refresh)
@@ -2531,7 +2615,7 @@ const controlServer = Bun.serve({
 
         // No config exists - redirect non-root paths to root for registration
         if (!isRootPath) {
-          return Response.redirect(`https://${domain}.localhost/`, 302)
+          return Response.redirect(`${domainUrl(domain)}/`, 302)
         }
 
         // Show candy/terminal page with mode toggle (registration screen)
@@ -2588,11 +2672,22 @@ await syncCaddy()
 // Now start Caddy
 await startCaddy()
 
+// Discover Tailscale IP for .candy TLD support
+tailscaleIp = await discoverTailscaleIp()
+if (tailscaleIp) {
+  // Re-sync Caddy with .candy blocks now that we have the IP
+  await syncCaddy()
+}
+
 // Write PID file
 await Bun.write(PID_FILE, process.pid.toString())
 
+const tailscaleStatus = tailscaleIp
+  ? `\x1b[33mTailscale:\x1b[0m   ${tailscaleIp} (*.candy domains active)`
+  : `\x1b[90mTailscale:\x1b[0m   not detected (*.candy domains disabled)`
+
 console.log(`
-\x1b[36m░█▀▀░█▀█░█▀█░█▀▄░█░█\x1b[0m   \x1b[90mv0.4.0 (lazy dev server orchestrator)\x1b[0m
+\x1b[36m░█▀▀░█▀█░█▀█░█▀▄░█░█\x1b[0m   \x1b[90mv0.5.0 (lazy dev server orchestrator)\x1b[0m
 \x1b[36m░█░░░█▀█░█░█░█░█░░█░\x1b[0m   "we spawn servers like it's 1980"
 \x1b[36m░▀▀▀░▀░▀░▀░▀░▀▀░░░▀░\x1b[0m   \x1b[90mno iana was harmed. probably.\x1b[0m
 
@@ -2601,6 +2696,7 @@ console.log(`
 \x1b[33mLogs:\x1b[0m        ${LOGS_DIR}
 \x1b[33mControl:\x1b[0m     http://localhost:9999
 \x1b[33mPID:\x1b[0m         ${process.pid}
+${tailscaleStatus}
 
 \x1b[90mLazy dev server mode active. Visit <name>.localhost to auto-start.\x1b[0m
 `)

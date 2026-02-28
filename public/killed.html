@@ -253,7 +253,7 @@
         <svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
         Start Again
       </a>
-      <a href="http://portal.localhost" class="btn btn-secondary">Back to Portal</a>
+      <a href="#" class="btn btn-secondary" id="portalLink">Back to Portal</a>
     </div>
 
     <div class="footer">
@@ -262,12 +262,15 @@
   </div>
 
   <script>
+    const TLD = location.hostname.endsWith('.candy') ? 'candy' : 'localhost';
+    const SCHEME = 'https';
     const vars = window.CANDY_VARS || { name: 'unknown' };
     const serverName = vars.name;
 
     document.getElementById('serverName').textContent = serverName;
-    document.getElementById('domainLink').textContent = `${serverName}.localhost`;
-    document.getElementById('restartBtn').href = `http://${serverName}.localhost`;
+    document.getElementById('domainLink').textContent = `${serverName}.${TLD}`;
+    document.getElementById('restartBtn').href = `${SCHEME}://${serverName}.${TLD}`;
+    document.getElementById('portalLink').href = `${SCHEME}://portal.${TLD}`;
   </script>
 </body>
 </html>

@@ -14,7 +14,9 @@
     "mcp": "bun run mcp.ts",
     "cli": "bun run cli.ts",
     "test": "bun test",
-    "install-service": "sudo cp candy-localhost.service /etc/systemd/system/candy-localhost@.service && sudo systemctl daemon-reload && echo 'Service installed. Enable with: sudo systemctl enable --now candy-localhost@$USER'"
+    "dns": "bun run candy-dns.ts",
+    "install-service": "sudo cp candy-localhost.service /etc/systemd/system/candy-localhost@.service && sudo systemctl daemon-reload && echo 'Service installed. Enable with: sudo systemctl enable --now candy-localhost@$USER'",
+    "install-dns-service": "sudo cp candy-dns.service /etc/systemd/system/candy-dns.service && sudo systemctl daemon-reload && echo 'DNS service installed. Enable with: sudo systemctl enable --now candy-dns'"
   },
   "devDependencies": {
     "@types/bun": "latest"

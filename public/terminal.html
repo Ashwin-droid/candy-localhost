@@ -770,7 +770,9 @@
   </div>
 
   <script>
-    const API = 'http://localhost:9999';
+    const API = '';
+    const TLD = location.hostname.endsWith('.candy') ? 'candy' : 'localhost';
+    const SCHEME = 'https';
 
     // Token management - rolling one-time-use tokens
     let currentToken = window.CANDY_TOKEN || null;
@@ -834,7 +836,7 @@
 
     // Extract domain name from hostname
     const hostname = window.location.hostname;
-    const domainName = hostname.replace('.localhost', '');
+    const domainName = hostname.replace('.' + TLD, '');
     document.getElementById('domainName').textContent = domainName;
 
     // Form handling
@@ -917,7 +919,7 @@
 
       // Open in new tab after 3 seconds
       setTimeout(() => {
-        window.open(`https://${domainName}.localhost`, '_blank');
+        window.open(`${SCHEME}://${domainName}.${TLD}`, '_blank');
       }, 3000);
     }
 
@@ -1132,7 +1134,7 @@
     // Check if we've been marked by the void
     async function checkVoidMark() {
       try {
-        const res = await fetch('http://localhost:9999/void/status');
+        const res = await fetch('/void/status');
         const data = await res.json();
         if (data.marked) {
           voidMarked = true;
@@ -1154,7 +1156,7 @@
     let lastBurstId = null;
     
     function pollVoidStatus() {
-      fetch('http://localhost:9999/void/status')
+      fetch('/void/status')
         .then(res => res.json())
         .then(data => {
           // Check if newly marked
@@ -1226,6 +1228,9 @@
     // Initialize void integration
     checkVoidMark();
     pollVoidStatus(); // Start polling for bursts
+
+    // Update TLD-dependent elements
+    document.querySelectorAll('.domain-tld').forEach(el => el.textContent = '.' + TLD);
 
     setInterval(() => {
       // Time passes faster if void-marked

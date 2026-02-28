@@ -1,0 +1,22 @@
+# candy-dns systemd service
+# Install with: sudo cp candy-dns.service /etc/systemd/system/candy-dns.service
+# Enable with: sudo systemctl enable --now candy-dns
+
+[Unit]
+Description=candy-dns - DNS server for .candy TLD via Tailscale
+After=network.target tailscaled.service
+
+[Service]
+Type=simple
+# Port 53 requires root
+User=root
+Environment="HOME=/home/ashwinmhaskar"
+Environment="PATH=/home/ashwinmhaskar/.bun/bin:/usr/local/bin:/usr/bin:/bin"
+WorkingDirectory=/home/ashwinmhaskar/Documents/projects/candy-localhost
+ExecStart=/home/ashwinmhaskar/.bun/bin/bun run candy-dns.ts
+Restart=on-failure
+RestartSec=5
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

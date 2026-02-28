@@ -319,7 +319,7 @@
         <div class="error-icon">
           <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </div>
-        <h1><span class="domain" id="serverName">server</span>.localhost crashed</h1>
+        <h1><span class="domain" id="serverName">server</span><span class="tld-suffix">.localhost</span> crashed</h1>
       </div>
       <div class="exit-badge" id="exitBadge">exit 1</div>
     </header>
@@ -340,7 +340,7 @@
         <svg viewBox="0 0 24 24"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
         Restart Server
       </button>
-      <a href="http://portal.localhost" class="btn btn-secondary">Back to Portal</a>
+      <a href="#" class="btn btn-secondary" id="portalLink">Back to Portal</a>
     </div>
 
     <div class="tips">
@@ -367,7 +367,9 @@
   </div>
 
   <script>
-    const API = 'http://localhost:9999';
+    const API = '';
+    const TLD = location.hostname.endsWith('.candy') ? 'candy' : 'localhost';
+    const SCHEME = 'https';
     const vars = window.CANDY_VARS || { name: 'unknown', exitCode: 1, status: 'errored' };
     let currentToken = window.CANDY_TOKEN;
     const serverName = vars.name;
@@ -501,7 +503,7 @@
         });
 
         if (res.ok) {
-          location.href = `http://${serverName}.localhost`;
+          location.href = `${SCHEME}://${serverName}.${TLD}`;
         } else {
           const data = await res.json();
           alert('Failed to restart: ' + (data.error || 'Unknown error'));
@@ -514,6 +516,10 @@
         btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>Restart Server';
       }
     }
+
+    // Update TLD-dependent elements
+    document.querySelectorAll('.tld-suffix').forEach(el => el.textContent = '.' + TLD);
+    document.getElementById('portalLink').href = `${SCHEME}://portal.${TLD}`;
   </script>
 </body>
 </html>

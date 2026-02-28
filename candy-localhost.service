@@ -12,6 +12,7 @@ User=%i
 Environment="HOME=/home/%i"
 Environment="PATH=/home/%i/.bun/bin:/usr/local/bin:/usr/bin:/bin"
 WorkingDirectory=/home/%i/Documents/projects/candy-localhost
+ExecStartPre=+/usr/sbin/setcap cap_net_bind_service=+ep /usr/bin/caddy
 ExecStart=/home/%i/.bun/bin/bun run daemon.ts
 Restart=on-failure
 RestartSec=5

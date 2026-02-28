@@ -188,7 +188,7 @@
         <div class="terminal-dot red"></div>
         <div class="terminal-dot yellow"></div>
         <div class="terminal-dot green"></div>
-        <div class="terminal-title" id="serverName">server.localhost</div>
+        <div class="terminal-title" id="serverName">server.localhost</div><!-- updated by JS -->
       </div>
       <div class="terminal-body">
         <div id="logs">
@@ -209,20 +209,23 @@
 
         <div id="actions" class="actions hidden">
           <a href="#" id="go-now" class="btn btn-primary">Go Now</a>
-          <a href="https://portal.localhost" class="btn">Back to Portal</a>
+          <a href="#" class="btn" id="portalLink">Back to Portal</a>
         </div>
       </div>
     </div>
   </div>
 
   <script>
+    const API = '';
+    const TLD = location.hostname.endsWith('.candy') ? 'candy' : 'localhost';
+    const SCHEME = 'https';
     const vars = window.CANDY_VARS || {};
     const serverName = vars.name || 'unknown';
     const existingUrl = vars.existingUrl || '';
-    const API = 'http://localhost:9999';
     const REDIRECT_DELAY = 20; // seconds
 
-    document.getElementById('serverName').textContent = `${serverName}.p.localhost`;
+    document.getElementById('serverName').textContent = `${serverName}.p.${TLD}`;
+    document.getElementById('portalLink').href = `${SCHEME}://portal.${TLD}`;
 
     const logsEl = document.getElementById('logs');
     const countdownSection = document.getElementById('countdown-section');

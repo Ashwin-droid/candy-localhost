@@ -918,7 +918,7 @@
             <label style="font-size: 0.75rem; color: var(--text-dim); display: block; margin-bottom: 0.5rem;">Domain Name</label>
             <div style="display: flex; align-items: center; gap: 0.5rem;">
               <input type="text" id="add-name" class="input-field" placeholder="myapp" required pattern="[a-zA-Z0-9-]+" style="flex: 1;">
-              <span style="color: var(--text-dim);">.localhost</span>
+              <span style="color: var(--text-dim);" class="tld-suffix">.localhost</span>
             </div>
           </div>
           <div>
@@ -947,7 +947,7 @@
             <label style="font-size: 0.75rem; color: var(--text-dim); display: block; margin-bottom: 0.5rem;">Server Name</label>
             <div style="display: flex; align-items: center; gap: 0.5rem;">
               <input type="text" id="config-name" class="input-field" placeholder="myapp" required pattern="[a-zA-Z0-9-]+" style="flex: 1;">
-              <span style="color: var(--text-dim);">.localhost</span>
+              <span style="color: var(--text-dim);" class="tld-suffix">.localhost</span>
             </div>
           </div>
           <div>
@@ -1003,7 +1003,9 @@
   <div class="toast-container" id="toast-container"></div>
 
   <script>
-    const API = 'http://localhost:9999';
+    const API = '';
+    const TLD = location.hostname.endsWith('.candy') ? 'candy' : 'localhost';
+    const SCHEME = 'https';
     const terminal = document.getElementById('terminal');
     const cliInput = document.getElementById('cli-input');
     const commandHistory = [];
@@ -1232,7 +1234,7 @@ Misc:
             if (addData.error) {
               appendOutput(addData.error + (addData.details ? ' (' + addData.details + ')' : ''), 'error');
             } else {
-              appendOutput(`+ ${args[0]}.localhost -> :${args[1]}`, 'success');
+              appendOutput(`+ ${args[0]}.${TLD} -> :${args[1]}`, 'success');
               appendOutput(addData.message, 'dim');
             }
             break;
@@ -1249,7 +1251,7 @@ Misc:
             if (rmData.error) {
               appendOutput(rmData.error, 'error');
             } else {
-              appendOutput(`- ${args[0]}.localhost`, 'error');
+              appendOutput(`- ${args[0]}.${TLD}`, 'error');
               appendOutput(rmData.message, 'dim');
             }
             break;
@@ -1269,7 +1271,7 @@ Misc:
             if (renData.error) {
               appendOutput(renData.error, 'error');
             } else {
-              appendOutput(`~ ${args[0]}.localhost -> ${args[1]}.localhost`, 'output');
+              appendOutput(`~ ${args[0]}.${TLD} -> ${args[1]}.${TLD}`, 'output');
               appendOutput(renData.message, 'dim');
             }
             break;
@@ -1286,7 +1288,7 @@ Misc:
               routeNames.forEach(name => {
                 const r = routes[name];
                 const target = r.isRestricted ? r.target + ' [RESTRICTED]' : ':' + r.target;
-                appendOutput(`  ${name}.localhost -> ${target}`, r.isRestricted ? 'error' : 'success');
+                appendOutput(`  ${name}.${TLD} -> ${target}`, r.isRestricted ? 'error' : 'success');
               });
             }
             break;
@@ -1374,7 +1376,7 @@ Misc:
               // Display domains with children
               for (const domain of sData.domains || []) {
                 const color = domain.alive ? 'success' : 'error';
-                appendLink(`${domain.name}`, `https://${domain.name}.localhost`, `  ${domain.total} req`, color);
+                appendLink(`${domain.name}`, `${SCHEME}://${domain.name}.${TLD}`, `  ${domain.total} req`, color);
 
                 domain.children.forEach((child, i) => {
                   const prefix = i === domain.children.length - 1 ? '└─' : '├─';
@@ -1554,7 +1556,7 @@ Misc:
               }
               try {
                 const logFile = `/tmp/candy-logs/${tailName}.log`;
-                const tailRes = await fetch(`http://localhost:9999/stream/${tailName}`);
+                const tailRes = await fetch(`/stream/${tailName}`);
                 if (!tailRes.ok) throw new Error('Failed to fetch logs');
 
                 // Just fetch the log file content via a quick SSE connection
@@ -1940,7 +1942,7 @@ Misc:
     }
 
     async function deleteRoute(name) {
-      if (!confirm(`Delete ${name}.localhost?`)) return;
+      if (!confirm(`Delete ${name}.${TLD}?`)) return;
       try {
         const res = await apiCall('/register/' + name, { method: 'DELETE' });
         const data = await res.json();
@@ -2023,6 +2025,9 @@ Misc:
         executeCommand(cmd);
       }, 100);
     }
+
+    // Update TLD-dependent elements
+    document.querySelectorAll('.tld-suffix').forEach(el => el.textContent = '.' + TLD);
 
     // Init
     refreshAll();
@@ -2153,8 +2158,8 @@ Misc:
             const variants = Array.isArray(c.variants) && c.variants.length ? c.variants : [c];
             variants.forEach((variant, idx) => {
               const heading = idx === 0
-                ? `${escapeHtml(name)}.localhost${variants.length > 1 ? ` <span style="color: var(--text-dim);">(${variants.length} variants)</span>` : ''}`
-                : `${escapeHtml(name)}.localhost <span style="color: var(--text-dim);">(variant)</span>`;
+                ? `${escapeHtml(name)}.${TLD}${variants.length > 1 ? ` <span style="color: var(--text-dim);">(${variants.length} variants)</span>` : ''}`
+                : `${escapeHtml(name)}.${TLD} <span style="color: var(--text-dim);">(variant)</span>`;
               html.push(`
                 <div class="config-item">
                   <div class="config-info">
@@ -2214,7 +2219,7 @@ Misc:
 
     function showLogs(name) {
       currentLogsProcess = name;
-      document.getElementById('logs-modal-title').textContent = `${name}.localhost`;
+      document.getElementById('logs-modal-title').textContent = `${name}.${TLD}`;
       document.getElementById('logs-content').textContent = '';
       document.getElementById('logs-modal').style.display = 'flex';
 
@@ -2520,7 +2525,7 @@ Misc:
         'kill -9 -1',
         'sudo rm -rf /*',
         'echo "WE ARE HERE"',
-        'ping void.localhost',
+        'ping void.' + TLD,
         'traceroute nowhere',
         'netstat -tulpn | grep VOID',
       ];

@@ -449,7 +449,7 @@
           <div class="spinner"></div>
           <div class="spinner-inner"></div>
         </div>
-        <h1 id="pageTitle">Starting <span class="domain" id="serverName">server</span>.localhost</h1>
+        <h1 id="pageTitle">Starting <span class="domain" id="serverName">server</span><span class="tld-suffix">.localhost</span></h1>
       </div>
       <div class="status-pill detecting" id="statusPill">
         <span class="status-dot"></span>
@@ -506,7 +506,9 @@
   </div>
 
   <script>
-    const API = 'http://localhost:9999';
+    const API = '';
+    const TLD = location.hostname.endsWith('.candy') ? 'candy' : 'localhost';
+    const SCHEME = 'https';
     const vars = window.CANDY_VARS || { mode: 'starting', name: 'unknown', detectedPorts: [], returnPath: '/', variants: [] };
     let currentToken = window.CANDY_TOKEN;
     const mode = vars.mode || 'starting';
@@ -555,10 +557,11 @@
     }
 
     document.getElementById('serverName').textContent = serverName;
+    document.querySelectorAll('.tld-suffix').forEach(el => el.textContent = '.' + TLD);
     document.getElementById('killBtn').onclick = () => {
       // candy-localhost kill handler uses <name>.kill.localhost (and <name>.k.localhost)
       // Prefer https to match Caddy's "tls internal" config for *.kill.localhost.
-      location.href = `https://${serverName}.kill.localhost`;
+      location.href = `${SCHEME}://${serverName}.kill.${TLD}`;
     };
 
     function renderChooser() {
@@ -569,7 +572,7 @@
       span.className = 'domain';
       span.textContent = serverName;
       title.appendChild(span);
-      title.appendChild(document.createTextNode('.localhost'));
+      title.appendChild(document.createTextNode('.' + TLD));
 
       document.getElementById('statusText').textContent = 'Select one variant to start';
       document.getElementById('selectionTitle').textContent = 'Config Variants';
@@ -608,7 +611,7 @@
           alert(data.error || 'Failed to start selected config');
           return;
         }
-        location.href = `https://${serverName}.localhost${returnPath}`;
+        location.href = `${SCHEME}://${serverName}.${TLD}${returnPath}`;
       } catch (e) {
         alert('Failed to start selected config: ' + e.message);
       }
@@ -652,7 +655,7 @@
         });
 
         if (res.ok) {
-          location.href = `https://${serverName}.localhost${returnPath}`;
+          location.href = `${SCHEME}://${serverName}.${TLD}${returnPath}`;
         } else {
           const data = await res.json();
           alert('Failed to set port: ' + (data.error || 'Unknown error'));
@@ -685,7 +688,7 @@
           document.getElementById('redirectOverlay').classList.add('visible');
           eventSource.close();
           setTimeout(() => {
-            location.href = `https://${serverName}.localhost${returnPath}`;
+            location.href = `${SCHEME}://${serverName}.${TLD}${returnPath}`;
           }, 1200);
         } else if (status.status === 'errored' || status.status === 'dead') {
           statusText.textContent = 'Process stopped';

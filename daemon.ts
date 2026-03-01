@@ -1628,7 +1628,8 @@ const controlServer = Bun.serve({
     // Allow all GET requests from *.localhost domains (not direct API calls)
     const hostHeader = req.headers.get("host") || ""
     const isCandyDomain = hostHeader.endsWith(".candy")
-    const isLocalhostDomain = hostHeader.endsWith(".localhost") || hostHeader.endsWith(".localhost:9999") || isCandyDomain
+    const isBoundDomain = !!resolveBindingFromHost(hostHeader)
+    const isLocalhostDomain = hostHeader.endsWith(".localhost") || hostHeader.endsWith(".localhost:9999") || isCandyDomain || isBoundDomain
     const isWebRoute = req.method === "GET" && (
       isLocalhostDomain ||
       url.pathname === "/" ||
@@ -1646,7 +1647,7 @@ const controlServer = Bun.serve({
     // MCP/CLI uses X-Candy-API-Key header (obtained via /mcp/auth with secret)
     const mcpApiKey = req.headers.get("X-Candy-API-Key")
     const isMCP = mcpApiKey && validateMcpApiKey(mcpApiKey)
-    if (!isWebRoute && !isMCP && !isVoidRoute) {
+    if (!isWebRoute && !isMCP && !isVoidRoute && !isBoundDomain) {
       const token = req.headers.get("X-Candy-Token")
       if (!token || !consumeToken(token)) {
         return unauthorizedResponse(corsHeaders)

@@ -278,7 +278,7 @@ const syncCloudflaredIngress = async () => {
   for (const binding of Object.values(domainConfig.bindings || {})) {
     ingressRules.push({
       hostname: binding.fqdn,
-      service: 'http://localhost:9999',
+      service: 'http://localhost:80',
     })
   }
 
@@ -300,7 +300,7 @@ const syncCloudflaredIngress = async () => {
     console.log(`\x1b[33mFailed to write user cloudflared config: ${e}\x1b[0m`)
   }
   try {
-    await $`sudo tee ${CLOUDFLARED_SYSTEM_CONFIG} > /dev/null`.quiet().nothrow().stdin(yaml)
+    await $`sudo cp ${CLOUDFLARED_USER_CONFIG} ${CLOUDFLARED_SYSTEM_CONFIG}`.quiet().nothrow()
   } catch (e) {
     console.log(`\x1b[33mFailed to write system cloudflared config: ${e}\x1b[0m`)
   }
@@ -1427,6 +1427,31 @@ const syncCaddy = async () => {
 }
 
 `
+    }
+  }
+
+  // Bound domain routes (CF tunnel -> Caddy -> server)
+  // Caddy handles WS/SSE proxying correctly, unlike fetch()
+  if (domainConfig) {
+    for (const binding of Object.values(domainConfig.bindings || {})) {
+      const managed = processes.get(binding.serverName)
+      if (managed?.status === 'running' && managed.port) {
+        // Server running: proxy directly to server port
+        content += `http://${binding.fqdn} {
+  reverse_proxy localhost:${managed.port}
+  log
+}
+
+`
+      } else {
+        // Server not running: proxy to candy daemon for starting page
+        content += `http://${binding.fqdn} {
+  reverse_proxy localhost:9999
+  log
+}
+
+`
+      }
     }
   }
 
@@ -2834,29 +2859,9 @@ const controlServer = Bun.serve({
       }
     }
 
-    // Bound domain proxy for non-GET requests (POST, PUT, DELETE, etc.)
-    // GET requests are handled below in the main routing logic
-    if (req.method !== "GET") {
-      const boundProxy = resolveBindingFromHost(reqHost)
-      if (boundProxy) {
-        const managed = processes.get(boundProxy.serverName)
-        if (managed?.status === 'running' && managed.port) {
-          managed.lastActivity = Date.now()
-          try {
-            const proxyRes = await fetch(`http://localhost:${managed.port}${url.pathname}${url.search}`, {
-              method: req.method,
-              headers: req.headers,
-              body: req.body,
-              signal: AbortSignal.timeout(30000),
-            })
-            return new Response(proxyRes.body, { status: proxyRes.status, headers: proxyRes.headers })
-          } catch (e) {
-            return new Response(`Proxy error: ${e}`, { status: 502 })
-          }
-        }
-        return Response.json({ error: `Server '${boundProxy.serverName}' is not running.` }, { status: 503, headers: corsHeaders })
-      }
-    }
+    // Bound domain requests: Caddy handles all proxying (WS/SSE/HTTP).
+    // Daemon only sees bound domain requests when the server is NOT running
+    // (Caddy falls back to :9999 for the starting page).
 
     // Main routing logic for *.localhost and bound domains
     if (req.method === "GET") {
@@ -2888,22 +2893,12 @@ const controlServer = Bun.serve({
 
           // Process exists - check its status
           if (managed.status === 'running' && managed.port) {
-            // This usually means a race: we marked the process running before Caddy finished reloading.
-            // For bound domains, CF tunnel always routes to :9999 so we proxy directly.
+            // Caddy handles proxying for both .localhost and bound domains.
+            // If we get here, it's a race (marked running before Caddy reloaded).
+            // For bound domains, redirect back (Caddy will pick it up after syncCaddy).
             if (isBoundDomain) {
-              managed.lastActivity = Date.now()
-              try {
-                const proxyRes = await fetch(`http://localhost:${managed.port}${url.pathname}${url.search}`, {
-                  headers: req.headers,
-                  signal: AbortSignal.timeout(30000),
-                })
-                return new Response(proxyRes.body, {
-                  status: proxyRes.status,
-                  headers: proxyRes.headers,
-                })
-              } catch (e) {
-                return new Response(`Proxy error: ${e}`, { status: 502 })
-              }
+              await syncCaddy()
+              return Response.redirect(`https://${boundMatch!.binding.fqdn}${url.pathname}${url.search}`, 302)
             }
             // For .localhost, ensure the route exists and redirect (Caddy takes over)
             const existRoute = routes.get(domain)
@@ -3055,6 +3050,8 @@ await loadServerConfigs()
 
 // Load bound domain config
 await loadDomainConfig()
+await syncCloudflaredIngress()
+await restartCloudflared()
 
 // Load void state (the daemon remembers...)
 await loadVoidState()

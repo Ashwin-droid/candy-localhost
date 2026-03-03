@@ -36,6 +36,7 @@ interface DnsConfig {
   tailscaleIp: string
   tld: string
   servers: string[]
+  records?: Record<string, string>  // name -> IP mapping
 }
 
 let config: DnsConfig | null = null
@@ -247,12 +248,21 @@ const main = async () => {
           return
         }
 
-        // Respond with A record pointing to Tailscale IP
-        const ip = config?.tailscaleIp || tailscaleIp
+        // Per-name IP resolution
+        const records = config?.records
+        const ip = subdomain === "candy"
+          ? (config?.tailscaleIp || tailscaleIp)       // candy.candy always -> host
+          : records?.[subdomain]                         // per-name lookup
+          ?? (config?.servers?.includes(subdomain) ? (config?.tailscaleIp || tailscaleIp) : null)  // backward compat
+
         const response = buildResponse(Buffer.from(buf), queryId, name, ip)
         socket.send(response, port, addr)
 
-        log(`A ${nameLower} -> ${ip} (from ${addr}:${port})`)
+        if (ip) {
+          log(`A ${nameLower} -> ${ip} (from ${addr}:${port})`)
+        } else {
+          log(`NXDOMAIN ${nameLower} (from ${addr}:${port})`)
+        }
       },
     },
   })

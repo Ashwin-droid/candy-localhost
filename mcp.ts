@@ -481,6 +481,31 @@ This MODIFIES DNS AND TUNNEL CONFIG - confirm with user before bind/unbind.`,
     }
   },
   {
+    name: "candy_network",
+    description: `View the candy network registry - all local and remote server records across Tailscale machines.
+
+USE THIS TOOL AUTONOMOUSLY when:
+- User asks about network discovery or distributed servers
+- User wants to see which machines are advertising routes
+- User asks "what's on the network" or "which servers are available"
+- You need to check if a remote server is registered
+
+Returns local records (this machine's routes with IPs) and remote records (other machines' routes with IPs and time-until-expiry).
+
+This is a READ-ONLY operation - safe to call anytime without asking.`,
+    inputSchema: {
+      type: "object",
+      properties: {}
+    },
+    annotations: {
+      title: "View Network Registry",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    }
+  },
+  {
     name: "candy_route",
     description: "Add, remove, or list domain routes. Use persistent flag for routes that survive daemon restarts.",
     inputSchema: {
@@ -852,6 +877,9 @@ async function handleRequest(request: MCPRequest): Promise<MCPResponse | null> {
             break
           case "candy_portal_close":
             result = await handlePortalClose(toolArgs)
+            break
+          case "candy_network":
+            result = await daemonFetch("/candy/registry")
             break
           case "candy_domain": {
             const { action: domAction, subdomain, serverName, force, zone, tunnel } = toolArgs as any

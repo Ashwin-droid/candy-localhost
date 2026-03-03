@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>candy network</title>
+  <link rel="icon" href="/favicon.svg">
+  <style>
+    :root {
+      --bg-deep: #050508;
+      --bg-surface: #0a0a0f;
+      --bg-elevated: #12121a;
+      --bg-card: #16161f;
+      --border: #1e1e2a;
+      --border-bright: #2a2a3a;
+      --text: #e0e0e8;
+      --text-dim: #6a6a7a;
+      --text-muted: #4a4a5a;
+      --cyan: #00e5ff;
+      --cyan-dim: #00a0b0;
+      --cyan-glow: rgba(0, 229, 255, 0.15);
+      --magenta: #ff00aa;
+      --magenta-glow: rgba(255, 0, 170, 0.15);
+      --green: #00ff6a;
+      --green-dim: #00a045;
+      --red: #ff3366;
+      --yellow: #ffcc00;
+      --font-mono: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+      --font-sans: system-ui, sans-serif;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: var(--font-mono);
+      background: var(--bg-deep);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    header {
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 1.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: relative;
+    }
+
+    header::after {
+      content: '';
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--cyan-dim), transparent);
+      opacity: 0.5;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .logo-text {
+      font-family: var(--font-sans);
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: var(--cyan);
+      text-shadow: 0 0 20px var(--cyan-glow);
+    }
+
+    .logo-sub {
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 8px var(--green);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    main {
+      max-width: 900px;
+      margin: 2rem auto;
+      padding: 0 1.5rem;
+    }
+
+    .section {
+      margin-bottom: 2rem;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .section-title {
+      font-family: var(--font-sans);
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    .section-count {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      background: var(--bg-elevated);
+      padding: 0.15rem 0.5rem;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+    }
+
+    .record-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .record {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.75rem 1rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      transition: border-color 0.15s;
+    }
+
+    .record:hover {
+      border-color: var(--border-bright);
+    }
+
+    .record-name {
+      font-size: 0.85rem;
+      color: var(--cyan);
+    }
+
+    .record-name .tld {
+      color: var(--text-dim);
+    }
+
+    .record-ip {
+      font-size: 0.8rem;
+      color: var(--text-dim);
+    }
+
+    .record-meta {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .record-expiry {
+      font-size: 0.7rem;
+      color: var(--yellow);
+    }
+
+    .tag {
+      font-size: 0.65rem;
+      padding: 0.15rem 0.4rem;
+      border-radius: 3px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .tag-local {
+      background: rgba(0, 255, 106, 0.1);
+      color: var(--green);
+      border: 1px solid rgba(0, 255, 106, 0.2);
+    }
+
+    .tag-remote {
+      background: rgba(255, 0, 170, 0.1);
+      color: var(--magenta);
+      border: 1px solid rgba(255, 0, 170, 0.2);
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 2rem;
+      color: var(--text-muted);
+      font-size: 0.8rem;
+    }
+
+    .refresh-info {
+      text-align: center;
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      margin-top: 2rem;
+    }
+
+    .error-banner {
+      background: rgba(255, 51, 102, 0.1);
+      border: 1px solid rgba(255, 51, 102, 0.3);
+      color: var(--red);
+      padding: 0.75rem 1rem;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      margin-bottom: 1.5rem;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <div>
+        <div class="logo-text">candy network</div>
+        <div class="logo-sub">distributed service discovery</div>
+      </div>
+    </div>
+    <div class="status-dot" id="statusDot"></div>
+  </header>
+
+  <main>
+    <div class="error-banner" id="errorBanner"></div>
+
+    <div class="section">
+      <div class="section-header">
+        <div class="section-title">Local Records</div>
+        <div class="section-count" id="localCount">0</div>
+      </div>
+      <div class="record-list" id="localRecords">
+        <div class="empty-state">loading...</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-header">
+        <div class="section-title">Remote Records</div>
+        <div class="section-count" id="remoteCount">0</div>
+      </div>
+      <div class="record-list" id="remoteRecords">
+        <div class="empty-state">loading...</div>
+      </div>
+    </div>
+
+    <div class="refresh-info">auto-refreshes every 30s</div>
+  </main>
+
+  <script>
+    const token = window.CANDY_TOKEN
+    let refreshTimer = null
+
+    const formatExpiry = (ms) => {
+      if (ms <= 0) return 'expired'
+      const mins = Math.floor(ms / 60000)
+      const secs = Math.floor((ms % 60000) / 1000)
+      if (mins > 0) return `${mins}m ${secs}s`
+      return `${secs}s`
+    }
+
+    const renderRecords = (data) => {
+      const localEl = document.getElementById('localRecords')
+      const remoteEl = document.getElementById('remoteRecords')
+      const localCountEl = document.getElementById('localCount')
+      const remoteCountEl = document.getElementById('remoteCount')
+
+      // Local records
+      const localEntries = Object.entries(data.local || {})
+      localCountEl.textContent = localEntries.length
+      if (localEntries.length === 0) {
+        localEl.innerHTML = '<div class="empty-state">no local routes</div>'
+      } else {
+        localEl.innerHTML = localEntries.map(([name, ip]) => `
+          <div class="record">
+            <div>
+              <span class="record-name">${name}<span class="tld">.candy</span></span>
+            </div>
+            <div class="record-meta">
+              <span class="record-ip">${ip}</span>
+              <span class="tag tag-local">local</span>
+            </div>
+          </div>
+        `).join('')
+      }
+
+      // Remote records
+      const remoteEntries = Object.entries(data.remote || {})
+      remoteCountEl.textContent = remoteEntries.length
+      if (remoteEntries.length === 0) {
+        remoteEl.innerHTML = '<div class="empty-state">no remote records</div>'
+      } else {
+        remoteEl.innerHTML = remoteEntries.map(([name, info]) => `
+          <div class="record">
+            <div>
+              <span class="record-name">${name}<span class="tld">.candy</span></span>
+            </div>
+            <div class="record-meta">
+              <span class="record-expiry">expires in ${formatExpiry(info.expiresIn)}</span>
+              <span class="record-ip">${info.ip}</span>
+              <span class="tag tag-remote">remote</span>
+            </div>
+          </div>
+        `).join('')
+      }
+    }
+
+    const fetchRegistry = async () => {
+      const errorBanner = document.getElementById('errorBanner')
+      const statusDot = document.getElementById('statusDot')
+      try {
+        const res = await fetch('/candy/registry')
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+        const data = await res.json()
+        renderRecords(data)
+        errorBanner.style.display = 'none'
+        statusDot.style.background = 'var(--green)'
+        statusDot.style.boxShadow = '0 0 8px var(--green)'
+      } catch (e) {
+        errorBanner.textContent = `Failed to fetch registry: ${e.message}`
+        errorBanner.style.display = 'block'
+        statusDot.style.background = 'var(--red)'
+        statusDot.style.boxShadow = '0 0 8px var(--red)'
+      }
+    }
+
+    fetchRegistry()
+    refreshTimer = setInterval(fetchRegistry, 30000)
+  </script>
+</body>
+</html>

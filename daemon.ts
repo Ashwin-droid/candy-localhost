@@ -192,6 +192,7 @@ const DOMAINS_CONFIG = `${CANDY_CONFIG_DIR}/domains.json`
 const LOGS_DIR = "/tmp/candy-logs"
 const AUDIT_LOG = `${LOGS_DIR}/_audit.log`
 const DNS_CONFIG_FILE = `${CANDY_CONFIG_DIR}/candy-dns.json`
+const ADVERTISEMENTS_FILE = `${CANDY_CONFIG_DIR}/advertisements.json`
 const CLOUDFLARED_SYSTEM_CONFIG = `/etc/cloudflared/config.yml`
 const CLOUDFLARED_USER_CONFIG = `${process.env.HOME}/.cloudflared/config.yml`
 
@@ -199,7 +200,7 @@ const CLOUDFLARED_USER_CONFIG = `${process.env.HOME}/.cloudflared/config.yml`
 let tailscaleIp: string | null = null
 
 // Reserved domain names (cannot be used for servers/routes)
-const RESERVED_NAMES = new Set(['portal', 'k', 'kill', 'p'])
+const RESERVED_NAMES = new Set(['portal', 'k', 'kill', 'p', 'candy'])
 const isReserved = (name: string) => RESERVED_NAMES.has(name.toLowerCase())
 
 // Port detection patterns (run against process stdout/stderr)
@@ -213,6 +214,16 @@ const PORT_PATTERNS = [
 ]
 
 const PORT_DETECTION_TIMEOUT = 10000  // 10 seconds
+
+// Advertisement / service discovery
+const ADVERTISEMENT_TTL = 30 * 60 * 1000  // 30 minutes
+const READVERTISE_INTERVAL = 25 * 60 * 1000  // 25 minutes
+const EXPIRY_SWEEP_INTERVAL = 5 * 60 * 1000  // 5 minutes
+
+interface RemoteRecord {
+  ip: string
+  advertisedAt: number
+}
 
 // ============================================================================
 // Bound Domains Config
@@ -323,6 +334,7 @@ const routes = new Map<string, { target: number | string, persistent: boolean }>
 const portals = new Map<string, { proc: Subprocess | null, port: number, url?: string, pid?: number }>()
 const processes = new Map<string, ManagedProcess>()
 const serverConfigs = new Map<string, ServerConfig[]>()
+const remoteRecords = new Map<string, RemoteRecord>()
 // Historical mapping: tunnel domain -> server name (persists after portal close)
 const tunnelHistory = new Map<string, string>()
 let caddyProc: Subprocess | null = null
@@ -466,15 +478,89 @@ const discoverTailscaleIp = async (): Promise<string | null> => {
   } catch { return null }
 }
 
+// Validate that an IP is in Tailscale's CGNAT range (100.64.0.0/10)
+const isTailscaleIp = (ip: string): boolean => {
+  const clean = ip.replace(/^::ffff:/, '')
+  const parts = clean.split('.').map(Number)
+  if (parts.length !== 4) return false
+  return parts[0] === 100 && (parts[1] & 0xC0) === 64
+}
+
+const normalizeIp = (ip: string): string => ip.replace(/^::ffff:/, '')
+
 // Sync DNS config file for candy-dns daemon
 const syncDnsConfig = async () => {
   if (!tailscaleIp) return
   const servers = [...routes.keys()]
+
+  // Build per-name records: remote first, then local overwrites
+  const records: Record<string, string> = {}
+  for (const [name, rec] of remoteRecords) {
+    records[name] = rec.ip
+  }
+  // Local routes + configs always win (host is "first advertiser")
+  for (const name of routes.keys()) {
+    records[name] = tailscaleIp
+  }
+  for (const name of serverConfigs.keys()) {
+    records[name] = tailscaleIp
+  }
+  records["candy"] = tailscaleIp  // always
+
   await Bun.write(DNS_CONFIG_FILE, JSON.stringify({
-    tailscaleIp,
-    tld: "candy",
-    servers
+    tailscaleIp, tld: "candy", servers, records
   }, null, 2))
+}
+
+// Advertisement persistence
+const loadAdvertisements = async () => {
+  try {
+    const file = Bun.file(ADVERTISEMENTS_FILE)
+    if (!await file.exists()) return
+    const data = await file.json() as Record<string, RemoteRecord>
+    const now = Date.now()
+    for (const [name, record] of Object.entries(data)) {
+      if (now - record.advertisedAt < ADVERTISEMENT_TTL) {
+        remoteRecords.set(name, record)
+      }
+    }
+    if (remoteRecords.size > 0) {
+      auditLog('ADS_LOADED', `${remoteRecords.size} remote records loaded`, 'System')
+    }
+  } catch {}
+}
+
+const saveAdvertisements = async () => {
+  await Bun.write(ADVERTISEMENTS_FILE, JSON.stringify(
+    Object.fromEntries(remoteRecords), null, 2
+  ))
+}
+
+// Client-side: advertise local routes to the DNS hub
+const advertiseToHub = async () => {
+  if (!tailscaleIp) return
+  try {
+    const dns = await import("node:dns")
+    const addrs = await dns.promises.resolve4("candy.candy")
+    if (!addrs.length) return
+    const hubIp = addrs[0]
+    // If candy.candy resolves to us, we ARE the hub - skip
+    if (hubIp === tailscaleIp) return
+
+    const myRoutes = [...new Set([...routes.keys(), ...serverConfigs.keys()])]
+    if (myRoutes.length === 0) return
+
+    const resp = await fetch(`http://${hubIp}:9999/candy/advertise`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ routes: myRoutes }),
+      signal: AbortSignal.timeout(10000),
+    })
+    const result = await resp.json() as { accepted?: string[] }
+    if (result.accepted?.length) {
+      auditLog('ADS_SENT', `Advertised ${result.accepted.length} routes to ${hubIp}`, 'System')
+    }
+  } catch {} // Silent fail - hub might not exist
 }
 
 // Generate a random token value
@@ -573,7 +659,7 @@ const initLogs = async () => {
 }
 
 // Actor types for audit logging
-type Actor = 'AI' | 'Page' | 'Portal' | 'System'
+type Actor = 'AI' | 'Page' | 'Portal' | 'System' | 'Network' | 'Void'
 
 // Write to audit log with actor tracking
 const auditLog = async (action: string, details: string, actor: Actor = 'System') => {
@@ -1543,6 +1629,9 @@ const syncCaddy = async () => {
 
   // Sync DNS config for candy-dns daemon
   await syncDnsConfig()
+
+  // Propagate route changes to hub (fire-and-forget)
+  advertiseToHub().catch(() => {})
 }
 
 // Parse Caddy access logs for stats
@@ -1599,6 +1688,7 @@ const getCorsHeaders = (origin: string | null) => {
   const allowed = origin && (
     origin.endsWith('.localhost') ||
     origin === 'http://localhost:9999' ||
+    origin === 'https://candy.candy' ||
     origin.match(/^https?:\/\/[a-z0-9-]+\.localhost(:\d+)?$/) ||
     (tailscaleIp && origin.match(/^https?:\/\/[a-z0-9-]+\.candy$/))
   )
@@ -1668,11 +1758,68 @@ const controlServer = Bun.serve({
     // Void endpoints bypass auth (easter egg system needs to work across pages)
     const isVoidRoute = url.pathname.startsWith("/void/")
 
+    // === Network Discovery API (unauthenticated, Tailscale-protected) ===
+    const isCandyApi = url.pathname.startsWith("/candy/")
+    if (isCandyApi) {
+      // POST /candy/advertise - register routes from a remote machine
+      if (req.method === "POST" && url.pathname === "/candy/advertise") {
+        if (!tailscaleIp) {
+          return Response.json({ error: "Tailscale not active" }, { status: 503, headers: corsHeaders })
+        }
+        const callerIp = normalizeIp(controlServer.requestIP(req)?.address || "")
+        if (!callerIp || !isTailscaleIp(callerIp)) {
+          return Response.json({ error: "Not a Tailscale peer" }, { status: 403, headers: corsHeaders })
+        }
+        const { routes: advertisedRoutes } = await req.json() as { routes: string[] }
+        const accepted: string[] = []
+        const rejected: { name: string; reason: string }[] = []
+
+        for (const name of advertisedRoutes) {
+          if (isReserved(name)) {
+            rejected.push({ name, reason: "reserved" }); continue
+          }
+          // Local routes/configs always win
+          if (routes.has(name) || serverConfigs.has(name)) {
+            rejected.push({ name, reason: "owned by dns host" }); continue
+          }
+          const existing = remoteRecords.get(name)
+          if (existing && existing.ip !== callerIp) {
+            rejected.push({ name, reason: `claimed by ${existing.ip}` }); continue
+          }
+          // Accept: new or refresh
+          remoteRecords.set(name, { ip: callerIp, advertisedAt: Date.now() })
+          accepted.push(name)
+        }
+
+        if (accepted.length > 0) {
+          await saveAdvertisements()
+          await syncDnsConfig()
+          auditLog('ADS_ACCEPTED', `${callerIp}: ${accepted.join(", ")}`, 'Network')
+        }
+
+        return Response.json({ accepted, rejected }, { headers: corsHeaders })
+      }
+
+      // GET /candy/registry - view all known records
+      if (req.method === "GET" && url.pathname === "/candy/registry") {
+        const local = Object.fromEntries(
+          [...new Set([...routes.keys(), ...serverConfigs.keys()])]
+            .map(n => [n, tailscaleIp || "unknown"])
+        )
+        const remote = Object.fromEntries(
+          [...remoteRecords.entries()].map(([name, rec]) => [
+            name, { ip: rec.ip, expiresIn: Math.max(0, ADVERTISEMENT_TTL - (Date.now() - rec.advertisedAt)) }
+          ])
+        )
+        return Response.json({ local, remote }, { headers: corsHeaders })
+      }
+    }
+
     // === API Routes require token validation ===
     // MCP/CLI uses X-Candy-API-Key header (obtained via /mcp/auth with secret)
     const mcpApiKey = req.headers.get("X-Candy-API-Key")
     const isMCP = mcpApiKey && validateMcpApiKey(mcpApiKey)
-    if (!isWebRoute && !isMCP && !isVoidRoute && !isBoundDomain) {
+    if (!isWebRoute && !isMCP && !isVoidRoute && !isBoundDomain && !isCandyApi) {
       const token = req.headers.get("X-Candy-Token")
       if (!token || !consumeToken(token)) {
         return unauthorizedResponse(corsHeaders)
@@ -2731,6 +2878,13 @@ const controlServer = Bun.serve({
     // Parse host header
     const reqHost = req.headers.get("host")?.replace(":9999", "").replace(":80", "") || ""
 
+    // Network dashboard at candy.candy
+    if (reqHost === "candy.candy" && req.method === "GET" && (url.pathname === "/" || url.pathname === "")) {
+      const rawHtml = await Bun.file(import.meta.dir + "/public/network.html").text()
+      const html = injectToken(rawHtml)
+      return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
+    }
+
     // Detect if request is coming via .candy TLD (Tailscale)
     const isCandy = reqHost.endsWith(".candy")
     // Build a domain URL with the correct scheme/TLD
@@ -3062,6 +3216,9 @@ await initMcpAuth()
 // Load persistent routes first (survive daemon restarts)
 await loadPersistentRoutes()
 
+// Load remote advertisements from disk
+await loadAdvertisements()
+
 // Create fresh Caddyfile (includes persistent routes)
 await syncCaddy()
 
@@ -3096,3 +3253,25 @@ ${tailscaleStatus}
 
 \x1b[90mLazy dev server mode active. Visit <name>.localhost to auto-start.\x1b[0m
 `)
+
+// Sweep expired remote records every 5 minutes
+setInterval(async () => {
+  const now = Date.now()
+  let expired = 0
+  for (const [name, rec] of remoteRecords) {
+    if (now - rec.advertisedAt > ADVERTISEMENT_TTL) {
+      remoteRecords.delete(name)
+      expired++
+    }
+  }
+  if (expired > 0) {
+    auditLog('ADS_EXPIRED', `${expired} remote records expired`, 'System')
+    await saveAdvertisements()
+    await syncDnsConfig()
+  }
+}, EXPIRY_SWEEP_INTERVAL)
+
+// Client-side: advertise to hub if we're not the DNS host
+setInterval(advertiseToHub, READVERTISE_INTERVAL)
+// Also advertise immediately on startup (with short delay for DNS to be ready)
+setTimeout(advertiseToHub, 5000)

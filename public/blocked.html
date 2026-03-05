@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Verification Required</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-deep: #050508;
+      --bg-surface: #0a0a0f;
+      --bg-elevated: #12121a;
+      --border: #1e1e2a;
+      --text: #e0e0e8;
+      --text-dim: #6a6a7a;
+      --text-muted: #4a4a5a;
+      --cyan: #00e5ff;
+      --cyan-glow: rgba(0, 229, 255, 0.15);
+      --red: #ff3366;
+      --red-glow: rgba(255, 51, 102, 0.3);
+      --green: #00ff88;
+      --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+      --font-sans: 'Space Grotesk', system-ui, sans-serif;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+
+    body {
+      font-family: var(--font-mono);
+      background: var(--bg-deep);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+      overflow: hidden;
+    }
+
+    .container {
+      text-align: center;
+      max-width: 480px;
+      width: 100%;
+      animation: fadeIn 0.5s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    .face-id-icon {
+      width: 80px;
+      height: 80px;
+      margin: 0 auto 1.5rem;
+      position: relative;
+    }
+
+    .face-id-icon svg {
+      width: 100%;
+      height: 100%;
+      stroke: var(--cyan);
+      stroke-width: 2;
+      fill: none;
+    }
+
+    @keyframes scan {
+      0%, 100% { transform: translateY(-20px); opacity: 0.3; }
+      50% { transform: translateY(20px); opacity: 1; }
+    }
+
+    .scan-line {
+      position: absolute;
+      left: 10%; right: 10%;
+      height: 2px;
+      background: var(--cyan);
+      box-shadow: 0 0 10px var(--cyan), 0 0 30px var(--cyan-glow);
+      animation: scan 2s ease-in-out infinite;
+      top: 50%;
+    }
+
+    h1 {
+      font-family: var(--font-sans);
+      font-size: 1.4rem;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+    }
+
+    .subtitle {
+      color: var(--text-dim);
+      font-size: 0.85rem;
+      margin-bottom: 2rem;
+    }
+
+    #phase-request {
+      display: block;
+    }
+
+    #phase-scanning, #phase-denied, #phase-no-camera {
+      display: none;
+    }
+
+    .btn-verify {
+      padding: 1rem 2rem;
+      background: linear-gradient(135deg, var(--cyan) 0%, #0088aa 100%);
+      color: var(--bg-deep);
+      border: none;
+      border-radius: 10px;
+      font-family: var(--font-sans);
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      box-shadow: 0 4px 20px var(--cyan-glow);
+    }
+
+    .btn-verify:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 30px var(--cyan-glow);
+    }
+
+    .camera-container {
+      position: relative;
+      width: 280px;
+      height: 280px;
+      margin: 0 auto 1.5rem;
+      border-radius: 50%;
+      overflow: hidden;
+      border: 3px solid var(--border);
+    }
+
+    .camera-container video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+    }
+
+    .camera-overlay {
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      pointer-events: none;
+    }
+
+    .camera-overlay.scanning {
+      border: 3px solid var(--cyan);
+      box-shadow: inset 0 0 40px var(--cyan-glow), 0 0 20px var(--cyan-glow);
+      animation: overlayPulse 1.5s ease-in-out infinite;
+    }
+
+    .camera-overlay.denied {
+      border: 3px solid var(--red);
+      box-shadow: inset 0 0 60px var(--red-glow), 0 0 30px var(--red-glow);
+    }
+
+    @keyframes overlayPulse {
+      0%, 100% { box-shadow: inset 0 0 40px var(--cyan-glow), 0 0 20px var(--cyan-glow); }
+      50% { box-shadow: inset 0 0 60px var(--cyan-glow), 0 0 40px var(--cyan-glow); }
+    }
+
+    .scan-text {
+      color: var(--cyan);
+      font-size: 0.85rem;
+      animation: blink 0.8s ease-in-out infinite;
+    }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    .denied-text {
+      color: var(--red);
+      font-size: 1.1rem;
+      font-weight: 700;
+      font-family: var(--font-sans);
+      text-shadow: 0 0 20px var(--red-glow);
+    }
+
+    .denied-sub {
+      color: var(--text-dim);
+      font-size: 0.8rem;
+      margin-top: 0.5rem;
+    }
+
+    .spooky-overlay {
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at center, transparent 40%, rgba(255, 51, 102, 0.4) 100%);
+      mix-blend-mode: overlay;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 1s;
+    }
+
+    .spooky-overlay.active {
+      opacity: 1;
+    }
+
+    .glitch {
+      animation: glitch 0.3s ease-in-out;
+    }
+
+    @keyframes glitch {
+      0% { transform: translate(0); }
+      20% { transform: translate(-5px, 3px); }
+      40% { transform: translate(3px, -5px); }
+      60% { transform: translate(-3px, 2px); }
+      80% { transform: translate(4px, -2px); }
+      100% { transform: translate(0); }
+    }
+
+    .no-camera-msg {
+      color: var(--text-dim);
+      font-size: 0.9rem;
+      padding: 2rem;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Phase 1: Request verification -->
+    <div id="phase-request">
+      <div class="face-id-icon">
+        <svg viewBox="0 0 24 24">
+          <path d="M4 8V6a2 2 0 0 1 2-2h2"/>
+          <path d="M4 16v2a2 2 0 0 0 2 2h2"/>
+          <path d="M16 4h2a2 2 0 0 1 2 2v2"/>
+          <path d="M16 20h2a2 2 0 0 0 2-2v-2"/>
+          <circle cx="9" cy="10" r="1"/>
+          <circle cx="15" cy="10" r="1"/>
+          <path d="M9.5 15a3.5 3.5 0 0 0 5 0"/>
+        </svg>
+        <div class="scan-line"></div>
+      </div>
+
+      <h1>Face ID Verification Required</h1>
+      <p class="subtitle">Enhanced security protocol for this domain</p>
+
+      <button class="btn-verify" id="verifyBtn" onclick="startVerification()">
+        Begin Verification
+      </button>
+    </div>
+
+    <!-- Phase 2: Scanning (camera active) -->
+    <div id="phase-scanning">
+      <div class="camera-container">
+        <video id="cameraFeed" autoplay playsinline muted></video>
+        <div class="camera-overlay scanning" id="cameraOverlay"></div>
+        <div class="spooky-overlay" id="spookyOverlay"></div>
+      </div>
+
+      <p class="scan-text" id="scanStatus">analyzing facial features...</p>
+    </div>
+
+    <!-- Phase 3: Denied (with spooky reveal) -->
+    <div id="phase-denied">
+      <div class="camera-container">
+        <video id="cameraFeedDenied" autoplay playsinline muted></video>
+        <div class="camera-overlay denied"></div>
+        <div class="spooky-overlay active"></div>
+      </div>
+
+      <p class="denied-text">ACCESS DENIED</p>
+      <p class="denied-sub">your face has been logged</p>
+    </div>
+
+    <!-- Phase: No camera -->
+    <div id="phase-no-camera">
+      <div class="face-id-icon">
+        <svg viewBox="0 0 24 24">
+          <path d="M4 8V6a2 2 0 0 1 2-2h2"/>
+          <path d="M4 16v2a2 2 0 0 0 2 2h2"/>
+          <path d="M16 4h2a2 2 0 0 1 2 2v2"/>
+          <path d="M16 20h2a2 2 0 0 0 2-2v-2"/>
+          <line x1="2" y1="2" x2="22" y2="22" stroke-width="2"/>
+        </svg>
+      </div>
+      <div class="no-camera-msg">
+        <p>Camera access required for verification.</p>
+        <p style="margin-top: 0.5rem; font-size: 0.8rem;">Enable camera permissions and reload.</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const phases = ['phase-request', 'phase-scanning', 'phase-denied', 'phase-no-camera'];
+
+    function showPhase(name) {
+      phases.forEach(p => document.getElementById(p).style.display = p === name ? 'block' : 'none');
+    }
+
+    const scanMessages = [
+      'analyzing facial features...',
+      'mapping bone structure...',
+      'checking biometric database...',
+      'running identity verification...',
+      'cross-referencing records...',
+      'anomaly detected...',
+      'escalating to security...',
+    ];
+
+    async function startVerification() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+        const video = document.getElementById('cameraFeed');
+        const videoDenied = document.getElementById('cameraFeedDenied');
+        video.srcObject = stream;
+        videoDenied.srcObject = stream;
+
+        showPhase('phase-scanning');
+
+        const scanStatus = document.getElementById('scanStatus');
+        let msgIndex = 0;
+
+        const msgInterval = setInterval(() => {
+          msgIndex++;
+          if (msgIndex < scanMessages.length) {
+            scanStatus.textContent = scanMessages[msgIndex];
+          }
+        }, 1200);
+
+        // After scanning, show denied with spooky effect
+        setTimeout(() => {
+          clearInterval(msgInterval);
+          document.querySelector('.container').classList.add('glitch');
+          setTimeout(() => {
+            document.querySelector('.container').classList.remove('glitch');
+            showPhase('phase-denied');
+          }, 300);
+        }, scanMessages.length * 1200);
+      } catch (err) {
+        showPhase('phase-no-camera');
+      }
+    }
+  </script>
+</body>
+</html>

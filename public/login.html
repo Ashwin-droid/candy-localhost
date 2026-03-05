@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login Required</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-deep: #050508;
+      --bg-surface: #0a0a0f;
+      --bg-elevated: #12121a;
+      --border: #1e1e2a;
+      --text: #e0e0e8;
+      --text-dim: #6a6a7a;
+      --text-muted: #4a4a5a;
+      --cyan: #00e5ff;
+      --cyan-dim: #00a0b0;
+      --cyan-glow: rgba(0, 229, 255, 0.15);
+      --magenta: #ff00aa;
+      --magenta-glow: rgba(255, 0, 170, 0.15);
+      --red: #ff3366;
+      --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+      --font-sans: 'Space Grotesk', system-ui, sans-serif;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+
+    body {
+      font-family: var(--font-mono);
+      background: var(--bg-deep);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+      position: relative;
+      overflow: hidden;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.1) 2px, rgba(0,0,0,0.1) 4px);
+      pointer-events: none;
+      z-index: 9999;
+      opacity: 0.3;
+    }
+
+    .glow {
+      position: fixed;
+      width: 500px; height: 500px;
+      background: radial-gradient(ellipse, var(--magenta-glow) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: -1;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+    }
+
+    .container {
+      text-align: center;
+      max-width: 400px;
+      width: 100%;
+      animation: fadeIn 0.5s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .candy-icon {
+      font-size: 2.5rem;
+      margin-bottom: 1.5rem;
+      filter: drop-shadow(0 0 20px var(--magenta-glow));
+    }
+
+    h1 {
+      font-family: var(--font-sans);
+      font-size: 1.5rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 0.4rem;
+    }
+
+    .domain-name {
+      color: var(--magenta);
+      text-shadow: 0 0 20px var(--magenta-glow);
+    }
+
+    .subtitle {
+      font-size: 0.85rem;
+      color: var(--text-dim);
+      margin-bottom: 2rem;
+    }
+
+    form {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .input-wrapper {
+      position: relative;
+    }
+
+    input[type="password"] {
+      width: 100%;
+      padding: 1rem 1.2rem;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 1rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    input[type="password"]:focus {
+      border-color: var(--cyan-dim);
+      box-shadow: 0 0 20px var(--cyan-glow);
+    }
+
+    input[type="password"]::placeholder {
+      color: var(--text-muted);
+    }
+
+    .btn-submit {
+      padding: 1rem;
+      background: linear-gradient(135deg, var(--cyan) 0%, var(--cyan-dim) 100%);
+      color: var(--bg-deep);
+      border: none;
+      border-radius: 10px;
+      font-family: var(--font-sans);
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      box-shadow: 0 4px 20px var(--cyan-glow);
+    }
+
+    .btn-submit:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 30px var(--cyan-glow);
+    }
+
+    .btn-submit:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .error-msg {
+      color: var(--red);
+      font-size: 0.85rem;
+      min-height: 1.2em;
+      margin-top: 0.25rem;
+    }
+
+    .backoff-timer {
+      display: none;
+      margin-top: 1rem;
+      padding: 1rem;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text-dim);
+      font-size: 0.85rem;
+    }
+
+    .backoff-timer.visible { display: block; }
+
+    .backoff-timer .countdown {
+      color: var(--magenta);
+      font-size: 1.5rem;
+      font-weight: 700;
+      font-family: var(--font-sans);
+      margin-top: 0.5rem;
+    }
+
+    .footer {
+      margin-top: 2.5rem;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="glow"></div>
+
+  <div class="container">
+    <div class="candy-icon">&#127852;</div>
+
+    <h1><span class="domain-name" id="domainDisplay">domain</span></h1>
+    <p class="subtitle">this domain is protected</p>
+
+    <form id="loginForm" method="POST" action="/candy-auth/login">
+      <div class="input-wrapper">
+        <input type="password" name="password" id="passwordInput" placeholder="password" autocomplete="off" autofocus>
+      </div>
+      <button type="submit" class="btn-submit" id="submitBtn">enter</button>
+      <div class="error-msg" id="errorMsg"></div>
+    </form>
+
+    <div class="backoff-timer" id="backoffTimer">
+      <div>slow down there</div>
+      <div class="countdown" id="countdownDisplay">0s</div>
+    </div>
+
+    <div class="footer">
+      <p>&#127852; candy-localhost</p>
+    </div>
+  </div>
+
+  <script>
+    const DOMAIN = '__DOMAIN__';
+    const SUBDOMAIN = '__SUBDOMAIN__';
+    const BLOCKED = __BLOCKED__;
+    let RETRY_AFTER = __RETRY_AFTER__;
+
+    document.getElementById('domainDisplay').textContent = DOMAIN;
+
+    const form = document.getElementById('loginForm');
+    const passwordInput = document.getElementById('passwordInput');
+    const submitBtn = document.getElementById('submitBtn');
+    const errorMsg = document.getElementById('errorMsg');
+    const backoffTimer = document.getElementById('backoffTimer');
+    const countdownDisplay = document.getElementById('countdownDisplay');
+
+    let countdownInterval = null;
+
+    function startCountdown(seconds) {
+      submitBtn.disabled = true;
+      passwordInput.disabled = true;
+      backoffTimer.classList.add('visible');
+      let remaining = seconds;
+      countdownDisplay.textContent = remaining + 's';
+
+      countdownInterval = setInterval(() => {
+        remaining--;
+        countdownDisplay.textContent = remaining + 's';
+        if (remaining <= 0) {
+          clearInterval(countdownInterval);
+          submitBtn.disabled = false;
+          passwordInput.disabled = false;
+          backoffTimer.classList.remove('visible');
+          passwordInput.focus();
+        }
+      }, 1000);
+    }
+
+    if (BLOCKED && RETRY_AFTER > 0) {
+      startCountdown(RETRY_AFTER);
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errorMsg.textContent = '';
+      submitBtn.disabled = true;
+
+      const password = passwordInput.value;
+      if (!password) {
+        errorMsg.textContent = 'enter a password';
+        submitBtn.disabled = false;
+        return;
+      }
+
+      try {
+        const res = await fetch('/candy-auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password }),
+          redirect: 'manual',
+        });
+
+        if (res.type === 'opaqueredirect' || res.status === 302 || res.status === 0) {
+          window.location.reload();
+          return;
+        }
+
+        if (res.ok) {
+          window.location.reload();
+          return;
+        }
+
+        const data = await res.json();
+        errorMsg.textContent = data.error || 'wrong password';
+        passwordInput.value = '';
+        passwordInput.focus();
+
+        if (data.retryAfter > 0) {
+          startCountdown(data.retryAfter);
+        } else {
+          submitBtn.disabled = false;
+        }
+      } catch (err) {
+        errorMsg.textContent = 'connection error';
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

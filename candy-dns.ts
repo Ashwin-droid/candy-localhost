@@ -250,8 +250,9 @@ const main = async () => {
 
         // Per-name IP resolution
         const records = config?.records
-        const ip = subdomain === "candy"
-          ? (config?.tailscaleIp || tailscaleIp)       // candy.candy always -> host
+        const BUILTIN_NAMES = new Set(['candy', 'portal', 'k', 'kill', 'p'])
+        const ip = BUILTIN_NAMES.has(subdomain)
+          ? (config?.tailscaleIp || tailscaleIp)       // built-in names always -> host
           : records?.[subdomain]                         // per-name lookup
           ?? (config?.servers?.includes(subdomain) ? (config?.tailscaleIp || tailscaleIp) : null)  // backward compat
 

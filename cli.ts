@@ -10,6 +10,9 @@
  *   candy logs [name]            Tail logs (current folder or by name)
  *   candy portal [name]          Open tunnel for server
  *   candy list                   List all registered configs
+ *   candy auth set <domain>       Set password for bound domain
+ *   candy auth clear <domain>     Remove password from bound domain
+ *   candy auth status             Show auth status for all bound domains
  * 
  * The daemon runs the actual server - this CLI is just a window into it.
  * Multiple terminals/AIs can watch the same logs simultaneously.
@@ -618,6 +621,110 @@ async function cmdDaemon() {
   await import(daemonPath)
 }
 
+// Auth management
+async function cmdAuth(args: string[]) {
+  if (!await checkDaemon()) {
+    console.error(`${c.red}Error: candy daemon not running${c.reset}`)
+    process.exit(1)
+  }
+
+  const sub = args[0]
+
+  if (sub === 'set' || sub === 's') {
+    const subdomain = args[1]
+    if (!subdomain) {
+      console.error(`${c.red}Usage: candy auth set <domain> [password]${c.reset}`)
+      process.exit(1)
+    }
+
+    let password = args[2]
+    if (!password) {
+      // Prompt for password
+      const rl = await import('readline')
+      const readline = rl.createInterface({ input: process.stdin, output: process.stdout })
+      password = await new Promise<string>(resolve => {
+        // Hide input
+        process.stdout.write(`${c.yellow}Password: ${c.reset}`)
+        if (process.stdin.isTTY) process.stdin.setRawMode(true)
+        let buf = ''
+        const onData = (ch: string) => {
+          if (ch === '\r' || ch === '\n') {
+            process.stdin.removeListener('data', onData)
+            if (process.stdin.isTTY) process.stdin.setRawMode(false)
+            process.stdout.write('\n')
+            readline.close()
+            resolve(buf)
+          } else if (ch === '\x7f' || ch === '\b') {
+            if (buf.length > 0) {
+              buf = buf.slice(0, -1)
+              process.stdout.write('\b \b')
+            }
+          } else if (ch === '\x03') {
+            // Ctrl+C
+            if (process.stdin.isTTY) process.stdin.setRawMode(false)
+            readline.close()
+            process.exit(0)
+          } else {
+            buf += ch
+            process.stdout.write('*')
+          }
+        }
+        process.stdin.on('data', onData)
+        process.stdin.resume()
+      })
+    }
+
+    if (!password || password.length < 1) {
+      console.error(`${c.red}Password cannot be empty${c.reset}`)
+      process.exit(1)
+    }
+
+    const res = await apiPost('/auth/set', { subdomain, password })
+    if (res?.error) {
+      console.error(`${c.red}${res.error}${c.reset}`)
+    } else {
+      console.log(`${c.green}${res.message}${c.reset}`)
+    }
+  } else if (sub === 'clear' || sub === 'c') {
+    const subdomain = args[1]
+    if (!subdomain) {
+      console.error(`${c.red}Usage: candy auth clear <domain>${c.reset}`)
+      process.exit(1)
+    }
+    const res = await apiPost('/auth/clear', { subdomain })
+    if (res?.error) {
+      console.error(`${c.red}${res.error}${c.reset}`)
+    } else {
+      console.log(`${c.green}${res.message}${c.reset}`)
+    }
+  } else if (sub === 'status' || !sub) {
+    const res = await apiGet('/auth/status')
+    if (res?.error) {
+      console.error(`${c.red}${res.error}${c.reset}`)
+      return
+    }
+    const domains = Object.entries(res.domains || {})
+    if (domains.length === 0) {
+      console.log(`${c.dim}No bound domains configured${c.reset}`)
+      return
+    }
+    console.log(`${c.cyan}${c.bold}Bound Domain Auth Status${c.reset}`)
+    console.log()
+    for (const [sub, info] of domains) {
+      const i = info as any
+      const authStatus = i.authEnabled
+        ? `${c.green}protected${c.reset} (${i.activeSessions} active session${i.activeSessions !== 1 ? 's' : ''})`
+        : `${c.yellow}unprotected${c.reset}`
+      console.log(`  ${c.white}${i.fqdn}${c.reset} -> ${c.cyan}${i.serverName}${c.reset}`)
+      console.log(`    auth: ${authStatus}`)
+    }
+  } else {
+    console.error(`${c.red}Unknown auth subcommand: ${sub}${c.reset}`)
+    console.error(`${c.dim}Usage: candy auth [set|clear|status]${c.reset}`)
+    process.exit(1)
+  }
+}
+
 // Domain management
 async function cmdDomain(args: string[]) {
   if (!await checkDaemon()) {
@@ -762,6 +869,7 @@ function printHelp() {
   console.log(`  ${c.cyan}candy list${c.reset}                   List all registered configs`)
   console.log(`  ${c.cyan}candy route${c.reset} [add|rm]          Manage domain routes (--persistent|-p)`)
   console.log(`  ${c.cyan}candy domain${c.reset} [list|bind|unbind|config]  Manage bound domains`)
+  console.log(`  ${c.cyan}candy auth${c.reset} [set|clear|status] Manage bound domain authentication`)
   console.log(`  ${c.cyan}candy mcp${c.reset}                    Start MCP server (stdio) for AI integration`)
   console.log(`  ${c.cyan}candy daemon${c.reset}                 Run the daemon (use systemd for production)`)
   console.log()
@@ -823,6 +931,9 @@ switch (command) {
   case '--version':
   case '-v':
     console.log(`candy-localhost v${VERSION}`)
+    break
+  case 'auth':
+    cmdAuth(args.slice(1))
     break
   case 'domain':
   case 'domains':

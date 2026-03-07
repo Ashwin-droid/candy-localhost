@@ -808,7 +808,16 @@ const saveAdvertisements = async () => {
 
 // Client-side: advertise local routes to the DNS hub
 const advertiseToHub = async () => {
-  if (!tailscaleIp) return
+  // Retry Tailscale discovery if it wasn't available at startup
+  if (!tailscaleIp) {
+    tailscaleIp = await discoverTailscaleIp()
+    if (tailscaleIp) {
+      console.log(`\x1b[33mTailscale:\x1b[0m   ${tailscaleIp} (*.candy domains now active)`)
+      await syncCaddy()
+    } else {
+      return
+    }
+  }
   try {
     const dns = await import("node:dns")
     const addrs = await dns.promises.resolve4("candy.candy")

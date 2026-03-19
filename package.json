@@ -4,7 +4,14 @@
   "description": "Lazy dev server orchestrator - we hand out domains like it's 1980",
   "license": "GPL-3.0-only",
   "type": "module",
-  "main": "daemon.ts",
+  "main": "./sdk.ts",
+  "exports": {
+    ".": "./sdk.ts",
+    "./sdk": "./sdk.ts",
+    "./cli": "./cli.ts",
+    "./daemon": "./daemon.ts",
+    "./mcp": "./mcp.ts"
+  },
   "bin": {
     "candy": "./cli.ts"
   },
@@ -22,4 +29,3 @@
     "@types/bun": "latest"
   }
 }
-

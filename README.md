@@ -37,6 +37,13 @@ bun run daemon
 
 After `bun link`, the `candy` command is available system-wide.
 
+To use the SDK from another Bun project, link the package there too:
+
+```bash
+cd /path/to/your-app
+bun link candy-localhost
+```
+
 ### Register a Server
 
 Create `~/.config/candy/servers.json`:
@@ -56,6 +63,48 @@ Or use the CLI from your project directory:
 candy dev npm run dev
 ```
 
+### Use the SDK
+
+For small one-off Bun apps, you can import the package directly after `bun link candy-localhost`:
+
+```ts
+import {
+  checkRuntime,
+  getLocalhostUrl,
+  openPortal,
+  registerPort,
+  registerServer,
+} from "candy-localhost"
+
+const runtime = checkRuntime()
+
+await registerServer({
+  cwd: process.cwd(),
+  command: "bun run dev",
+  namespace: "myapp",
+})
+
+await registerPort({
+  namespace: "myapp-api",
+  port: 8787,
+})
+
+console.log(await getLocalhostUrl({ namespace: "myapp-api" }))
+
+if (runtime.isCandyRuntime) {
+  console.log(await getLocalhostUrl())
+  console.log(await openPortal())
+}
+```
+
+SDK behavior:
+
+- `registerServer({ cwd, command, namespace })` registers a managed candy config, but no-ops safely when called from inside a candy-managed runtime.
+- `checkRuntime()` reports whether the current process is running under candy by checking `X_CANDY_RUNTIME_MAGIC_STRING`.
+- `getLocalhostUrl()` returns `https://<namespace>.localhost`, or resolves the current managed runtime automatically when called inside candy.
+- `registerPort({ namespace, port })` registers an unmanaged route owned by the current PID.
+- `openPortal()` only works for the calling runtime's managed config, or for a PID-owned route that the same process registered via `registerPort`.
+
 ### Use It
 
 Open `https://myapp.localhost` in your browser. candy spawns the process, detects the port, and starts proxying. To stop: visit `https://myapp.kill.localhost` or run `candy stop myapp`.
@@ -68,6 +117,7 @@ Open `https://myapp.localhost` in your browser. candy spawns the process, detect
 |-----------|------|---------|
 | Daemon | `daemon.ts` | HTTP control plane on `:9999`, process manager, Caddy sync, portal/domain management |
 | CLI | `cli.ts` | User-facing `candy` command with interactive PTY mode |
+| SDK | `sdk.ts` | Importable Bun SDK for one-off projects and runtime-aware helpers |
 | MCP Server | `mcp.ts` | JSON-RPC MCP server over stdio for agent integration |
 | DNS Daemon | `candy-dns.ts` | UDP DNS for `.candy` TLD, resolves to Tailscale IP |
 | UI Pages | `public/*.html` | Registration, startup progress, portal control, crash/kill pages |

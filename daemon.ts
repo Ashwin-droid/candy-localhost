@@ -195,6 +195,7 @@ const DNS_CONFIG_FILE = `${CANDY_CONFIG_DIR}/candy-dns.json`
 const ADVERTISEMENTS_FILE = `${CANDY_CONFIG_DIR}/advertisements.json`
 const CLOUDFLARED_SYSTEM_CONFIG = `/etc/cloudflared/config.yml`
 const CLOUDFLARED_USER_CONFIG = `${process.env.HOME}/.cloudflared/config.yml`
+const CANDY_RUNTIME_MAGIC_ENV = "X_CANDY_RUNTIME_MAGIC_STRING"
 
 // Tailscale state (discovered at startup)
 let tailscaleIp: string | null = null
@@ -223,6 +224,11 @@ const EXPIRY_SWEEP_INTERVAL = 5 * 60 * 1000  // 5 minutes
 interface RemoteRecord {
   ip: string
   advertisedAt: number
+}
+
+interface PidOwnedRoute {
+  pid: number
+  registeredAt: number
 }
 
 // ============================================================================
@@ -604,12 +610,14 @@ const routes = new Map<string, { target: number | string, persistent: boolean }>
 const portals = new Map<string, { proc: Subprocess | null, port: number, url?: string, pid?: number }>()
 const processes = new Map<string, ManagedProcess>()
 const serverConfigs = new Map<string, ServerConfig[]>()
+const pidOwnedRoutes = new Map<string, PidOwnedRoute>()
 const remoteRecords = new Map<string, RemoteRecord>()
 // Historical mapping: tunnel domain -> server name (persists after portal close)
 const tunnelHistory = new Map<string, string>()
 let caddyProc: Subprocess | null = null
 
 const makeConfigId = () => `cfg_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`
+const makeLocalhostUrl = (name: string) => `https://${name}.localhost`
 const getConfigsForName = (name: string): ServerConfig[] => serverConfigs.get(name) || []
 const getConfigById = (name: string, configId?: string): ServerConfig | null => {
   const configs = getConfigsForName(name)
@@ -1327,6 +1335,7 @@ const spawnProcess = async (name: string, actor: Actor = 'System', configId?: st
         // Add route and sync (preserve persistent flag if route already exists)
         const existing = routes.get(name)
         routes.set(name, { target: managed.port, persistent: existing?.persistent || false })
+        pidOwnedRoutes.delete(name)
         await syncCaddy()
         auditLog('ROUTE_AUTO', `${name}.localhost -> :${managed.port}`)
         return
@@ -1346,7 +1355,12 @@ const spawnProcess = async (name: string, actor: Actor = 'System', configId?: st
   const proc = spawn({
     cmd: ['bash', '-ic', config.cmd],
     cwd: config.cwd,
-    env: { ...process.env, FORCE_COLOR: '1', TERM: 'xterm-256color' },
+    env: {
+      ...process.env,
+      FORCE_COLOR: '1',
+      TERM: 'xterm-256color',
+      [CANDY_RUNTIME_MAGIC_ENV]: config.id,
+    },
     terminal: {
       cols: 120,
       rows: 30,
@@ -1510,6 +1524,7 @@ const stopProcess = async (name: string, actor: Actor = 'System'): Promise<boole
   if (!route?.persistent) {
     routes.delete(name)
   }
+  pidOwnedRoutes.delete(name)
 
   // Also kill associated portal/tunnel if exists
   const portal = portals.get(name)
@@ -1577,10 +1592,93 @@ const setProcessPort = async (name: string, port: number, actor: Actor = 'Portal
 
   const existingRoute = routes.get(name)
   routes.set(name, { target: port, persistent: existingRoute?.persistent || false })
+  pidOwnedRoutes.delete(name)
   await syncCaddy()
   auditLog('STATE', `${name}: ${prevStatus} -> running (port ${port}, manual)`, actor)
 
   return true
+}
+
+type OpenPortalResult =
+  | { ok: true; body: { name: string; url: string; port: number; message: string } }
+  | { ok: false; status: number; body: { error: string; details?: string } }
+
+const openPortalForName = async ({ name, port, openBrowser }: { name?: string; port: number; openBrowser?: boolean }): Promise<OpenPortalResult> => {
+  if (!port) {
+    return { ok: false, status: 400, body: { error: "Port is required" } }
+  }
+
+  const existingPortal = [...portals.entries()].find(([, p]) => p.port === port)
+  if (existingPortal) {
+    const m = pick(msg.portalCollision)
+    return { ok: false, status: 409, body: { error: m, details: `${existingPortal[0]} has :${port}` } }
+  }
+
+  let portalName = name
+  if (!portalName) {
+    let anonCounter = 1
+    while (portals.has(`anon-${anonCounter}`)) anonCounter++
+    portalName = `anon-${anonCounter}`
+  }
+
+  if (isReserved(portalName)) {
+    return { ok: false, status: 403, body: { error: "That name is reserved. Nice try though.", details: portalName } }
+  }
+
+  if (portals.has(portalName)) {
+    const m = pick(msg.portalCollision)
+    return { ok: false, status: 409, body: { error: m, details: `${portalName} already open` } }
+  }
+
+  if (!routes.has(portalName)) {
+    routes.set(portalName, { target: port, persistent: false })
+    await syncCaddy()
+  }
+
+  const cfProc = spawn({
+    cmd: ["cloudflared", "tunnel", "--config", "/dev/null", "--no-tls-verify", "--url", `https://${portalName}.localhost`],
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  portals.set(portalName, { proc: cfProc, port })
+
+  const tunnelUrl = await new Promise<string | null>((resolve) => {
+    const reader = cfProc.stderr.getReader()
+    const decoder = new TextDecoder()
+    const read = async () => {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) { resolve(null); return }
+        const text = decoder.decode(value)
+        const match = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/)
+        if (match) { resolve(match[0]); return }
+      }
+    }
+    read()
+  })
+
+  if (!tunnelUrl) {
+    portals.delete(portalName)
+    return { ok: false, status: 500, body: { error: "Tunnel collapsed. Even our connections have limits." } }
+  }
+
+  const portal = portals.get(portalName)
+  if (portal) {
+    portal.url = tunnelUrl
+    portal.pid = cfProc.pid
+    tunnelHistory.set(tunnelUrl.replace('https://', ''), portalName)
+    await syncCaddy()
+  }
+
+  if (openBrowser) {
+    setTimeout(() => {
+      spawn({ cmd: ["xdg-open", tunnelUrl], stdout: "ignore", stderr: "ignore" })
+    }, 30000)
+  }
+
+  const m = pick(msg.portalSuccess)
+  log("PORTAL", `${portalName} -> ${tunnelUrl}`)
+  return { ok: true, body: { name: portalName, url: tunnelUrl, port, message: m } }
 }
 
 // Format uptime for display
@@ -1613,6 +1711,57 @@ const isPidRunning = async (pid: number): Promise<boolean> => {
   } catch {
     return false
   }
+}
+
+const findManagedProcessByConfigId = (configId: string): ManagedProcess | null => {
+  for (const managed of processes.values()) {
+    if (managed.config.id === configId) {
+      return managed
+    }
+  }
+  return null
+}
+
+const isPidInProcessTree = async (rootPid: number, candidatePid: number): Promise<boolean> => {
+  if (!Number.isFinite(rootPid) || rootPid <= 0 || !Number.isFinite(candidatePid) || candidatePid <= 0) {
+    return false
+  }
+  if (rootPid === candidatePid) return true
+  const tree = await getProcessTreePids(rootPid)
+  return tree.includes(candidatePid)
+}
+
+const resolveManagedRuntime = async (configId: string, pid?: number): Promise<ManagedProcess | null> => {
+  const managed = findManagedProcessByConfigId(configId)
+  if (!managed) return null
+
+  if (!pid) return managed
+
+  const rootPid = managed.pid ?? managed.proc?.pid ?? null
+  if (!rootPid) return null
+  if (!await isPidRunning(pid)) return null
+
+  return await isPidInProcessTree(rootPid, pid) ? managed : null
+}
+
+const claimPidOwnedRoute = (name: string, pid: number) => {
+  pidOwnedRoutes.set(name, { pid, registeredAt: Date.now() })
+}
+
+const releasePidOwnedRoute = (name: string) => {
+  pidOwnedRoutes.delete(name)
+}
+
+const getPidOwnedRoutePort = async (name: string, pid: number): Promise<number | null> => {
+  const owner = pidOwnedRoutes.get(name)
+  if (!owner || owner.pid !== pid) return null
+  if (!await isPidRunning(pid)) {
+    pidOwnedRoutes.delete(name)
+    return null
+  }
+  const route = routes.get(name)
+  if (!route || typeof route.target === "string") return null
+  return route.target
 }
 
 // Start Caddy in background
@@ -2000,7 +2149,7 @@ const getCorsHeaders = (origin: string | null) => {
   return {
     "Access-Control-Allow-Origin": allowed ? origin : "",
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, X-Candy-Token",
+    "Access-Control-Allow-Headers": "Content-Type, X-Candy-Token, X-Candy-API-Key",
     "Access-Control-Allow-Credentials": "true",
   }
 }
@@ -2367,6 +2516,123 @@ const controlServer = Bun.serve({
       }
     }
 
+    // === SDK API ===
+
+    if (req.method === "POST" && url.pathname === "/sdk/runtime") {
+      const { configId, pid } = await req.json() as { configId?: string; pid?: number }
+      if (!configId) {
+        return Response.json({ error: "configId is required" }, { status: 400, headers: corsHeaders })
+      }
+
+      const managed = await resolveManagedRuntime(configId, pid)
+      if (!managed) {
+        return Response.json({ error: "No running candy runtime found for that configId." }, { status: 404, headers: corsHeaders })
+      }
+
+      return Response.json({
+        success: true,
+        runtime: {
+          name: managed.name,
+          url: makeLocalhostUrl(managed.name),
+          port: managed.port,
+          status: managed.status,
+          configId: managed.config.id,
+          cwd: managed.config.cwd,
+          cmd: managed.config.cmd,
+        }
+      }, { headers: corsHeaders })
+    }
+
+    if (req.method === "POST" && url.pathname === "/sdk/register-port") {
+      const body = await req.json() as { name?: string; port?: number; persistent?: boolean; pid?: number }
+      const { name, port, persistent, pid } = body
+
+      if (!name || !port || !pid) {
+        return Response.json({ error: "name, port, and pid are required" }, { status: 400, headers: corsHeaders })
+      }
+
+      if (isReserved(name)) {
+        return Response.json({ error: "That name is reserved. Nice try though.", details: name }, { status: 403, headers: corsHeaders })
+      }
+
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        return Response.json({ error: pick(msg.notANumber), details: String(port) }, { status: 400, headers: corsHeaders })
+      }
+
+      if (!await isPidRunning(pid)) {
+        return Response.json({ error: `PID ${pid} is not running.` }, { status: 400, headers: corsHeaders })
+      }
+
+      if (serverConfigs.has(name)) {
+        return Response.json({ error: `Namespace '${name}' belongs to a managed candy server.` }, { status: 409, headers: corsHeaders })
+      }
+
+      const existingOwner = pidOwnedRoutes.get(name)
+      if (existingOwner && existingOwner.pid !== pid) {
+        if (await isPidRunning(existingOwner.pid)) {
+          return Response.json({ error: `Namespace '${name}' is already owned by PID ${existingOwner.pid}.` }, { status: 409, headers: corsHeaders })
+        }
+        releasePidOwnedRoute(name)
+      }
+
+      const existingRoute = routes.get(name)
+      if (existingRoute && !existingOwner) {
+        return Response.json({ error: `Namespace '${name}' is already registered.` }, { status: 409, headers: corsHeaders })
+      }
+
+      const portCollision = [...routes.entries()].find(([routeName, route]) => {
+        if (routeName === name || typeof route.target === "string") return false
+        return route.target === port
+      })
+      if (portCollision) {
+        const m = pick(msg.portCollision)
+        return Response.json({ error: m, details: `${portCollision[0]} has :${port}` }, { status: 409, headers: corsHeaders })
+      }
+
+      routes.set(name, { target: port, persistent: persistent === true })
+      claimPidOwnedRoute(name, pid)
+      await syncCaddy()
+      if (persistent === true) await savePersistentRoutes()
+
+      log("ADD", `${name}.localhost -> :${port} (pid ${pid})`)
+      return Response.json({
+        success: true,
+        name,
+        port,
+        domain: `${name}.localhost`,
+        url: makeLocalhostUrl(name),
+      }, { headers: corsHeaders })
+    }
+
+    if (req.method === "POST" && url.pathname === "/sdk/portal") {
+      const { configId, name, pid } = await req.json() as { configId?: string; name?: string; pid?: number }
+
+      if (configId) {
+        const managed = await resolveManagedRuntime(configId, pid)
+        if (!managed) {
+          return Response.json({ error: "That candy runtime is not active." }, { status: 404, headers: corsHeaders })
+        }
+        if (!managed.port) {
+          return Response.json({ error: `Server '${managed.name}' is running but has no detected port yet.` }, { status: 400, headers: corsHeaders })
+        }
+
+        const result = await openPortalForName({ name: managed.name, port: managed.port })
+        return Response.json(result.body, { status: result.ok ? 200 : result.status, headers: corsHeaders })
+      }
+
+      if (!name || !pid) {
+        return Response.json({ error: "name and pid are required when not running inside candy." }, { status: 400, headers: corsHeaders })
+      }
+
+      const port = await getPidOwnedRoutePort(name, pid)
+      if (!port) {
+        return Response.json({ error: `PID ${pid} does not own '${name}'.` }, { status: 403, headers: corsHeaders })
+      }
+
+      const result = await openPortalForName({ name, port })
+      return Response.json(result.body, { status: result.ok ? 200 : result.status, headers: corsHeaders })
+    }
+
     // === Route Management ===
 
     if (req.method === "POST" && url.pathname === "/register") {
@@ -2391,6 +2657,7 @@ const controlServer = Bun.serve({
 
       const persistent = body.persistent === true
       routes.set(name, { target: routeTarget, persistent })
+      releasePidOwnedRoute(name)
       await syncCaddy()
       if (persistent) await savePersistentRoutes()
 
@@ -2427,6 +2694,7 @@ const controlServer = Bun.serve({
 
       const wasRoute = routes.get(name)
       routes.delete(name)
+      releasePidOwnedRoute(name)
       await syncCaddy()
       if (wasRoute?.persistent) await savePersistentRoutes()
       const m = pick(msg.removed)
@@ -2451,6 +2719,12 @@ const controlServer = Bun.serve({
       routes.delete(oldName)
       routes.set(newName, routeData)
       if (routeData.persistent) await savePersistentRoutes()
+
+      const routeOwner = pidOwnedRoutes.get(oldName)
+      if (routeOwner) {
+        pidOwnedRoutes.delete(oldName)
+        pidOwnedRoutes.set(newName, routeOwner)
+      }
 
       if (portals.has(oldName)) {
         const portalData = portals.get(oldName)!
@@ -2498,78 +2772,8 @@ const controlServer = Bun.serve({
         return Response.json({ error: "Port is required" }, { status: 400, headers: corsHeaders })
       }
 
-      const existingPortal = [...portals.entries()].find(([, p]) => p.port === port)
-      if (existingPortal) {
-        const m = pick(msg.portalCollision)
-        return Response.json({ error: m, details: `${existingPortal[0]} has :${port}` }, { status: 409, headers: corsHeaders })
-      }
-
-      let portalName = name
-      if (!portalName) {
-        let anonCounter = 1
-        while (portals.has(`anon-${anonCounter}`)) anonCounter++
-        portalName = `anon-${anonCounter}`
-      }
-
-      if (isReserved(portalName)) {
-        return Response.json({ error: "That name is reserved. Nice try though.", details: portalName }, { status: 403, headers: corsHeaders })
-      }
-
-      if (portals.has(portalName)) {
-        const m = pick(msg.portalCollision)
-        return Response.json({ error: m, details: `${portalName} already open` }, { status: 409, headers: corsHeaders })
-      }
-
-      if (!routes.has(portalName)) {
-        routes.set(portalName, { target: port, persistent: false })
-        await syncCaddy()
-      }
-
-      const cfProc = spawn({
-        cmd: ["cloudflared", "tunnel", "--config", "/dev/null", "--no-tls-verify", "--url", `https://${portalName}.localhost`],
-        stdout: "pipe",
-        stderr: "pipe",
-      })
-      portals.set(portalName, { proc: cfProc, port })
-
-      const tunnelUrl = await new Promise<string | null>((resolve) => {
-        const reader = cfProc.stderr.getReader()
-        const decoder = new TextDecoder()
-        const read = async () => {
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) { resolve(null); return }
-            const text = decoder.decode(value)
-            const match = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/)
-            if (match) { resolve(match[0]); return }
-          }
-        }
-        read()
-      })
-
-      if (tunnelUrl) {
-        const portal = portals.get(portalName)
-        if (portal) {
-          portal.url = tunnelUrl
-          portal.pid = cfProc.pid
-          // Track tunnel -> server mapping for stats history
-          tunnelHistory.set(tunnelUrl.replace('https://', ''), portalName)
-          await syncCaddy()
-        }
-
-        if (openBrowser) {
-          setTimeout(() => {
-            spawn({ cmd: ["xdg-open", tunnelUrl], stdout: "ignore", stderr: "ignore" })
-          }, 30000)
-        }
-
-        const m = pick(msg.portalSuccess)
-        log("PORTAL", `${portalName} -> ${tunnelUrl}`)
-        return Response.json({ name: portalName, url: tunnelUrl, port, message: m }, { headers: corsHeaders })
-      } else {
-        portals.delete(portalName)
-        return Response.json({ error: "Tunnel collapsed. Even our connections have limits." }, { status: 500, headers: corsHeaders })
-      }
+      const result = await openPortalForName({ name, port, openBrowser })
+      return Response.json(result.body, { status: result.ok ? 200 : result.status, headers: corsHeaders })
     }
 
     if (req.method === "POST" && url.pathname === "/portal/batch") {

@@ -2168,12 +2168,17 @@ Misc:
                         createScreenTear();
                         appendOutput('', 'dim');
                         appendOutput('T̷H̷E̷ ̷V̷O̷I̷D̷ ̷F̷E̷A̷S̷T̷S̷', 'void-message');
-                        voidState.corruption = Math.max(0, voidState.corruption - 20);
                         appendOutput(`${sacrificeName} has been devoured`, 'error');
-                        appendOutput(`corruption reduced to ${Math.floor(voidState.corruption)}%`, 'success');
                         appendOutput('', 'dim');
-                        appendOutput('...the hunger subsides', 'dim');
-                        voidState.sessionRoutes = voidState.sessionRoutes.filter(r => r !== sacrificeName);
+                        appendOutput('...the hunger is sated', 'dim');
+                        await new Promise(r => setTimeout(r, 1500));
+                        appendOutput('...the void recedes', 'dim');
+                        await new Promise(r => setTimeout(r, 1000));
+                        appendOutput('...silence', 'dim');
+                        await new Promise(r => setTimeout(r, 1500));
+
+                        // THE SACRIFICE APPEASES THE VOID — full cleanse
+                        exitVoidMode();
                       }
                     } catch (e) {
                       appendOutput('THE SACRIFICE FAILED', 'error');
@@ -3153,6 +3158,73 @@ Misc:
       setTimeout(() => {
         startPossession();
       }, 90000); // 1.5 minutes before input gets possessed
+    }
+
+    // Exit void mode — the sacrifice was accepted, return to normal
+    async function exitVoidMode() {
+      // Stop all void intervals
+      clearInterval(voidState.intervalId);
+      clearInterval(voidState.titleInterval);
+      clearInterval(voidState.possessInterval);
+      clearInterval(voidState.shakeInterval);
+
+      // Tell the daemon to cleanse — no mark, no memory
+      try {
+        await fetch(API + '/void/cleanse', { method: 'POST' });
+      } catch {}
+
+      // Reset void state
+      voidState.active = false;
+      voidState.corruption = 0;
+      voidState.phase = 0;
+      voidState.corruptedCells = new Set();
+      voidState.intervalId = null;
+      voidState.titleInterval = null;
+      voidState.possessInterval = null;
+      voidState.shakeInterval = null;
+
+      // Remove void overlay effects
+      const overlay = document.getElementById('void-overlay');
+      if (overlay) {
+        overlay.style.transition = 'opacity 2s ease';
+        overlay.style.opacity = '0';
+        setTimeout(() => overlay.remove(), 2000);
+      }
+
+      // Remove body effects
+      document.body.style.filter = '';
+      document.body.style.animation = '';
+      document.body.classList.remove('void-flicker');
+
+      // Restore title
+      document.title = 'candy://portal';
+
+      // Restore logo
+      const logo = document.querySelector('.logo-text');
+      if (logo) {
+        logo.textContent = 'candy://portal';
+        logo.classList.remove('void-glitch');
+      }
+
+      // Re-enable GUI mode
+      const guiBtn = document.querySelector('[data-mode="gui"]');
+      if (guiBtn) {
+        guiBtn.style.opacity = '';
+        guiBtn.style.pointerEvents = '';
+        guiBtn.title = '';
+      }
+
+      // Switch back to GUI
+      document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+      const guiBtnActive = document.querySelector('[data-mode="gui"]');
+      if (guiBtnActive) guiBtnActive.classList.add('active');
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      const guiPanel = document.getElementById('gui-panel');
+      if (guiPanel) guiPanel.classList.add('active');
+
+      // Clean up localStorage void traces
+      localStorage.removeItem('void_visited');
+      localStorage.removeItem('void_timestamp');
     }
 
     async function captureSessionData() {

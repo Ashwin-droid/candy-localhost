@@ -3462,6 +3462,21 @@ const controlServer = Bun.serve({
       }, { headers: corsHeaders })
     }
 
+    // Cleanse the void - sacrifice accepted, reset everything
+    if (req.method === "POST" && url.pathname === "/void/cleanse") {
+      voidState.marked = false
+      voidState.markedAt = null
+      voidState.pity = -20
+      voidState.burstPending = false
+      voidState.burstId = null
+      auditLog('VOID_CLEANSE', 'The sacrifice was accepted. The void forgets.', 'Void')
+      console.log(`\x1b[35m👁️ The void is appeased. The mark is lifted.\x1b[0m`)
+      return Response.json({
+        success: true,
+        message: "THE VOID FORGETS",
+      }, { headers: corsHeaders })
+    }
+
     // Trigger a void burst - called when corruption hits 100%
     if (req.method === "POST" && url.pathname === "/void/burst") {
       await triggerVoidBurst()

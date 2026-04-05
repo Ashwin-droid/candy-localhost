@@ -6,6 +6,18 @@
  */
 
 import { $, spawn, type Subprocess } from "bun"
+import { watch, type FSWatcher } from "node:fs"
+
+import {
+  buildActionSubdomain,
+  buildHostAlias,
+  buildNetworkSnapshot,
+  deriveTailscaleHostLabel,
+  makeRemoteClaimKey,
+  normalizeTailscaleDnsName,
+  resolveLocalCandyRouteName,
+  type TailscaleNodeIdentity,
+} from "./tailnet"
 
 // Random message picker
 const pick = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)]
@@ -189,6 +201,7 @@ const SERVERS_CONFIG = `${CANDY_CONFIG_DIR}/servers.json`
 const ROUTES_FILE = `${CANDY_CONFIG_DIR}/routes.json`
 const MCP_SECRET_FILE = `${CANDY_CONFIG_DIR}/mcp-secret`
 const DOMAINS_CONFIG = `${CANDY_CONFIG_DIR}/domains.json`
+const GRUDGE_FILE = `${CANDY_CONFIG_DIR}/candy-grudge.lock`
 const LOGS_DIR = "/tmp/candy-logs"
 const AUDIT_LOG = `${LOGS_DIR}/_audit.log`
 const DNS_CONFIG_FILE = `${CANDY_CONFIG_DIR}/candy-dns.json`
@@ -222,8 +235,14 @@ const READVERTISE_INTERVAL = 25 * 60 * 1000  // 25 minutes
 const EXPIRY_SWEEP_INTERVAL = 5 * 60 * 1000  // 5 minutes
 
 interface RemoteRecord {
+  name: string
   ip: string
   advertisedAt: number
+  claimedAt: number
+  ownerId: string | null
+  hostName: string | null
+  dnsName: string | null
+  hostLabel: string | null
 }
 
 interface PidOwnedRoute {
@@ -276,8 +295,10 @@ interface AuthFailureState {
 // Auth sessions: token -> session data
 const authSessions = new Map<string, AuthSession>()
 
-// Auth failure tracking: "ip:userAgent" -> failure state
+// Auth failure tracking: "ip:userAgent" -> failure state (mirrored to candy-grudge.lock)
 const authFailures = new Map<string, AuthFailureState>()
+let grudgeFileWatcher: FSWatcher | null = null
+let authFailureIo: Promise<void> = Promise.resolve()
 
 // Rate limiting for unauthenticated: "ip:domain" -> { timestamps[] }
 const unauthRateLimit = new Map<string, number[]>()
@@ -288,7 +309,6 @@ const rateLimitBlocks = new Map<string, number>()
 const AUTH_SESSION_TTL = 60 * 60 * 1000  // 1 hour
 const AUTH_RENEWAL_THRESHOLD = 15 * 60 * 1000  // 15 minutes
 const AUTH_CLEANUP_INTERVAL = 5 * 60 * 1000  // 5 minutes
-const AUTH_FAILURE_EXPIRY = 60 * 60 * 1000  // 1 hour of no attempts
 const UNAUTH_RATE_LIMIT = 3  // requests per second
 const RATE_LIMIT_BLOCK_DURATION = 60 * 1000  // 60 seconds
 
@@ -369,39 +389,142 @@ const maybeRenewSession = (token: string): boolean => {
 // Get auth failure state for an IP+UA combo
 const getAuthFailureKey = (ip: string, userAgent: string): string => `${ip}:${userAgent}`
 
-const checkAuthBlocked = (ip: string, userAgent: string): { blocked: boolean; retryAfter: number } => {
-  const key = getAuthFailureKey(ip, userAgent)
-  const state = authFailures.get(key)
-  if (!state) return { blocked: false, retryAfter: 0 }
-  // Expire old state
-  if (Date.now() - state.lastAttempt > AUTH_FAILURE_EXPIRY) {
-    authFailures.delete(key)
+const withAuthFailureLock = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const run = authFailureIo.then(fn, fn)
+  authFailureIo = run.then(() => undefined, () => undefined)
+  return run
+}
+
+const normalizeAuthFailureState = (raw: unknown): AuthFailureState | null => {
+  if (!raw || typeof raw !== "object") return null
+  const count = Number((raw as any).count)
+  const fibIndex = Number((raw as any).fibIndex)
+  const blockedUntil = Number((raw as any).blockedUntil)
+  const lastAttempt = Number((raw as any).lastAttempt)
+  if (![count, fibIndex, blockedUntil, lastAttempt].every(Number.isFinite)) return null
+  if (count < 0 || fibIndex < 0 || blockedUntil < 0 || lastAttempt < 0) return null
+  return {
+    count: Math.floor(count),
+    fibIndex: Math.floor(fibIndex),
+    blockedUntil,
+    lastAttempt,
+  }
+}
+
+const replaceAuthFailures = (raw: Record<string, unknown>) => {
+  authFailures.clear()
+  for (const [key, value] of Object.entries(raw)) {
+    const normalized = normalizeAuthFailureState(value)
+    if (normalized) authFailures.set(key, normalized)
+  }
+}
+
+const loadAuthFailures = async (reason: 'startup' | 'sync' | 'watch' = 'sync') => {
+  try {
+    await $`mkdir -p ${CANDY_CONFIG_DIR}`.quiet().nothrow()
+    const file = Bun.file(GRUDGE_FILE)
+    if (!(await file.exists())) {
+      const cleared = authFailures.size
+      authFailures.clear()
+      if (reason !== 'startup' && cleared > 0) {
+        console.log(`\x1b[90mGrudge file wiped - ${cleared} grudges cleared\x1b[0m`)
+      }
+      return
+    }
+
+    const content = await file.text()
+    if (!content.trim()) {
+      const cleared = authFailures.size
+      authFailures.clear()
+      if (reason !== 'startup' && cleared > 0) {
+        console.log(`\x1b[90mGrudge file emptied - ${cleared} grudges cleared\x1b[0m`)
+      }
+      return
+    }
+
+    const parsed = JSON.parse(content)
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      console.log(`\x1b[33mInvalid grudge file format, ignoring\x1b[0m`)
+      return
+    }
+
+    replaceAuthFailures(parsed as Record<string, unknown>)
+    if (reason === 'startup' && authFailures.size > 0) {
+      console.log(`\x1b[90mLoaded ${authFailures.size} grudges from disk\x1b[0m`)
+    }
+  } catch (e) {
+    console.log(`\x1b[33mFailed to load grudge file: ${e}\x1b[0m`)
+  }
+}
+
+const saveAuthFailures = async () => {
+  try {
+    await $`mkdir -p ${CANDY_CONFIG_DIR}`.quiet().nothrow()
+    const data: Record<string, AuthFailureState> = {}
+    for (const [key, state] of authFailures) {
+      data[key] = { ...state }
+    }
+    await Bun.write(GRUDGE_FILE, JSON.stringify(data, null, 2))
+  } catch (e) {
+    console.log(`\x1b[33mFailed to persist grudge file: ${e}\x1b[0m`)
+  }
+}
+
+const watchAuthFailures = async () => {
+  await $`mkdir -p ${CANDY_CONFIG_DIR}`.quiet().nothrow()
+  grudgeFileWatcher?.close()
+  try {
+    grudgeFileWatcher = watch(CANDY_CONFIG_DIR, (_eventType, filename) => {
+      if (!filename || filename.toString() !== 'candy-grudge.lock') return
+      void withAuthFailureLock(async () => {
+        await loadAuthFailures('watch')
+      })
+    })
+  } catch (e) {
+    console.log(`\x1b[33mFailed to watch grudge file: ${e}\x1b[0m`)
+  }
+}
+
+const checkAuthBlocked = async (ip: string, userAgent: string): Promise<{ blocked: boolean; retryAfter: number }> => {
+  return withAuthFailureLock(async () => {
+    await loadAuthFailures('sync')
+    const key = getAuthFailureKey(ip, userAgent)
+    const state = authFailures.get(key)
+    if (!state) return { blocked: false, retryAfter: 0 }
+    if (state.blockedUntil > Date.now()) {
+      return { blocked: true, retryAfter: Math.ceil((state.blockedUntil - Date.now()) / 1000) }
+    }
     return { blocked: false, retryAfter: 0 }
-  }
-  if (state.blockedUntil > Date.now()) {
-    return { blocked: true, retryAfter: Math.ceil((state.blockedUntil - Date.now()) / 1000) }
-  }
-  return { blocked: false, retryAfter: 0 }
+  })
 }
 
-const recordAuthFailure = (ip: string, userAgent: string): { retryAfter: number } => {
-  const key = getAuthFailureKey(ip, userAgent)
-  const state = authFailures.get(key) || { count: 0, fibIndex: 0, blockedUntil: 0, lastAttempt: 0 }
-  state.count++
-  state.lastAttempt = Date.now()
-  if (state.count >= 3) {
-    const backoffHours = fibonacci(state.fibIndex) || 1  // fib(0)=0, floor to 1hr minimum
-    state.blockedUntil = Date.now() + backoffHours * 60 * 60 * 1000  // hours, not seconds
-    state.fibIndex++
+const recordAuthFailure = async (ip: string, userAgent: string): Promise<{ retryAfter: number }> => {
+  return withAuthFailureLock(async () => {
+    await loadAuthFailures('sync')
+    const key = getAuthFailureKey(ip, userAgent)
+    const state = authFailures.get(key) || { count: 0, fibIndex: 0, blockedUntil: 0, lastAttempt: 0 }
+    state.count++
+    state.lastAttempt = Date.now()
+    if (state.count >= 3) {
+      const backoffHours = fibonacci(state.fibIndex)
+      state.blockedUntil = Date.now() + backoffHours * 60 * 60 * 1000
+      state.fibIndex++
+      authFailures.set(key, state)
+      await saveAuthFailures()
+      return { retryAfter: backoffHours * 3600 }
+    }
     authFailures.set(key, state)
-    return { retryAfter: backoffHours * 3600 }  // return seconds for display
-  }
-  authFailures.set(key, state)
-  return { retryAfter: 0 }
+    await saveAuthFailures()
+    return { retryAfter: 0 }
+  })
 }
 
-const clearAuthFailures = (ip: string, userAgent: string) => {
-  authFailures.delete(getAuthFailureKey(ip, userAgent))
+const clearAuthFailures = async (ip: string, userAgent: string) => {
+  await withAuthFailureLock(async () => {
+    await loadAuthFailures('sync')
+    authFailures.delete(getAuthFailureKey(ip, userAgent))
+    await saveAuthFailures()
+  })
 }
 
 // Unauthenticated rate limiting: 3 rps per IP per domain
@@ -496,12 +619,6 @@ setInterval(() => {
     if (now > session.expiresAt) {
       authSessions.delete(token)
       cleaned++
-    }
-  }
-  // Clean expired failure states
-  for (const [key, state] of authFailures) {
-    if (now - state.lastAttempt > AUTH_FAILURE_EXPIRY) {
-      authFailures.delete(key)
     }
   }
   // Clean old rate limit entries
@@ -607,7 +724,7 @@ const restartCloudflared = async () => {
 // ============================================================================
 
 const routes = new Map<string, { target: number | string, persistent: boolean }>()
-const portals = new Map<string, { proc: Subprocess | null, port: number, url?: string, pid?: number }>()
+const portals = new Map<string, { proc: Subprocess | null, port: number, url?: string | null, pid?: number }>()
 const processes = new Map<string, ManagedProcess>()
 const serverConfigs = new Map<string, ServerConfig[]>()
 const pidOwnedRoutes = new Map<string, PidOwnedRoute>()
@@ -624,6 +741,29 @@ const getConfigById = (name: string, configId?: string): ServerConfig | null => 
   if (configs.length === 0) return null
   if (!configId) return configs[0]
   return configs.find(c => c.id === configId) || null
+}
+
+const getAllLocalRouteNames = (): string[] =>
+  [...new Set([
+    ...routes.keys(),
+    ...serverConfigs.keys(),
+    ...processes.keys(),
+  ])]
+
+const getLocalCandyHostLabel = (): string | null => tailscaleSelf?.hostLabel || null
+
+const resolveLocalCandyDomain = (host: string): string => {
+  const cleanHost = host.replace(/:\d+$/, "").toLowerCase()
+  const requested = cleanHost.replace(/\.(localhost|candy)$/, "")
+
+  if (!cleanHost.endsWith(".candy")) return requested
+
+  return resolveLocalCandyRouteName(requested, getAllLocalRouteNames(), getLocalCandyHostLabel())
+}
+
+const resolveLocalCandyActionDomain = (name: string, hostLabel?: string | null): string => {
+  const requested = hostLabel ? `${name}.${hostLabel}` : name
+  return resolveLocalCandyRouteName(requested, getAllLocalRouteNames(), getLocalCandyHostLabel())
 }
 
 // ============================================================================
@@ -727,6 +867,10 @@ setInterval(async () => {
 // API key is valid for the daemon's lifetime (no rolling)
 let mcpBootstrapSecret: string | null = null
 const mcpApiKeys = new Set<string>()
+const TAILSCALE_STATUS_CACHE_MS = 15 * 1000
+let tailscaleSelf: TailscaleNodeIdentity | null = null
+let tailscaleStatusFetchedAt = 0
+const tailscalePeersByIp = new Map<string, TailscaleNodeIdentity>()
 
 const initMcpAuth = async () => {
   mcpBootstrapSecret = crypto.randomUUID()
@@ -748,8 +892,78 @@ const exchangeMcpSecret = (secret: string): string | null => {
   return apiKey
 }
 
+const getTailscaleIpv4 = (ips: string[]): string | null =>
+  ips.find(ip => /^\d+\.\d+\.\d+\.\d+$/.test(ip)) || null
+
+const parseTailscaleNode = (value: unknown): TailscaleNodeIdentity | null => {
+  if (!value || typeof value !== "object") return null
+
+  const node = value as {
+    ID?: unknown
+    HostName?: unknown
+    DNSName?: unknown
+    TailscaleIPs?: unknown
+  }
+  const ips = Array.isArray(node.TailscaleIPs)
+    ? node.TailscaleIPs.filter((ip): ip is string => typeof ip === "string")
+    : []
+  const dnsName = normalizeTailscaleDnsName(typeof node.DNSName === "string" ? node.DNSName : null)
+  const hostName = typeof node.HostName === "string" ? node.HostName : null
+
+  return {
+    id: typeof node.ID === "string" ? node.ID : null,
+    hostName,
+    dnsName,
+    hostLabel: deriveTailscaleHostLabel({ hostName, dnsName }),
+    ips,
+  }
+}
+
+const refreshTailscaleStatus = async (force = false): Promise<void> => {
+  if (!force && Date.now() - tailscaleStatusFetchedAt < TAILSCALE_STATUS_CACHE_MS) return
+
+  try {
+    const raw = await $`tailscale status --json`.text()
+    const status = JSON.parse(raw) as { Self?: unknown; Peer?: Record<string, unknown> }
+
+    tailscaleSelf = parseTailscaleNode(status.Self)
+    tailscalePeersByIp.clear()
+
+    for (const peer of Object.values(status.Peer || {})) {
+      const parsed = parseTailscaleNode(peer)
+      if (!parsed) continue
+      for (const ip of parsed.ips) {
+        tailscalePeersByIp.set(ip, parsed)
+      }
+    }
+
+    tailscaleStatusFetchedAt = Date.now()
+  } catch {
+    if (force) {
+      tailscaleSelf = null
+      tailscalePeersByIp.clear()
+      tailscaleStatusFetchedAt = Date.now()
+    }
+  }
+}
+
+const getLocalTailscaleIdentity = async (): Promise<TailscaleNodeIdentity | null> => {
+  await refreshTailscaleStatus()
+  return tailscaleSelf
+}
+
+const getTailscalePeerByIp = async (ip: string): Promise<TailscaleNodeIdentity | null> => {
+  await refreshTailscaleStatus()
+  return tailscalePeersByIp.get(ip) || null
+}
+
 // Discover Tailscale IPv4 address
 const discoverTailscaleIp = async (): Promise<string | null> => {
+  await refreshTailscaleStatus(true)
+
+  const cachedIp = tailscaleSelf ? getTailscaleIpv4(tailscaleSelf.ips) : null
+  if (cachedIp) return cachedIp
+
   try {
     const result = await $`tailscale ip -4`.text()
     return result.trim() || null
@@ -769,20 +983,21 @@ const normalizeIp = (ip: string): string => ip.replace(/^::ffff:/, '')
 // Sync DNS config file for candy-dns daemon
 const syncDnsConfig = async () => {
   if (!tailscaleIp) return
+  const localIdentity = await getLocalTailscaleIdentity()
   const servers = [...routes.keys()]
+  const snapshot = buildNetworkSnapshot({
+    localNames: [...new Set([...routes.keys(), ...serverConfigs.keys()])],
+    localIp: tailscaleIp,
+    localIdentity: {
+      hostName: localIdentity?.hostName || null,
+      dnsName: localIdentity?.dnsName || null,
+      hostLabel: localIdentity?.hostLabel || null,
+    },
+    remoteClaims: remoteRecords.values(),
+    ttlMs: ADVERTISEMENT_TTL,
+  })
 
-  // Build per-name records: remote first, then local overwrites
-  const records: Record<string, string> = {}
-  for (const [name, rec] of remoteRecords) {
-    records[name] = rec.ip
-  }
-  // Local routes + configs always win (host is "first advertiser")
-  for (const name of routes.keys()) {
-    records[name] = tailscaleIp
-  }
-  for (const name of serverConfigs.keys()) {
-    records[name] = tailscaleIp
-  }
+  const records: Record<string, string> = { ...snapshot.dnsRecords }
   records["candy"] = tailscaleIp  // always
 
   await Bun.write(DNS_CONFIG_FILE, JSON.stringify({
@@ -795,11 +1010,28 @@ const loadAdvertisements = async () => {
   try {
     const file = Bun.file(ADVERTISEMENTS_FILE)
     if (!await file.exists()) return
-    const data = await file.json() as Record<string, RemoteRecord>
+    const data = await file.json() as Record<string, Partial<RemoteRecord>>
     const now = Date.now()
-    for (const [name, record] of Object.entries(data)) {
-      if (now - record.advertisedAt < ADVERTISEMENT_TTL) {
-        remoteRecords.set(name, record)
+    for (const [key, record] of Object.entries(data)) {
+      const name = typeof record.name === "string" ? record.name : key.split("@")[0] || key
+      const ownerKey = record.ownerId || record.hostLabel || record.ip
+      if (!name || !record.ip || !ownerKey) continue
+
+      const normalizedRecord: RemoteRecord = {
+        name,
+        ip: record.ip,
+        advertisedAt: typeof record.advertisedAt === "number" ? record.advertisedAt : 0,
+        claimedAt: typeof record.claimedAt === "number"
+          ? record.claimedAt
+          : (typeof record.advertisedAt === "number" ? record.advertisedAt : now),
+        ownerId: typeof record.ownerId === "string" ? record.ownerId : null,
+        hostName: typeof record.hostName === "string" ? record.hostName : null,
+        dnsName: normalizeTailscaleDnsName(typeof record.dnsName === "string" ? record.dnsName : null),
+        hostLabel: typeof record.hostLabel === "string" ? record.hostLabel : null,
+      }
+
+      if (now - normalizedRecord.advertisedAt < ADVERTISEMENT_TTL) {
+        remoteRecords.set(makeRemoteClaimKey(name, ownerKey), normalizedRecord)
       }
     }
     if (remoteRecords.size > 0) {
@@ -836,11 +1068,20 @@ const advertiseToHub = async () => {
 
     const myRoutes = [...new Set([...routes.keys(), ...serverConfigs.keys()])]
     if (myRoutes.length === 0) return
+    const identity = await getLocalTailscaleIdentity()
 
     const resp = await fetch(`http://${hubIp}:9999/candy/advertise`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ routes: myRoutes }),
+      body: JSON.stringify({
+        routes: myRoutes,
+        identity: identity ? {
+          id: identity.id,
+          hostName: identity.hostName,
+          dnsName: identity.dnsName,
+          hostLabel: identity.hostLabel,
+        } : undefined,
+      }),
       signal: AbortSignal.timeout(10000),
     })
     const result = await resp.json() as { accepted?: string[] }
@@ -1905,6 +2146,12 @@ const syncCaddy = async () => {
 }
 
 `
+  const localExactNames = new Set([...routes.keys(), ...serverConfigs.keys()])
+  const localHostLabel = getLocalCandyHostLabel()
+  const candyAliasHosts: string[] = []
+  const candyKillAliasHosts: string[] = []
+  const candyPortalAliasHosts: string[] = []
+
   for (const [name, route] of routes) {
     const proxyTarget = typeof route.target === "number" ? `localhost:${route.target}` : route.target
     content += `${name}.localhost {
@@ -1920,7 +2167,20 @@ const syncCaddy = async () => {
   if (tailscaleIp) {
     for (const [name, route] of routes) {
       const proxyTarget = typeof route.target === "number" ? `localhost:${route.target}` : route.target
-      content += `${name}.candy {
+      const candyHosts = [`${name}.candy`]
+      const alias = buildHostAlias(name, localHostLabel)
+      if (alias && !localExactNames.has(alias)) {
+        candyHosts.push(`${alias}.candy`)
+        candyKillAliasHosts.push(
+          `${buildActionSubdomain(name, "kill", localHostLabel)}.candy`,
+          `${buildActionSubdomain(name, "k", localHostLabel)}.candy`,
+        )
+        candyPortalAliasHosts.push(
+          `${buildActionSubdomain(name, "portal", localHostLabel)}.candy`,
+          `${buildActionSubdomain(name, "p", localHostLabel)}.candy`,
+        )
+      }
+      content += `${candyHosts.join(", ")} {
   bind ${tailscaleIp}
   tls internal
   reverse_proxy ${proxyTarget}
@@ -1928,6 +2188,22 @@ const syncCaddy = async () => {
 }
 
 `
+    }
+
+    for (const name of serverConfigs.keys()) {
+      if (routes.has(name)) continue
+      const alias = buildHostAlias(name, localHostLabel)
+      if (alias && !localExactNames.has(alias)) {
+        candyAliasHosts.push(`${alias}.candy`)
+        candyKillAliasHosts.push(
+          `${buildActionSubdomain(name, "kill", localHostLabel)}.candy`,
+          `${buildActionSubdomain(name, "k", localHostLabel)}.candy`,
+        )
+        candyPortalAliasHosts.push(
+          `${buildActionSubdomain(name, "portal", localHostLabel)}.candy`,
+          `${buildActionSubdomain(name, "p", localHostLabel)}.candy`,
+        )
+      }
     }
   }
 
@@ -2033,6 +2309,26 @@ const syncCaddy = async () => {
 }
 
 `
+    if (candyKillAliasHosts.length > 0) {
+      content += `${[...new Set(candyKillAliasHosts)].join(", ")} {
+  bind ${tailscaleIp}
+  tls internal
+  reverse_proxy localhost:9999
+  log
+}
+
+`
+    }
+    if (candyPortalAliasHosts.length > 0) {
+      content += `${[...new Set(candyPortalAliasHosts)].join(", ")} {
+  bind ${tailscaleIp}
+  tls internal
+  reverse_proxy localhost:9999
+  log
+}
+
+`
+    }
   }
 
   // Everything else goes to daemon (portal, unregistered domains, etc)
@@ -2046,6 +2342,16 @@ const syncCaddy = async () => {
 
   // .candy catch-all (Tailscale) - portal UI, unregistered domains
   if (tailscaleIp) {
+    if (candyAliasHosts.length > 0) {
+      content += `${[...new Set(candyAliasHosts)].join(", ")} {
+  bind ${tailscaleIp}
+  tls internal
+  reverse_proxy localhost:9999
+  log
+}
+
+`
+    }
     content += `*.candy {
   bind ${tailscaleIp}
   tls internal
@@ -2144,7 +2450,7 @@ const getCorsHeaders = (origin: string | null) => {
     origin === 'http://localhost:9999' ||
     origin === 'https://candy.candy' ||
     origin.match(/^https?:\/\/[a-z0-9-]+\.localhost(:\d+)?$/) ||
-    (tailscaleIp && origin.match(/^https?:\/\/[a-z0-9-]+\.candy$/))
+    (tailscaleIp && origin.match(/^https?:\/\/[a-z0-9.-]+\.candy$/))
   )
   return {
     "Access-Control-Allow-Origin": allowed ? origin : "",
@@ -2205,7 +2511,7 @@ const controlServer = Bun.serve({
       // No valid session - return login page as 401
       try {
         const rawHtml = await Bun.file(import.meta.dir + "/public/login.html").text()
-        const { blocked, retryAfter } = checkAuthBlocked(ip, userAgent)
+        const { blocked, retryAfter } = await checkAuthBlocked(ip, userAgent)
         const html = rawHtml
           .replace('__DOMAIN__', binding.fqdn)
           .replace('__SUBDOMAIN__', binding.subdomain)
@@ -2240,7 +2546,7 @@ const controlServer = Bun.serve({
       const { ip, userAgent } = getFingerprint(req, controlServer)
 
       // Check fibonacci backoff block
-      const { blocked, retryAfter } = checkAuthBlocked(ip, userAgent)
+      const { blocked, retryAfter } = await checkAuthBlocked(ip, userAgent)
       if (blocked) {
         return Response.json({ error: 'Too many attempts', retryAfter }, { status: 429 })
       }
@@ -2259,7 +2565,7 @@ const controlServer = Bun.serve({
       // Verify password
       const valid = await Bun.password.verify(password, auth.password)
       if (!valid) {
-        const failure = recordAuthFailure(ip, userAgent)
+        const failure = await recordAuthFailure(ip, userAgent)
         auditLog('AUTH_FAIL', `${binding.fqdn} from ${ip}`, 'System')
         return Response.json({
           error: 'Wrong password',
@@ -2268,7 +2574,7 @@ const controlServer = Bun.serve({
       }
 
       // Correct password - issue session
-      clearAuthFailures(ip, userAgent)
+      await clearAuthFailures(ip, userAgent)
       const token = createAuthSession(ip, userAgent, binding.subdomain)
       const cookie = makeAuthCookie(binding.subdomain, token, binding.fqdn)
       auditLog('AUTH_SUCCESS', `${binding.fqdn} from ${ip}`, 'System')
@@ -2427,48 +2733,82 @@ const controlServer = Bun.serve({
         if (!callerIp || !isTailscaleIp(callerIp)) {
           return Response.json({ error: "Not a Tailscale peer" }, { status: 403, headers: corsHeaders })
         }
-        const { routes: advertisedRoutes } = await req.json() as { routes: string[] }
+        const {
+          routes: advertisedRoutes,
+          identity: advertisedIdentity,
+        } = await req.json() as {
+          routes: string[]
+          identity?: Partial<TailscaleNodeIdentity>
+        }
         const accepted: string[] = []
         const rejected: { name: string; reason: string }[] = []
+        const aliases: Record<string, string> = {}
+        const peerIdentity = await getTailscalePeerByIp(callerIp)
+        const callerIdentity: TailscaleNodeIdentity = {
+          id: peerIdentity?.id || (typeof advertisedIdentity?.id === "string" ? advertisedIdentity.id : null),
+          hostName: peerIdentity?.hostName || (typeof advertisedIdentity?.hostName === "string" ? advertisedIdentity.hostName : null),
+          dnsName: peerIdentity?.dnsName || normalizeTailscaleDnsName(typeof advertisedIdentity?.dnsName === "string" ? advertisedIdentity.dnsName : null),
+          hostLabel: peerIdentity?.hostLabel
+            || (typeof advertisedIdentity?.hostLabel === "string" ? advertisedIdentity.hostLabel.trim().toLowerCase() : null)
+            || deriveTailscaleHostLabel({
+              hostName: typeof advertisedIdentity?.hostName === "string" ? advertisedIdentity.hostName : null,
+              dnsName: typeof advertisedIdentity?.dnsName === "string" ? advertisedIdentity.dnsName : null,
+            }),
+          ips: peerIdentity?.ips || [callerIp],
+        }
+        const ownerKey = callerIdentity.id || callerIdentity.hostLabel || callerIp
 
         for (const name of advertisedRoutes) {
           if (isReserved(name)) {
             rejected.push({ name, reason: "reserved" }); continue
           }
-          // Local routes/configs always win
-          if (routes.has(name) || serverConfigs.has(name)) {
-            rejected.push({ name, reason: "owned by dns host" }); continue
-          }
-          const existing = remoteRecords.get(name)
-          if (existing && existing.ip !== callerIp) {
-            rejected.push({ name, reason: `claimed by ${existing.ip}` }); continue
-          }
-          // Accept: new or refresh
-          remoteRecords.set(name, { ip: callerIp, advertisedAt: Date.now() })
+          const claimKey = makeRemoteClaimKey(name, ownerKey)
+          const existing = remoteRecords.get(claimKey)
+          const claimedAt = existing?.claimedAt || Date.now()
+          const alias = buildHostAlias(name, callerIdentity.hostLabel)
+
+          remoteRecords.set(claimKey, {
+            name,
+            ip: callerIp,
+            advertisedAt: Date.now(),
+            claimedAt,
+            ownerId: callerIdentity.id,
+            hostName: callerIdentity.hostName,
+            dnsName: callerIdentity.dnsName,
+            hostLabel: callerIdentity.hostLabel,
+          })
           accepted.push(name)
+          if (alias) aliases[name] = `${alias}.candy`
         }
 
         if (accepted.length > 0) {
           await saveAdvertisements()
           await syncDnsConfig()
-          auditLog('ADS_ACCEPTED', `${callerIp}: ${accepted.join(", ")}`, 'Network')
+          const ownerLabel = callerIdentity.hostLabel || callerIdentity.hostName || callerIp
+          auditLog('ADS_ACCEPTED', `${ownerLabel} (${callerIp}): ${accepted.join(", ")}`, 'Network')
         }
 
-        return Response.json({ accepted, rejected }, { headers: corsHeaders })
+        return Response.json({ accepted, rejected, aliases }, { headers: corsHeaders })
       }
 
       // GET /candy/registry - view all known records
       if (req.method === "GET" && url.pathname === "/candy/registry") {
-        const local = Object.fromEntries(
-          [...new Set([...routes.keys(), ...serverConfigs.keys()])]
-            .map(n => [n, tailscaleIp || "unknown"])
-        )
-        const remote = Object.fromEntries(
-          [...remoteRecords.entries()].map(([name, rec]) => [
-            name, { ip: rec.ip, expiresIn: Math.max(0, ADVERTISEMENT_TTL - (Date.now() - rec.advertisedAt)) }
-          ])
-        )
-        return Response.json({ local, remote }, { headers: corsHeaders })
+        const localIdentity = await getLocalTailscaleIdentity()
+        const snapshot = buildNetworkSnapshot({
+          localNames: [...new Set([...routes.keys(), ...serverConfigs.keys()])],
+          localIp: tailscaleIp || "unknown",
+          localIdentity: {
+            hostName: localIdentity?.hostName || null,
+            dnsName: localIdentity?.dnsName || null,
+            hostLabel: localIdentity?.hostLabel || null,
+          },
+          remoteClaims: remoteRecords.values(),
+          ttlMs: ADVERTISEMENT_TTL,
+        })
+        return Response.json({
+          local: snapshot.local,
+          remote: snapshot.remote,
+        }, { headers: corsHeaders })
       }
     }
 
@@ -2636,7 +2976,7 @@ const controlServer = Bun.serve({
     // === Route Management ===
 
     if (req.method === "POST" && url.pathname === "/register") {
-      const body = await req.json() as { name: string; port?: number; target?: string }
+      const body = await req.json() as { name: string; port?: number; target?: string; persistent?: boolean }
       const { name } = body
 
       // Reserved names
@@ -2865,7 +3205,7 @@ const controlServer = Bun.serve({
     if (req.method === "GET" && url.pathname === "/portals") {
       const portalList: Record<string, { port: number, url?: string }> = {}
       for (const [name, { port, url }] of portals) {
-        portalList[name] = { port, url }
+        portalList[name] = url ? { port, url } : { port }
       }
       return Response.json(portalList, { headers: corsHeaders })
     }
@@ -3660,12 +4000,23 @@ const controlServer = Bun.serve({
     const isCandy = reqHost.endsWith(".candy")
     // Build a domain URL with the correct scheme/TLD
     const domainUrl = (name: string) => isCandy ? `https://${name}.candy` : `https://${name}.localhost`
+    const currentHostUrl = (path: string = "") => `https://${reqHost}${path}`
+    const currentServiceHost = () => {
+      if (!isCandy) return reqHost
+      return reqHost.replace(/\.(kill|k|portal|p)(?:\.([a-z0-9-]+))?\.candy$/, (_full, _action, hostLabel) =>
+        hostLabel ? `.${hostLabel}.candy` : ".candy",
+      )
+    }
+    const currentServiceUrl = (path: string = "") => `https://${currentServiceHost()}${path}`
 
     // Handle kill hostnames:
     // - <name>.kill.localhost / <name>.k.localhost
-    const killSuffixMatch = reqHost.match(/^([a-z0-9-]+)\.(kill|k)\.(localhost|candy)$/)
+    const killSuffixMatch = reqHost.match(/^([a-z0-9-]+)\.(kill|k)(?:\.([a-z0-9-]+))?\.(localhost|candy)$/)
     if (killSuffixMatch && req.method === "GET") {
-      const serverName = killSuffixMatch[1]
+      const requestedName = killSuffixMatch[3] ? `${killSuffixMatch[1]}.${killSuffixMatch[3]}` : killSuffixMatch[1]
+      const serverName = killSuffixMatch[4] === "candy"
+        ? resolveLocalCandyActionDomain(killSuffixMatch[1], killSuffixMatch[3] || null)
+        : requestedName
 
       // Stop the process if running (Page actor - direct browser access)
       const proc = processes.get(serverName)
@@ -3686,9 +4037,12 @@ const controlServer = Bun.serve({
     }
 
     // Handle portal subdomain: <name>.portal.localhost or <name>.p.localhost
-    const portalMatch = reqHost.match(/^([a-z0-9-]+)\.(portal|p)\.(localhost|candy)$/)
+    const portalMatch = reqHost.match(/^([a-z0-9-]+)\.(portal|p)(?:\.([a-z0-9-]+))?\.(localhost|candy)$/)
     if (portalMatch && req.method === "GET") {
-      const serverName = portalMatch[1]
+      const requestedName = portalMatch[3] ? `${portalMatch[1]}.${portalMatch[3]}` : portalMatch[1]
+      const serverName = portalMatch[4] === "candy"
+        ? resolveLocalCandyActionDomain(portalMatch[1], portalMatch[3] || null)
+        : requestedName
 
       // Check if process is running
       const proc = processes.get(serverName)
@@ -3699,7 +4053,7 @@ const controlServer = Bun.serve({
           ? `Server "${serverName}" is not running.`
           : `Server "${serverName}" does not exist.`
         const action = hasConfig
-          ? `<a href="${domainUrl(serverName)}" class="btn">Start Server</a>`
+          ? `<a href="${isCandy ? currentServiceUrl() : domainUrl(serverName)}" class="btn">Start Server</a>`
           : `<a href="${domainUrl("portal")}" class="btn">Go to Portal</a>`
 
         return new Response(`<!DOCTYPE html>
@@ -3736,13 +4090,14 @@ const controlServer = Bun.serve({
           stderr: 'pipe',
         })
 
-        existingPortal = {
+        const newPortal = {
           port: proc.port,
           url: null,
           pid: tunnelProc.pid,
           proc: tunnelProc,
         }
-        portals.set(serverName, existingPortal)
+        existingPortal = newPortal
+        portals.set(serverName, newPortal)
 
         // Capture tunnel URL from stderr
         const reader = tunnelProc.stderr.getReader()
@@ -3794,12 +4149,9 @@ const controlServer = Bun.serve({
       try {
         // Check if this is a bound domain request (e.g. inksp.inkspired.ai)
         const boundMatch = resolveBindingFromHost(reqHost)
-        const domain = boundMatch ? boundMatch.serverName : reqHost.replace(/\.(localhost|candy)$/, "")
+        const domain = boundMatch ? boundMatch.serverName : resolveLocalCandyDomain(reqHost)
         const isBoundDomain = !!boundMatch
         const isRootPath = url.pathname === "/" || url.pathname === ""
-
-        // For bound domains, build redirect URL using the FQDN
-        const boundDomainUrl = (path: string) => isBoundDomain ? `https://${boundMatch!.binding.fqdn}${path}` : `${domainUrl(domain)}${path}`
 
         // Portal UI at portal.localhost (only root)
         if (domain === "portal" && isRootPath && !isBoundDomain) {
@@ -3807,7 +4159,7 @@ const controlServer = Bun.serve({
           const rawHtml = await Bun.file(import.meta.dir + "/public/portal.html").text()
           let html = injectToken(rawHtml)
           // Check if any bound domain is unprotected → inject nag banner on portal
-          const domainConfig = loadDomainConfig()
+          const domainConfig = await loadDomainConfig()
           const hasUnprotected = domainConfig?.bindings && Object.values(domainConfig.bindings).some((b: any) => !b.auth?.password || !b.auth?.enabled)
           if (hasUnprotected) {
             const nagScript = `<script data-candy-nag>(function(){if(document.querySelector('[data-candy-nag-banner]'))return;var b=document.createElement('div');b.setAttribute('data-candy-nag-banner','1');b.innerHTML='<span style="margin-right:8px">&#127852;</span> you have unprotected bound domains <button onclick="this.parentElement.style.display=\\'none\\'" style="background:none;border:none;color:#fff;cursor:pointer;margin-left:12px;font-size:14px">&#10005;</button>';b.style.cssText='position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:rgba(255,0,170,0.9);color:#fff;padding:10px 20px;border-radius:8px;font-family:system-ui,sans-serif;font-size:13px;z-index:999999;backdrop-filter:blur(8px);box-shadow:0 4px 20px rgba(255,0,170,0.3);display:flex;align-items:center;white-space:nowrap';document.body.appendChild(b);setTimeout(function(){b.style.display='none';setTimeout(function(){b.style.display='flex'},10000)},5000)})()</script>`
@@ -3848,7 +4200,7 @@ const controlServer = Bun.serve({
             const existRoute = routes.get(domain)
             routes.set(domain, { target: managed.port, persistent: existRoute?.persistent || false })
             await syncCaddy()
-            return Response.redirect(`${domainUrl(domain)}${url.pathname}${url.search}`, 302)
+            return Response.redirect(currentHostUrl(`${url.pathname}${url.search}`), 302)
           }
 
           if (managed.status === 'starting') {
@@ -3914,7 +4266,7 @@ const controlServer = Bun.serve({
                 }
               }
               // Auto-detected port - redirect preserving path (Caddy will take over)
-              return Response.redirect(`${domainUrl(domain)}${url.pathname}${url.search}`, 302)
+              return Response.redirect(currentHostUrl(`${url.pathname}${url.search}`), 302)
             }
 
             // Show starting page (preserve path for refresh)
@@ -3947,7 +4299,7 @@ const controlServer = Bun.serve({
 
         // No config exists - redirect non-root paths to root for registration
         if (!isRootPath) {
-          return Response.redirect(`${domainUrl(domain)}/`, 302)
+          return Response.redirect(currentHostUrl("/"), 302)
         }
 
         // Show candy/terminal page with mode toggle (registration screen)
@@ -3994,6 +4346,8 @@ await loadServerConfigs()
 
 // Load bound domain config
 await loadDomainConfig()
+await loadAuthFailures('startup')
+await watchAuthFailures()
 await syncCloudflaredIngress()
 await restartCloudflared()
 

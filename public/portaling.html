@@ -226,7 +226,7 @@
     const existingUrl = vars.existingUrl || '';
     const REDIRECT_DELAY = 20; // seconds
 
-    document.getElementById('serverName').textContent = `${serverName}.p.${TLD}`;
+    document.getElementById('serverName').textContent = _host;
     document.getElementById('portalLink').href = `${SCHEME}://portal.${_isBoundDomain ? 'localhost' : TLD}`;
 
     const logsEl = document.getElementById('logs');

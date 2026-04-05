@@ -375,6 +375,16 @@
     const vars = window.CANDY_VARS || { name: 'unknown', exitCode: 1, status: 'errored' };
     let currentToken = window.CANDY_TOKEN;
     const serverName = vars.name;
+    const escapedServerName = serverName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const candySuffix = TLD ? '.' + TLD : '';
+    const getServiceHost = () => {
+      if (_isBoundDomain || !TLD) return _host;
+      const left = _host.endsWith(candySuffix) ? _host.slice(0, -candySuffix.length) : _host;
+      const actionMatch = left.match(new RegExp(`^${escapedServerName}\\.(?:kill|k|portal|p)(?:\\.(.+))?$`));
+      if (!actionMatch) return _host;
+      return actionMatch[1] ? `${serverName}.${actionMatch[1]}${candySuffix}` : `${serverName}${candySuffix}`;
+    };
+    const getServiceUrl = () => `${SCHEME}://${getServiceHost()}`;
 
     // Token management - rolling one-time-use tokens
     async function refreshToken() {
@@ -505,7 +515,7 @@
         });
 
         if (res.ok) {
-          location.href = `${SCHEME}://${_isBoundDomain ? _host : serverName + '.' + TLD}`;
+          location.href = getServiceUrl();
         } else {
           const data = await res.json();
           alert('Failed to restart: ' + (data.error || 'Unknown error'));

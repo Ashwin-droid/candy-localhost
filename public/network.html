@@ -161,6 +161,25 @@
       color: var(--text-dim);
     }
 
+    .record-details {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      margin-top: 0.35rem;
+    }
+
+    .record-domain,
+    .record-host {
+      font-size: 0.72rem;
+      color: var(--text-dim);
+    }
+
+    .record-domain strong,
+    .record-host strong {
+      color: var(--text);
+      font-weight: 600;
+    }
+
     .record-ip {
       font-size: 0.8rem;
       color: var(--text-dim);
@@ -195,6 +214,24 @@
       background: rgba(255, 0, 170, 0.1);
       color: var(--magenta);
       border: 1px solid rgba(255, 0, 170, 0.2);
+    }
+
+    .tag-canonical {
+      background: rgba(0, 229, 255, 0.12);
+      color: var(--cyan);
+      border: 1px solid rgba(0, 229, 255, 0.25);
+    }
+
+    .tag-alias {
+      background: rgba(255, 204, 0, 0.12);
+      color: var(--yellow);
+      border: 1px solid rgba(255, 204, 0, 0.2);
+    }
+
+    .tag-shadowed {
+      background: rgba(106, 106, 122, 0.16);
+      color: var(--text-dim);
+      border: 1px solid rgba(106, 106, 122, 0.24);
     }
 
     .empty-state {
@@ -264,12 +301,72 @@
     const token = window.CANDY_TOKEN
     let refreshTimer = null
 
+    const escapeHtml = (value) => String(value)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;')
+
     const formatExpiry = (ms) => {
       if (ms <= 0) return 'expired'
       const mins = Math.floor(ms / 60000)
       const secs = Math.floor((ms % 60000) / 1000)
       if (mins > 0) return `${mins}m ${secs}s`
       return `${secs}s`
+    }
+
+    const normalizeLocalEntries = (local) => {
+      if (Array.isArray(local)) return local
+      return Object.entries(local || {}).map(([name, ip]) => ({
+        name,
+        ip,
+        canonicalFqdn: `${name}.candy`,
+        aliasFqdns: [],
+        winner: true,
+      }))
+    }
+
+    const normalizeRemoteEntries = (remote) => {
+      if (Array.isArray(remote)) return remote
+      return Object.entries(remote || {}).map(([name, info]) => ({
+        name,
+        ip: info.ip,
+        expiresIn: info.expiresIn,
+        canonicalFqdn: `${name}.candy`,
+        aliasFqdns: [],
+        winner: true,
+      }))
+    }
+
+    const renderDomains = (entry) => {
+      const rows = []
+      if (entry.canonicalFqdn) {
+        rows.push(`<div class="record-domain"><strong>canonical</strong> ${escapeHtml(entry.canonicalFqdn)}</div>`)
+      }
+      for (const alias of entry.aliasFqdns || []) {
+        rows.push(`<div class="record-domain"><strong>alias</strong> ${escapeHtml(alias)}</div>`)
+      }
+      if (rows.length === 0) {
+        rows.push('<div class="record-domain"><strong>routing</strong> shadowed by an earlier exact claim</div>')
+      }
+      return rows.join('')
+    }
+
+    const renderHost = (entry) => {
+      const parts = []
+      if (entry.hostLabel) parts.push(entry.hostLabel)
+      else if (entry.hostName) parts.push(entry.hostName)
+      if (entry.dnsName) parts.push(entry.dnsName)
+      if (parts.length === 0) return ''
+      return `<div class="record-host"><strong>host</strong> ${escapeHtml(parts.join(' · '))}</div>`
+    }
+
+    const renderOwnershipTag = (entry, local) => {
+      if (local) return '<span class="tag tag-canonical">canonical</span>'
+      if (entry.winner) return '<span class="tag tag-canonical">canonical</span>'
+      if ((entry.aliasFqdns || []).length > 0) return '<span class="tag tag-alias">alias</span>'
+      return '<span class="tag tag-shadowed">shadowed</span>'
     }
 
     const renderRecords = (data) => {
@@ -279,18 +376,23 @@
       const remoteCountEl = document.getElementById('remoteCount')
 
       // Local records
-      const localEntries = Object.entries(data.local || {})
+      const localEntries = normalizeLocalEntries(data.local)
       localCountEl.textContent = localEntries.length
       if (localEntries.length === 0) {
         localEl.innerHTML = '<div class="empty-state">no local routes</div>'
       } else {
-        localEl.innerHTML = localEntries.map(([name, ip]) => `
+        localEl.innerHTML = localEntries.map((entry) => `
           <div class="record">
             <div>
-              <span class="record-name">${name}<span class="tld">.candy</span></span>
+              <div class="record-name">${escapeHtml(entry.name)}<span class="tld">.candy</span></div>
+              <div class="record-details">
+                ${renderDomains(entry)}
+                ${renderHost(entry)}
+              </div>
             </div>
             <div class="record-meta">
-              <span class="record-ip">${ip}</span>
+              <span class="record-ip">${escapeHtml(entry.ip)}</span>
+              ${renderOwnershipTag(entry, true)}
               <span class="tag tag-local">local</span>
             </div>
           </div>
@@ -298,19 +400,24 @@
       }
 
       // Remote records
-      const remoteEntries = Object.entries(data.remote || {})
+      const remoteEntries = normalizeRemoteEntries(data.remote)
       remoteCountEl.textContent = remoteEntries.length
       if (remoteEntries.length === 0) {
         remoteEl.innerHTML = '<div class="empty-state">no remote records</div>'
       } else {
-        remoteEl.innerHTML = remoteEntries.map(([name, info]) => `
+        remoteEl.innerHTML = remoteEntries.map((entry) => `
           <div class="record">
             <div>
-              <span class="record-name">${name}<span class="tld">.candy</span></span>
+              <div class="record-name">${escapeHtml(entry.name)}<span class="tld">.candy</span></div>
+              <div class="record-details">
+                ${renderDomains(entry)}
+                ${renderHost(entry)}
+              </div>
             </div>
             <div class="record-meta">
-              <span class="record-expiry">expires in ${formatExpiry(info.expiresIn)}</span>
-              <span class="record-ip">${info.ip}</span>
+              <span class="record-expiry">expires in ${formatExpiry(entry.expiresIn || 0)}</span>
+              <span class="record-ip">${escapeHtml(entry.ip)}</span>
+              ${renderOwnershipTag(entry, false)}
               <span class="tag tag-remote">remote</span>
             </div>
           </div>

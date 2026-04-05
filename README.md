@@ -345,10 +345,12 @@ Two auth modes:
 
 ## Tailscale Integration
 
-When Tailscale is installed and connected, candy automatically detects the machine's Tailscale IPv4 address (`tailscale ip -4`) on daemon startup. This enables:
+When Tailscale is installed and connected, candy automatically detects the machine's Tailscale IPv4 address and hostname metadata on daemon startup. candy uses `tailscale status --json` when available, with `tailscale ip -4` as a fallback for the local IPv4. This enables:
 
 - **`.candy` TLD routing.** Every `<name>.localhost` route also becomes available at `<name>.candy`. Kill and portal subdomains work too (`<name>.kill.candy`, `<name>.portal.candy`).
+- **Hostname fallback aliases.** Every route also gets a stable host-scoped alias such as `hello.pop-os.candy`, and action subdomains follow the same shape (`hello.k.pop-os.candy`, `hello.p.pop-os.candy`).
 - **Cross-device access.** Any device on your tailnet can reach your dev servers by name — phone, laptop, VM, etc.
+- **Host-aware network registry.** The candy network view shows which Tailscale host is advertising each route, plus the canonical and alias `.candy` names for every claim.
 - **Caddy auto-config.** The generated Caddyfile includes `.candy` route blocks bound to the Tailscale IP alongside the `.localhost` blocks.
 
 If Tailscale is not installed or not connected, candy runs normally with `.localhost` only. No configuration needed — detection is automatic.
@@ -426,6 +428,7 @@ Runs as root (port 53). Contains hardcoded paths — edit before install on non-
 | `~/.config/candy/servers.json` | Server configurations (name → variants) |
 | `~/.config/candy/routes.json` | Persistent routes |
 | `~/.config/candy/domains.json` | Domain binding config (zone, tunnel, bindings) |
+| `~/.config/candy/candy-grudge.lock` | Bound-domain auth grudge state |
 | `~/.config/candy/mcp-secret` | MCP auth bootstrap secret |
 | `~/.config/candy/candy-dns.json` | DNS daemon config |
 | `~/.config/caddy/Caddyfile` | Generated Caddy config |

@@ -517,6 +517,24 @@
     const mode = vars.mode || 'starting';
     const serverName = vars.name;
     const returnPath = vars.returnPath || '/';
+    const escapedServerName = serverName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const candySuffix = TLD ? '.' + TLD : '';
+    const getServiceHost = () => {
+      if (_isBoundDomain || !TLD) return _host;
+      const left = _host.endsWith(candySuffix) ? _host.slice(0, -candySuffix.length) : _host;
+      const actionMatch = left.match(new RegExp(`^${escapedServerName}\\.(?:kill|k|portal|p)(?:\\.(.+))?$`));
+      if (!actionMatch) return _host;
+      return actionMatch[1] ? `${serverName}.${actionMatch[1]}${candySuffix}` : `${serverName}${candySuffix}`;
+    };
+    const getActionHost = (action) => {
+      if (_isBoundDomain || !TLD) return _host;
+      const serviceHost = getServiceHost();
+      const serviceLeft = serviceHost.slice(0, -candySuffix.length);
+      const hostSuffix = serviceLeft === serverName ? '' : `.${serviceLeft.slice(serverName.length + 1)}`;
+      return `${serverName}.${action}${hostSuffix}${candySuffix}`;
+    };
+    const getServiceUrl = (path = '') => `${SCHEME}://${getServiceHost()}${path}`;
+    const getActionUrl = (action) => `${SCHEME}://${getActionHost(action)}`;
     // Update TLD suffix display for bound domains
     if (_isBoundDomain) {
       const suffix = document.getElementById('tldSuffix');
@@ -569,9 +587,7 @@
     document.getElementById('serverName').textContent = serverName;
     document.querySelectorAll('.tld-suffix').forEach(el => el.textContent = '.' + TLD);
     document.getElementById('killBtn').onclick = () => {
-      // candy-localhost kill handler uses <name>.kill.localhost (and <name>.k.localhost)
-      // Prefer https to match Caddy's "tls internal" config for *.kill.localhost.
-      location.href = `${SCHEME}://${_isBoundDomain ? _host : serverName + '.kill.' + TLD}`;
+      location.href = getActionUrl('k');
     };
 
     function renderChooser() {
@@ -621,7 +637,7 @@
           alert(data.error || 'Failed to start selected config');
           return;
         }
-        location.href = `${SCHEME}://${_isBoundDomain ? _host : serverName + '.' + TLD}${returnPath}`;
+        location.href = getServiceUrl(returnPath);
       } catch (e) {
         alert('Failed to start selected config: ' + e.message);
       }
@@ -665,7 +681,7 @@
         });
 
         if (res.ok) {
-          location.href = `${SCHEME}://${_isBoundDomain ? _host : serverName + '.' + TLD}${returnPath}`;
+          location.href = getServiceUrl(returnPath);
         } else {
           const data = await res.json();
           alert('Failed to set port: ' + (data.error || 'Unknown error'));
@@ -698,7 +714,7 @@
           document.getElementById('redirectOverlay').classList.add('visible');
           eventSource.close();
           setTimeout(() => {
-            location.href = `${SCHEME}://${_isBoundDomain ? _host : serverName + '.' + TLD}${returnPath}`;
+            location.href = getServiceUrl(returnPath);
           }, 1200);
         } else if (status.status === 'errored' || status.status === 'dead') {
           statusText.textContent = 'Process stopped';

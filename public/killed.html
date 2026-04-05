@@ -268,10 +268,20 @@
     const SCHEME = 'https';
     const vars = window.CANDY_VARS || { name: 'unknown' };
     const serverName = vars.name;
+    const escapedServerName = serverName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const candySuffix = TLD ? '.' + TLD : '';
+    const getServiceHost = () => {
+      if (_isBoundDomain || !TLD) return _host;
+      const left = _host.endsWith(candySuffix) ? _host.slice(0, -candySuffix.length) : _host;
+      const actionMatch = left.match(new RegExp(`^${escapedServerName}\\.(?:kill|k|portal|p)(?:\\.(.+))?$`));
+      if (!actionMatch) return _host;
+      return actionMatch[1] ? `${serverName}.${actionMatch[1]}${candySuffix}` : `${serverName}${candySuffix}`;
+    };
+    const serviceHost = getServiceHost();
 
     document.getElementById('serverName').textContent = serverName;
-    document.getElementById('domainLink').textContent = `${_isBoundDomain ? _host : serverName + '.' + TLD}`;
-    document.getElementById('restartBtn').href = `${SCHEME}://${_isBoundDomain ? _host : serverName + '.' + TLD}`;
+    document.getElementById('domainLink').textContent = serviceHost;
+    document.getElementById('restartBtn').href = `${SCHEME}://${serviceHost}`;
     document.getElementById('portalLink').href = `${SCHEME}://portal.${_isBoundDomain ? 'localhost' : TLD}`;
   </script>
 </body>

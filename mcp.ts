@@ -491,6 +491,7 @@ USE THIS TOOL AUTONOMOUSLY when:
 - You need to check if a remote server is registered
 
 Returns local records (this machine's routes with IPs) and remote records (other machines' routes with IPs and time-until-expiry).
+Records include Tailscale hostnames plus canonical/alias .candy domains when available.
 
 This is a READ-ONLY operation - safe to call anytime without asking.`,
     inputSchema: {

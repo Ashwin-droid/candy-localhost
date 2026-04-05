@@ -71,10 +71,11 @@ Per-domain, tracked by IP:
 
 Per IP+UserAgent combo:
 - 1st/2nd wrong password → instant retry
-- 3rd wrong → blocked for fib(n) seconds (1, 1, 2, 3, 5, 8, 13, 21...)
+- 3rd wrong → blocked for fib(n) hours (1, 1, 2, 3, 5, 8, 13, 21...)
 - Each subsequent failure advances the fib sequence
 - Correct password → reset fib, clear failures
-- Backoff state expires after 1 hour of no attempts
+- Grudge state is persisted in `~/.config/candy/candy-grudge.lock`
+- Wiping that lock file clears all stored grudges
 
 ## Easter Eggs
 

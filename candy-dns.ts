@@ -9,6 +9,8 @@
 import { $ } from "bun"
 import { watch } from "fs"
 
+import { resolveCandyDnsRecord } from "./tailnet"
+
 const CANDY_CONFIG_DIR = `${process.env.HOME}/.config/candy`
 const DNS_CONFIG_FILE = `${CANDY_CONFIG_DIR}/candy-dns.json`
 const LOGS_DIR = "/tmp/candy-logs"
@@ -248,13 +250,13 @@ const main = async () => {
           return
         }
 
-        // Per-name IP resolution
-        const records = config?.records
-        const BUILTIN_NAMES = new Set(['candy', 'portal', 'k', 'kill', 'p'])
-        const ip = BUILTIN_NAMES.has(subdomain)
-          ? (config?.tailscaleIp || tailscaleIp)       // built-in names always -> host
-          : records?.[subdomain]                         // per-name lookup
-          ?? (config?.servers?.includes(subdomain) ? (config?.tailscaleIp || tailscaleIp) : null)  // backward compat
+        // Per-name IP resolution, including host-scoped aliases and action subdomains.
+        const ip = resolveCandyDnsRecord({
+          subdomain,
+          records: config?.records,
+          localNames: config?.servers,
+          hostIp: config?.tailscaleIp || tailscaleIp,
+        })
 
         const response = buildResponse(Buffer.from(buf), queryId, name, ip)
         socket.send(response, port, addr)

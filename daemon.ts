@@ -564,6 +564,51 @@ const getAuthCookie = (req: Request, domain: string): string | null => {
   return match ? match[1] : null
 }
 
+const hasBindingAuth = (binding: DomainBinding): boolean =>
+  !!(binding.auth?.enabled && binding.auth?.password)
+
+const renderBoundDomainLogin = async (
+  binding: DomainBinding,
+  ip: string,
+  userAgent: string,
+): Promise<Response> => {
+  try {
+    const rawHtml = await Bun.file(import.meta.dir + "/public/login.html").text()
+    const { blocked, retryAfter } = await checkAuthBlocked(ip, userAgent)
+    const html = rawHtml
+      .replace('__DOMAIN__', binding.fqdn)
+      .replace('__SUBDOMAIN__', binding.subdomain)
+      .replace('__BLOCKED__', String(blocked))
+      .replace('__RETRY_AFTER__', String(retryAfter))
+    return new Response(html, {
+      status: 401,
+      headers: { "Content-Type": "text/html; charset=utf-8" }
+    })
+  } catch {
+    return new Response('Authentication required', { status: 401 })
+  }
+}
+
+const requireBoundDomainAuth = async (
+  req: Request,
+  server: any,
+  binding: DomainBinding,
+): Promise<Response | null> => {
+  if (!hasBindingAuth(binding)) return null
+
+  const { ip, userAgent } = getFingerprint(req, server)
+  const token = getAuthCookie(req, binding.subdomain)
+  if (token) {
+    const session = validateAuthSession(token, ip, userAgent, binding.subdomain)
+    if (session) {
+      session.lastSeen = Date.now()
+      return null
+    }
+  }
+
+  return renderBoundDomainLogin(binding, ip, userAgent)
+}
+
 // Build Set-Cookie header for auth
 const makeAuthCookie = (domain: string, token: string, fqdn: string): string => {
   const cookieName = `candy_auth_${domain.replace(/[^a-z0-9]/g, '_')}`
@@ -2227,13 +2272,16 @@ const syncCaddy = async () => {
   if (domainConfig) {
     for (const binding of Object.values(domainConfig.bindings || {})) {
       const managed = processes.get(binding.serverName)
-      const hasAuth = binding.auth?.enabled && binding.auth?.password
+      const hasAuth = hasBindingAuth(binding)
 
-      if (managed?.status === 'running' && managed.port) {
-        if (hasAuth) {
-          // Protected + running: forward_auth through daemon, then proxy to server
-          // /candy-auth/* routes go directly to daemon for login handling
-          content += `http://${binding.fqdn} {
+      if (hasAuth) {
+        const proxyTarget = managed?.status === 'running' && managed.port
+          ? `localhost:${managed.port}`
+          : "localhost:9999"
+
+        // Protected domains must authenticate before either proxying to a running
+        // app or touching the daemon's lazy-start/log UI for a stopped app.
+        content += `http://${binding.fqdn} {
   handle /candy-auth/* {
     reverse_proxy localhost:9999 {
       header_up X-Forwarded-Host {host}
@@ -2244,21 +2292,20 @@ const syncCaddy = async () => {
       uri /candy-auth/check
       header_up X-Forwarded-Host {host}
     }
-    reverse_proxy localhost:${managed.port}
+    reverse_proxy ${proxyTarget}
   }
   log
 }
 
 `
-        } else {
-          // Unprotected + running: caddy proxies directly to server, no daemon in the middle
-          content += `http://${binding.fqdn} {
+      } else if (managed?.status === 'running' && managed.port) {
+        // Unprotected + running: caddy proxies directly to server, no daemon in the middle
+        content += `http://${binding.fqdn} {
   reverse_proxy localhost:${managed.port}
   log
 }
 
 `
-        }
       } else {
         // Server not running: proxy to candy daemon for starting page
         content += `http://${binding.fqdn} {
@@ -2488,12 +2535,11 @@ const controlServer = Bun.serve({
       }
 
       const { binding } = boundMatch
-      const auth = binding.auth
       const { ip, userAgent } = getFingerprint(req, controlServer)
 
       // No auth configured = unprotected, pass straight through (no rate limits, no auth)
       // Nag banner shows on portal page instead to guilt the owner
-      if (!auth?.enabled || !auth?.password) {
+      if (!hasBindingAuth(binding)) {
         return new Response('OK', { status: 200 })
       }
 
@@ -2509,21 +2555,7 @@ const controlServer = Bun.serve({
       }
 
       // No valid session - return login page as 401
-      try {
-        const rawHtml = await Bun.file(import.meta.dir + "/public/login.html").text()
-        const { blocked, retryAfter } = await checkAuthBlocked(ip, userAgent)
-        const html = rawHtml
-          .replace('__DOMAIN__', binding.fqdn)
-          .replace('__SUBDOMAIN__', binding.subdomain)
-          .replace('__BLOCKED__', String(blocked))
-          .replace('__RETRY_AFTER__', String(retryAfter))
-        return new Response(html, {
-          status: 401,
-          headers: { "Content-Type": "text/html; charset=utf-8" }
-        })
-      } catch {
-        return new Response('Authentication required', { status: 401 })
-      }
+      return renderBoundDomainLogin(binding, ip, userAgent)
     }
 
     if (req.method === "POST" && url.pathname === "/candy-auth/login") {
@@ -2706,7 +2738,8 @@ const controlServer = Bun.serve({
     // Allow all GET requests from *.localhost domains (not direct API calls)
     const hostHeader = req.headers.get("host") || ""
     const isCandyDomain = hostHeader.endsWith(".candy")
-    const isBoundDomain = !!resolveBindingFromHost(hostHeader)
+    const boundDomainMatch = resolveBindingFromHost(hostHeader)
+    const isBoundDomain = !!boundDomainMatch
     const isLocalhostDomain = hostHeader.endsWith(".localhost") || hostHeader.endsWith(".localhost:9999") || isCandyDomain || isBoundDomain
     const isWebRoute = req.method === "GET" && (
       isLocalhostDomain ||
@@ -2717,6 +2750,11 @@ const controlServer = Bun.serve({
       url.pathname.startsWith("/stream/") ||
       url.pathname.startsWith("/portal/status/")
     )
+
+    if (isBoundDomain && boundDomainMatch && !url.pathname.startsWith("/candy-auth/")) {
+      const authResponse = await requireBoundDomainAuth(req, controlServer, boundDomainMatch.binding)
+      if (authResponse) return authResponse
+    }
 
     // Void endpoints bypass auth (easter egg system needs to work across pages)
     const isVoidRoute = url.pathname.startsWith("/void/")
@@ -2829,7 +2867,7 @@ const controlServer = Bun.serve({
       const boundProxyMatch = resolveBindingFromHost(hostHeader)
       if (boundProxyMatch) {
         const { binding } = boundProxyMatch
-        const hasAuth = binding.auth?.enabled && binding.auth?.password
+        const hasAuth = hasBindingAuth(binding)
         if (!hasAuth) {
           const managed = processes.get(binding.serverName)
           if (managed?.status === 'running' && managed.port) {
@@ -4180,8 +4218,7 @@ const controlServer = Bun.serve({
           if (managed.status === 'running' && managed.port) {
             // For bound domains: check if auth is enabled
             if (isBoundDomain) {
-              const bindingAuth = boundMatch!.binding.auth
-              const hasAuth = bindingAuth?.enabled && bindingAuth?.password
+              const hasAuth = hasBindingAuth(boundMatch!.binding)
 
               if (hasAuth) {
                 // Protected domain: Caddy handles via forward_auth, we shouldn't get here

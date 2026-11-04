@@ -193,6 +193,11 @@ const main = async () => {
   }
   await log(`Tailscale IP: ${tailscaleIp}`)
 
+  // Bind address/port. Defaults to <tailscaleIp>:53. Override when another
+  // resolver (e.g. Pi-hole) owns :53 and forwards *.candy here instead.
+  const bindHost = process.env.CANDY_DNS_HOST || tailscaleIp
+  const bindPort = Number(process.env.CANDY_DNS_PORT || 53)
+
   // Load initial config
   config = await loadConfig()
   if (config) {
@@ -207,8 +212,8 @@ const main = async () => {
 
   // Start UDP DNS server
   const socket = await Bun.udpSocket({
-    hostname: tailscaleIp,
-    port: 53,
+    hostname: bindHost,
+    port: bindPort,
 
     socket: {
       data(socket, buf, port, addr) {
@@ -270,12 +275,12 @@ const main = async () => {
     },
   })
 
-  await log(`DNS server listening on ${tailscaleIp}:53`)
+  await log(`DNS server listening on ${bindHost}:${bindPort}`)
   await log(`Serving *.candy -> ${tailscaleIp}`)
 
   console.log(`
 \x1b[36m candy-dns\x1b[0m  \x1b[90mDNS server for .candy TLD\x1b[0m
-\x1b[33m Bind:\x1b[0m      ${tailscaleIp}:53
+\x1b[33m Bind:\x1b[0m      ${bindHost}:${bindPort}
 \x1b[33m TLD:\x1b[0m       .candy
 \x1b[33m Config:\x1b[0m    ${DNS_CONFIG_FILE}
 \x1b[33m Log:\x1b[0m       ${LOG_FILE}

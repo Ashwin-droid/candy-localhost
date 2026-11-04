@@ -1,6 +1,6 @@
-# candy-localhost systemd service
-# Install with: sudo cp candy-localhost.service /etc/systemd/system/candy-localhost@.service
-# Enable with: sudo systemctl enable --now candy-localhost@$USER
+# candy-localhost systemd service (template — rendered by install-service.sh)
+# Install with: bun run install-service
+# Enable with:  sudo systemctl enable --now candy-localhost@$USER
 
 [Unit]
 Description=candy-localhost daemon - We hand out domains like it's 1980
@@ -10,10 +10,10 @@ After=network.target
 Type=simple
 User=%i
 Environment="HOME=/home/%i"
-Environment="PATH=/home/%i/.bun/bin:/usr/local/bin:/usr/bin:/bin"
-WorkingDirectory=/home/%i/Documents/projects/candy-localhost
-ExecStartPre=+/usr/sbin/setcap cap_net_bind_service=+ep /usr/bin/caddy
-ExecStart=/home/%i/.bun/bin/bun run daemon.ts
+Environment="PATH=__BUN_DIR__:/home/%i/.bun/bin:/usr/local/bin:/usr/bin:/bin"
+WorkingDirectory=__CANDY_DIR__
+ExecStartPre=+/usr/sbin/setcap cap_net_bind_service=+ep __CADDY__
+ExecStart=__BUN__ run daemon.ts
 Restart=on-failure
 RestartSec=5
 

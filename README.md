@@ -21,7 +21,7 @@ candy-localhost replaces the workflow of manually starting dev servers, remember
 ### Requirements
 
 - [Bun](https://bun.sh)
-- [Caddy](https://caddyserver.com)
+- [Caddy](https://caddyserver.com) **2.7 or newer** — use the [official packages](https://caddyserver.com/docs/install); distro builds like Ubuntu's 2.6.2 fail with `listen udp :443: address already in use` when Tailscale is active
 - `cloudflared` (optional — for public tunnels and domain binding)
 - [Tailscale](https://tailscale.com) (optional — for `.candy` TLD access across your tailnet)
 
@@ -410,7 +410,7 @@ bun run install-service
 sudo systemctl enable --now candy-localhost@$USER
 ```
 
-Template unit runs as the specified user, sets `cap_net_bind_service` on Caddy before start.
+Template unit runs as the specified user, sets `cap_net_bind_service` on Caddy before start. `install-service.sh` fills in the repo, Bun and Caddy paths for your machine (`./install-service.sh daemon --print` to preview).
 
 ### DNS Service
 
@@ -419,7 +419,7 @@ bun run install-dns-service
 sudo systemctl enable --now candy-dns
 ```
 
-Runs as root (port 53). Contains hardcoded paths — edit before install on non-matching machines.
+Runs as the installing user with `CAP_NET_BIND_SERVICE` for port 53 — not root, so it shares `/tmp/candy-logs` with the daemon. Paths are filled in by `install-service.sh`.
 
 ## Configuration Files
 
@@ -433,6 +433,7 @@ Runs as root (port 53). Contains hardcoded paths — edit before install on non-
 | `~/.config/candy/candy-dns.json` | DNS daemon config |
 | `~/.config/caddy/Caddyfile` | Generated Caddy config |
 | `~/.config/caddy/access.log` | Caddy access log |
+| `~/.config/caddy/caddy.log` | Caddy process stdout/stderr |
 | `~/.config/caddy/candy.pid` | Daemon PID |
 | `/tmp/candy-logs/<name>.log` | Process logs (cleared on daemon start) |
 | `/tmp/candy-logs/_audit.log` | Operation audit log |

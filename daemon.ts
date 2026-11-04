@@ -196,6 +196,7 @@ const CADDY_CONFIG_DIR = `${process.env.HOME}/.config/caddy`
 const CANDY_CONFIG_DIR = `${process.env.HOME}/.config/candy`
 const CADDYFILE = `${CADDY_CONFIG_DIR}/Caddyfile`
 const CADDY_LOG = `${CADDY_CONFIG_DIR}/access.log`
+const CADDY_PROC_LOG = `${CADDY_CONFIG_DIR}/caddy.log`
 const PID_FILE = `${CADDY_CONFIG_DIR}/candy.pid`
 const SERVERS_CONFIG = `${CANDY_CONFIG_DIR}/servers.json`
 const ROUTES_FILE = `${CANDY_CONFIG_DIR}/routes.json`
@@ -1228,7 +1229,16 @@ const initLogs = async () => {
   // Create symlink to Caddy access log
   await $`ln -sf ${CADDY_LOG} ${LOGS_DIR}/_caddy.log`.quiet().nothrow()
   // Create empty audit log
-  await Bun.write(AUDIT_LOG, "")
+  try {
+    await Bun.write(AUDIT_LOG, "")
+  } catch (e: any) {
+    if (e?.code === "EACCES") {
+      console.error(`\x1b[31m${LOGS_DIR} is not writable by ${process.env.USER ?? "this user"}.\x1b[0m`)
+      console.error(`It was probably created by another user (e.g. candy-dns running as root).`)
+      console.error(`Run candy-dns as the same user as the daemon, then: sudo rm -rf ${LOGS_DIR}`)
+    }
+    throw e
+  }
 }
 
 // Actor types for audit logging
@@ -2059,16 +2069,35 @@ const startCaddy = async () => {
     return
   }
 
+  // Caddy < 2.7 can't share the HTTP/3 UDP :443 listener between the wildcard
+  // *.localhost blocks and the Tailscale-bound *.candy blocks ("listen udp :443:
+  // address already in use"). Distro packages (e.g. Ubuntu's 2.6.2) hit this.
+  try {
+    const ver = (await $`${CADDY} version`.quiet().text()).trim()
+    const m = ver.match(/v?(\d+)\.(\d+)/)
+    if (m && (Number(m[1]) < 2 || (Number(m[1]) === 2 && Number(m[2]) < 7))) {
+      console.log(`\x1b[33mWarning:\x1b[0m Caddy ${ver.split(" ")[0]} is too old; candy needs Caddy >= 2.7 (install from caddyserver.com, not the distro package)`)
+    }
+  } catch {}
+
   try {
     caddyProc = spawn({
       cmd: [CADDY, "run", "--config", CADDYFILE],
-      stdout: "ignore",
-      stderr: "ignore",
+      stdout: Bun.file(CADDY_PROC_LOG),
+      stderr: Bun.file(CADDY_PROC_LOG),
       detached: true,
     })
     caddyProc.unref()
 
-    await new Promise(r => setTimeout(r, 500))
+    await new Promise(r => setTimeout(r, 1500))
+    if (caddyProc.exitCode !== null) {
+      const out = await Bun.file(CADDY_PROC_LOG).text().catch(() => "")
+      const errLine = out.split("\n").reverse().find(l => /^Error|"level":"error"/.test(l)) ?? ""
+      console.log(`\x1b[31mCaddy exited immediately\x1b[0m (code ${caddyProc.exitCode}). See ${CADDY_PROC_LOG}`)
+      if (errLine) console.log(`  ${errLine.slice(0, 300)}`)
+      caddyProc = null
+      return
+    }
     console.log("\x1b[32mCaddy started\x1b[0m (PID: " + caddyProc.pid + ")")
   } catch (e) {
     console.log("\x1b[31mFailed to start Caddy\x1b[0m")

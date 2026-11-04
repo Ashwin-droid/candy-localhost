@@ -941,11 +941,12 @@ switch (command) {
     break
   case 'route':
   case 'routes': {
-    const sub = args[0]
+    const rargs = args.slice(1)
+    const sub = rargs[0]
     if (sub === 'add' || sub === 'a') {
-      const name = args[1]
-      const port = parseInt(args[2])
-      const persistent = args.includes('--persistent') || args.includes('-p')
+      const name = rargs[1]
+      const port = parseInt(rargs[2])
+      const persistent = rargs.includes('--persistent') || rargs.includes('-p')
       if (!name || !port) {
         console.error(`${c.red}Usage: candy route add <name> <port> [--persistent|-p]${c.reset}`)
         process.exit(1)
@@ -957,12 +958,12 @@ switch (command) {
         console.log(`${c.green}+ ${name}.localhost -> :${port}${persistent ? ' (persistent)' : ''}${c.reset}`)
       }
     } else if (sub === 'rm' || sub === 'remove') {
-      const name = args[1]
+      const name = rargs[1]
       if (!name) {
         console.error(`${c.red}Usage: candy route rm <name>${c.reset}`)
         process.exit(1)
       }
-      const res = await fetch(`${API}/register/${name}`, { method: 'DELETE' }).then(r => r.json()).catch(() => null)
+      const res = await fetch(`${API}/register/${name}`, { method: 'DELETE', headers: await getHeaders() }).then(r => r.json()).catch(() => null)
       if (res?.error) {
         console.error(`${c.red}${res.error}${c.reset}`)
       } else {
@@ -970,7 +971,7 @@ switch (command) {
       }
     } else {
       // List routes
-      const res = await fetch(`${API}/routes`).then(r => r.json()).catch(() => null)
+      const res = await fetch(`${API}/routes`, { headers: await getHeaders() }).then(r => r.json()).catch(() => null)
       if (!res) {
         console.error(`${c.red}Daemon not running${c.reset}`)
         process.exit(1)

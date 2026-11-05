@@ -11,8 +11,10 @@ import { watch, type FSWatcher } from "node:fs"
 import {
   buildActionSubdomain,
   buildHostAlias,
+  buildLanRecords,
   buildNetworkSnapshot,
   deriveTailscaleHostLabel,
+  isPrivateLanIp,
   makeRemoteClaimKey,
   normalizeTailscaleDnsName,
   resolveLocalCandyRouteName,
@@ -207,12 +209,19 @@ const LOGS_DIR = "/tmp/candy-logs"
 const AUDIT_LOG = `${LOGS_DIR}/_audit.log`
 const DNS_CONFIG_FILE = `${CANDY_CONFIG_DIR}/candy-dns.json`
 const ADVERTISEMENTS_FILE = `${CANDY_CONFIG_DIR}/advertisements.json`
+const LAN_FILE = `${CANDY_CONFIG_DIR}/lan.json`
 const CLOUDFLARED_SYSTEM_CONFIG = `/etc/cloudflared/config.yml`
 const CLOUDFLARED_USER_CONFIG = `${process.env.HOME}/.cloudflared/config.yml`
 const CANDY_RUNTIME_MAGIC_ENV = "X_CANDY_RUNTIME_MAGIC_STRING"
 
 // Tailscale state (discovered at startup)
 let tailscaleIp: string | null = null
+
+// LAN publishing: names opted in to be reachable at <name>.candy from the LAN,
+// not just the tailnet. Persisted to lan.json. Off for every name by default.
+let lanIp: string | null = null
+const lanPublished = new Set<string>()
+const LAN_IP_REFRESH_INTERVAL = 5 * 60 * 1000  // 5 minutes
 
 // Reserved domain names (cannot be used for servers/routes)
 const RESERVED_NAMES = new Set(['portal', 'k', 'kill', 'p', 'candy'])
@@ -1026,6 +1035,94 @@ const isTailscaleIp = (ip: string): boolean => {
 
 const normalizeIp = (ip: string): string => ip.replace(/^::ffff:/, '')
 
+// ============================================================================
+// LAN Publishing (opt-in per name)
+// ============================================================================
+
+// This machine's LAN IPv4: CANDY_LAN_IP if set, else the source address of the
+// default route. Only RFC 1918 addresses count, so a Tailscale exit node or a
+// public address never gets .candy sites bound to it.
+const discoverLanIp = async (): Promise<string | null> => {
+  const override = process.env.CANDY_LAN_IP?.trim()
+  if (override) return override
+
+  try {
+    const out = await $`ip -4 route get 1.1.1.1`.quiet().text()
+    const src = out.match(/\bsrc (\d+\.\d+\.\d+\.\d+)/)?.[1]
+    if (src && isPrivateLanIp(src)) return src
+  } catch {}
+
+  try {
+    const { networkInterfaces } = await import("node:os")
+    for (const [iface, addrs] of Object.entries(networkInterfaces())) {
+      if (iface.startsWith("tailscale") || iface.startsWith("docker") || iface.startsWith("br-")) continue
+      for (const addr of addrs || []) {
+        if (addr.family === "IPv4" && !addr.internal && isPrivateLanIp(addr.address)) return addr.address
+      }
+    }
+  } catch {}
+
+  return null
+}
+
+const loadLanPublished = async () => {
+  try {
+    const file = Bun.file(LAN_FILE)
+    if (!await file.exists()) return
+    const data = await file.json() as { published?: unknown }
+    lanPublished.clear()
+    if (Array.isArray(data.published)) {
+      for (const name of data.published) {
+        if (typeof name === "string" && name && !isReserved(name)) lanPublished.add(name.toLowerCase())
+      }
+    }
+  } catch {}
+}
+
+const saveLanPublished = async () => {
+  await $`mkdir -p ${CANDY_CONFIG_DIR}`.quiet().nothrow()
+  await Bun.write(LAN_FILE, JSON.stringify({ published: [...lanPublished].sort() }, null, 2))
+}
+
+const isLanPublished = (name: string): boolean => lanPublished.has(name.toLowerCase())
+
+// Addresses a <name>.candy site block binds to. Unpublished names stay
+// Tailscale-only; published names are also served on the LAN IP.
+const candyBindAddrs = (name: string): string[] => {
+  const addrs: string[] = []
+  if (tailscaleIp) addrs.push(tailscaleIp)
+  if (lanIp && lanIp !== tailscaleIp && isLanPublished(name)) addrs.push(lanIp)
+  return addrs
+}
+
+const setLanPublished = async (name: string, publish: boolean, actor: Actor = 'Portal') => {
+  const key = name.toLowerCase()
+  if (publish === lanPublished.has(key)) return
+  if (publish) lanPublished.add(key)
+  else lanPublished.delete(key)
+  await saveLanPublished()
+  auditLog(publish ? 'LAN_PUBLISH' : 'LAN_UNPUBLISH', `${key}.candy${publish && lanIp ? ` -> ${lanIp}` : ''}`, actor)
+  await syncCaddy()
+}
+
+// Drop the opt-in once a name is gone, so a later, unrelated server that
+// reuses the name does not start out exposed to the LAN.
+const forgetLanPublishedIfGone = async (name: string): Promise<boolean> => {
+  const key = name.toLowerCase()
+  if (!lanPublished.has(key) || routes.has(name) || serverConfigs.has(name)) return false
+  lanPublished.delete(key)
+  await saveLanPublished()
+  auditLog('LAN_UNPUBLISH', `${key}.candy (name removed)`, 'System')
+  return true
+}
+
+const refreshLanIp = async () => {
+  const next = await discoverLanIp()
+  if (next === lanIp) return
+  lanIp = next
+  if (lanPublished.size > 0) await syncCaddy()
+}
+
 // Sync DNS config file for candy-dns daemon
 const syncDnsConfig = async () => {
   if (!tailscaleIp) return
@@ -1046,8 +1143,12 @@ const syncDnsConfig = async () => {
   const records: Record<string, string> = { ...snapshot.dnsRecords }
   records["candy"] = tailscaleIp  // always
 
+  // Names published to the LAN: candy-dns answers these with the LAN IP, but
+  // only for queries in its LAN view.
+  const lanRecords = buildLanRecords({ published: lanPublished, local: snapshot.local, lanIp })
+
   await Bun.write(DNS_CONFIG_FILE, JSON.stringify({
-    tailscaleIp, tld: "candy", servers, records
+    tailscaleIp, tld: "candy", servers, records, lanIp, lanRecords
   }, null, 2))
 }
 
@@ -1424,6 +1525,7 @@ const removeServerConfig = async (name: string, actor: Actor = 'Portal', configI
   }
   await saveServerConfigs()
   auditLog('CONFIG_REMOVE', configId ? `${name}:${configId}` : name, actor)
+  if (await forgetLanPublishedIfGone(name)) await syncCaddy()
 }
 
 // ============================================================================
@@ -2237,47 +2339,68 @@ const syncCaddy = async () => {
 `
   }
 
-  // .candy route blocks (Tailscale - HTTP only, bound to Tailscale IP)
-  if (tailscaleIp) {
-    for (const [name, route] of routes) {
-      const proxyTarget = typeof route.target === "number" ? `localhost:${route.target}` : route.target
-      const candyHosts = [`${name}.candy`]
-      const alias = buildHostAlias(name, localHostLabel)
-      if (alias && !localExactNames.has(alias)) {
-        candyHosts.push(`${alias}.candy`)
-        candyKillAliasHosts.push(
-          `${buildActionSubdomain(name, "kill", localHostLabel)}.candy`,
-          `${buildActionSubdomain(name, "k", localHostLabel)}.candy`,
-        )
-        candyPortalAliasHosts.push(
-          `${buildActionSubdomain(name, "portal", localHostLabel)}.candy`,
-          `${buildActionSubdomain(name, "p", localHostLabel)}.candy`,
-        )
-      }
-      content += `${candyHosts.join(", ")} {
-  bind ${tailscaleIp}
+  // .candy route blocks. Bound to the Tailscale IP; names published to the LAN
+  // are bound to the LAN IP as well. Kill/portal subdomains and the catch-all
+  // stay Tailscale-only, so publishing a name exposes that one site and nothing else.
+  for (const [name, route] of routes) {
+    const bindAddrs = candyBindAddrs(name)
+    if (bindAddrs.length === 0) continue
+    const proxyTarget = typeof route.target === "number" ? `localhost:${route.target}` : route.target
+    const candyHosts = [`${name}.candy`]
+    const alias = buildHostAlias(name, localHostLabel)
+    if (alias && !localExactNames.has(alias)) {
+      candyHosts.push(`${alias}.candy`)
+      candyKillAliasHosts.push(
+        `${buildActionSubdomain(name, "kill", localHostLabel)}.candy`,
+        `${buildActionSubdomain(name, "k", localHostLabel)}.candy`,
+      )
+      candyPortalAliasHosts.push(
+        `${buildActionSubdomain(name, "portal", localHostLabel)}.candy`,
+        `${buildActionSubdomain(name, "p", localHostLabel)}.candy`,
+      )
+    }
+    content += `${candyHosts.join(", ")} {
+  bind ${bindAddrs.join(" ")}
   tls internal
   reverse_proxy ${proxyTarget}
   log
 }
 
 `
+  }
+
+  for (const name of serverConfigs.keys()) {
+    if (routes.has(name)) continue
+    const bindAddrs = candyBindAddrs(name)
+    if (bindAddrs.length === 0) continue
+    const alias = buildHostAlias(name, localHostLabel)
+    const hasAlias = !!alias && !localExactNames.has(alias)
+    if (hasAlias) {
+      candyKillAliasHosts.push(
+        `${buildActionSubdomain(name, "kill", localHostLabel)}.candy`,
+        `${buildActionSubdomain(name, "k", localHostLabel)}.candy`,
+      )
+      candyPortalAliasHosts.push(
+        `${buildActionSubdomain(name, "portal", localHostLabel)}.candy`,
+        `${buildActionSubdomain(name, "p", localHostLabel)}.candy`,
+      )
     }
 
-    for (const name of serverConfigs.keys()) {
-      if (routes.has(name)) continue
-      const alias = buildHostAlias(name, localHostLabel)
-      if (alias && !localExactNames.has(alias)) {
-        candyAliasHosts.push(`${alias}.candy`)
-        candyKillAliasHosts.push(
-          `${buildActionSubdomain(name, "kill", localHostLabel)}.candy`,
-          `${buildActionSubdomain(name, "k", localHostLabel)}.candy`,
-        )
-        candyPortalAliasHosts.push(
-          `${buildActionSubdomain(name, "portal", localHostLabel)}.candy`,
-          `${buildActionSubdomain(name, "p", localHostLabel)}.candy`,
-        )
-      }
+    if (isLanPublished(name) && lanIp) {
+      // Not running yet: the Tailscale catch-all can't serve the LAN, so give a
+      // published name its own block that reaches the daemon's lazy-start page.
+      const candyHosts = [`${name}.candy`]
+      if (hasAlias) candyHosts.push(`${alias}.candy`)
+      content += `${candyHosts.join(", ")} {
+  bind ${bindAddrs.join(" ")}
+  tls internal
+  reverse_proxy localhost:9999
+  log
+}
+
+`
+    } else if (hasAlias) {
+      candyAliasHosts.push(`${alias}.candy`)
     }
   }
 
@@ -3102,6 +3225,7 @@ const controlServer = Bun.serve({
       const wasRoute = routes.get(name)
       routes.delete(name)
       releasePidOwnedRoute(name)
+      await forgetLanPublishedIfGone(name)
       await syncCaddy()
       if (wasRoute?.persistent) await savePersistentRoutes()
       const m = pick(msg.removed)
@@ -3133,6 +3257,13 @@ const controlServer = Bun.serve({
         pidOwnedRoutes.set(newName, routeOwner)
       }
 
+      // The LAN opt-in follows the route, unless a server config keeps the old name.
+      if (isLanPublished(oldName)) {
+        if (!serverConfigs.has(oldName)) lanPublished.delete(oldName.toLowerCase())
+        lanPublished.add(newName.toLowerCase())
+        await saveLanPublished()
+      }
+
       if (portals.has(oldName)) {
         const portalData = portals.get(oldName)!
         portals.delete(oldName)
@@ -3146,16 +3277,54 @@ const controlServer = Bun.serve({
     }
 
     if (req.method === "GET" && url.pathname === "/routes") {
-      const routeList: Record<string, { target: number | string, isRestricted: boolean, persistent: boolean }> = {}
+      const routeList: Record<string, { target: number | string, isRestricted: boolean, persistent: boolean, lan: boolean }> = {}
       for (const [name, route] of routes) {
         if (isReserved(name)) continue  // hide reserved
         routeList[name] = {
           target: route.target,
           isRestricted: typeof route.target === "string",
-          persistent: route.persistent
+          persistent: route.persistent,
+          lan: isLanPublished(name),
         }
       }
       return Response.json(routeList, { headers: corsHeaders })
+    }
+
+    // === LAN Publishing ===
+
+    if (req.method === "GET" && url.pathname === "/lan") {
+      const names = [...new Set([...routes.keys(), ...serverConfigs.keys()])]
+        .filter(name => !isReserved(name))
+        .sort((a, b) => a.localeCompare(b))
+      return Response.json({
+        lanIp,
+        published: [...lanPublished].sort(),
+        names: Object.fromEntries(names.map(name => [name, isLanPublished(name)])),
+      }, { headers: corsHeaders })
+    }
+
+    if (req.method === "POST" && url.pathname === "/lan") {
+      const body = await req.json() as { name?: string; publish?: boolean }
+      const name = typeof body.name === "string" ? body.name.trim() : ""
+      const publish = body.publish !== false
+
+      if (!name || isReserved(name)) {
+        return Response.json({ error: "That name is reserved. Nice try though.", details: name }, { status: 403, headers: corsHeaders })
+      }
+      if (publish && !routes.has(name) && !serverConfigs.has(name)) {
+        return Response.json({ error: pick(msg.notFound), details: name }, { status: 404, headers: corsHeaders })
+      }
+
+      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      await setLanPublished(name, publish, actor)
+      log(publish ? "LAN" : "UNLAN", `${name}.candy${publish && lanIp ? ` -> ${lanIp}` : ""}`)
+      return Response.json({
+        name,
+        domain: `${name}.candy`,
+        published: isLanPublished(name),
+        lanIp,
+        ...(publish && !lanIp ? { warning: "No LAN address detected. Set CANDY_LAN_IP to publish." } : {}),
+      }, { headers: corsHeaders })
     }
 
     // === Portal Management ===
@@ -3620,6 +3789,7 @@ const controlServer = Bun.serve({
           cmd: first.cmd,
           count: entries.length,
           variants: entries.map(c => ({ id: c.id, cwd: c.cwd, cmd: c.cmd })),
+          lan: isLanPublished(name),
         }
       }
       return Response.json({ success: true, configs }, { headers: corsHeaders })
@@ -4429,6 +4599,10 @@ await loadPersistentRoutes()
 // Load remote advertisements from disk
 await loadAdvertisements()
 
+// LAN publishing: opted-in names and this machine's LAN address
+await loadLanPublished()
+lanIp = await discoverLanIp()
+
 // Create fresh Caddyfile (includes persistent routes)
 await syncCaddy()
 
@@ -4448,6 +4622,9 @@ await Bun.write(PID_FILE, process.pid.toString())
 const tailscaleStatus = tailscaleIp
   ? `\x1b[33mTailscale:\x1b[0m   ${tailscaleIp} (*.candy domains active)`
   : `\x1b[90mTailscale:\x1b[0m   not detected (*.candy domains disabled)`
+const lanStatus = lanIp
+  ? `\x1b[33mLAN:\x1b[0m         ${lanIp} (${lanPublished.size} published)`
+  : `\x1b[90mLAN:\x1b[0m         not detected (LAN publishing disabled)`
 
 console.log(`
 \x1b[36m░█▀▀░█▀█░█▀█░█▀▄░█░█\x1b[0m   \x1b[90mv0.5.0 (lazy dev server orchestrator)\x1b[0m
@@ -4460,6 +4637,7 @@ console.log(`
 \x1b[33mControl:\x1b[0m     http://localhost:9999
 \x1b[33mPID:\x1b[0m         ${process.pid}
 ${tailscaleStatus}
+${lanStatus}
 
 \x1b[90mLazy dev server mode active. Visit <name>.localhost to auto-start.\x1b[0m
 `)
@@ -4480,6 +4658,9 @@ setInterval(async () => {
     await syncDnsConfig()
   }
 }, EXPIRY_SWEEP_INTERVAL)
+
+// Follow LAN address changes (DHCP renewals, switching networks)
+setInterval(() => { refreshLanIp().catch(() => {}) }, LAN_IP_REFRESH_INTERVAL)
 
 // Client-side: advertise to hub if we're not the DNS host
 setInterval(advertiseToHub, READVERTISE_INTERVAL)

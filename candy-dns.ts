@@ -2,6 +2,8 @@
  * candy-dns - Standalone DNS daemon for .candy TLD via Tailscale
  *
  * Responds to *.candy A record queries with the machine's Tailscale IP.
+ * Names published to the LAN answer with the LAN IP instead, but only for
+ * queries in the LAN view (see pickCandyDnsView).
  * Watches ~/.config/candy/candy-dns.json for the list of known server names.
  * Zero npm dependencies - pure Bun stdlib.
  */
@@ -9,7 +11,7 @@
 import { $ } from "bun"
 import { watch } from "fs"
 
-import { resolveCandyDnsRecord } from "./tailnet"
+import { pickCandyDnsView, resolveCandyDnsRecord } from "./tailnet"
 
 const CANDY_CONFIG_DIR = `${process.env.HOME}/.config/candy`
 const DNS_CONFIG_FILE = `${CANDY_CONFIG_DIR}/candy-dns.json`
@@ -39,6 +41,8 @@ interface DnsConfig {
   tld: string
   servers: string[]
   records?: Record<string, string>  // name -> IP mapping
+  lanIp?: string | null
+  lanRecords?: Record<string, string>  // published name -> LAN IP (LAN view only)
 }
 
 let config: DnsConfig | null = null
@@ -210,77 +214,94 @@ const main = async () => {
   // Watch for config changes
   watchConfig()
 
-  // Start UDP DNS server
-  const socket = await Bun.udpSocket({
-    hostname: bindHost,
-    port: bindPort,
+  // Optional second listener that always answers in the LAN view. A front
+  // resolver that serves both LAN and tailnet clients (AdGuard Home, dnsmasq)
+  // hides the client address, so it forwards its LAN clients here instead.
+  const lanPort = process.env.CANDY_DNS_LAN_PORT ? Number(process.env.CANDY_DNS_LAN_PORT) : null
+  const lanHost = process.env.CANDY_DNS_LAN_HOST || bindHost
 
-    socket: {
-      data(socket, buf, port, addr) {
-        // Need at least a DNS header (12 bytes)
-        if (buf.length < 12) return
+  const listen = (hostname: string, port: number, listener: "default" | "lan") =>
+    Bun.udpSocket({
+      hostname,
+      port,
 
-        const queryId = (buf[0] << 8) | buf[1]
-        const qdcount = (buf[4] << 8) | buf[5]
+      socket: {
+        data(socket, buf, port, addr) {
+          // Need at least a DNS header (12 bytes)
+          if (buf.length < 12) return
 
-        if (qdcount < 1) return
+          const queryId = (buf[0] << 8) | buf[1]
+          const qdcount = (buf[4] << 8) | buf[5]
 
-        // Parse question name
-        const [name, nameEnd] = parseDnsName(Buffer.from(buf), 12)
+          if (qdcount < 1) return
 
-        // Check QTYPE and QCLASS
-        if (nameEnd + 4 > buf.length) return
-        const qtype = (buf[nameEnd] << 8) | buf[nameEnd + 1]
-        const qclass = (buf[nameEnd + 2] << 8) | buf[nameEnd + 3]
+          // Parse question name
+          const [name, nameEnd] = parseDnsName(Buffer.from(buf), 12)
 
-        const nameLower = name.toLowerCase()
-        const tld = config?.tld || "candy"
-        const suffix = `.${tld}`
+          // Check QTYPE and QCLASS
+          if (nameEnd + 4 > buf.length) return
+          const qtype = (buf[nameEnd] << 8) | buf[nameEnd + 1]
+          const qclass = (buf[nameEnd + 2] << 8) | buf[nameEnd + 3]
 
-        // Only handle queries ending in .candy
-        if (!nameLower.endsWith(suffix)) {
-          const response = buildResponse(Buffer.from(buf), queryId, name, null)
+          const nameLower = name.toLowerCase()
+          const tld = config?.tld || "candy"
+          const suffix = `.${tld}`
+
+          // Only handle queries ending in .candy
+          if (!nameLower.endsWith(suffix)) {
+            const response = buildResponse(Buffer.from(buf), queryId, name, null)
+            socket.send(response, port, addr)
+            return
+          }
+
+          // Extract subdomain
+          const subdomain = nameLower.slice(0, -suffix.length)
+
+          // Only respond to A (1) IN (1) queries with the Tailscale IP
+          // For any other QTYPE, respond NXDOMAIN
+          if (qtype !== 1 || qclass !== 1) {
+            const response = buildResponse(Buffer.from(buf), queryId, name, null)
+            socket.send(response, port, addr)
+            return
+          }
+
+          const view = pickCandyDnsView(listener, addr)
+
+          // Per-name IP resolution, including host-scoped aliases and action subdomains.
+          const ip = resolveCandyDnsRecord({
+            subdomain,
+            records: config?.records,
+            localNames: config?.servers,
+            hostIp: config?.tailscaleIp || tailscaleIp,
+            lanRecords: view === "lan" ? config?.lanRecords : undefined,
+          })
+
+          const response = buildResponse(Buffer.from(buf), queryId, name, ip)
           socket.send(response, port, addr)
-          return
-        }
 
-        // Extract subdomain
-        const subdomain = nameLower.slice(0, -suffix.length)
-
-        // Only respond to A (1) IN (1) queries with the Tailscale IP
-        // For any other QTYPE, respond NXDOMAIN
-        if (qtype !== 1 || qclass !== 1) {
-          const response = buildResponse(Buffer.from(buf), queryId, name, null)
-          socket.send(response, port, addr)
-          return
-        }
-
-        // Per-name IP resolution, including host-scoped aliases and action subdomains.
-        const ip = resolveCandyDnsRecord({
-          subdomain,
-          records: config?.records,
-          localNames: config?.servers,
-          hostIp: config?.tailscaleIp || tailscaleIp,
-        })
-
-        const response = buildResponse(Buffer.from(buf), queryId, name, ip)
-        socket.send(response, port, addr)
-
-        if (ip) {
-          log(`A ${nameLower} -> ${ip} (from ${addr}:${port})`)
-        } else {
-          log(`NXDOMAIN ${nameLower} (from ${addr}:${port})`)
-        }
+          const tag = view === "lan" ? " [lan]" : ""
+          if (ip) {
+            log(`A ${nameLower} -> ${ip}${tag} (from ${addr}:${port})`)
+          } else {
+            log(`NXDOMAIN ${nameLower}${tag} (from ${addr}:${port})`)
+          }
+        },
       },
-    },
-  })
+    })
+
+  // Start UDP DNS server(s)
+  await listen(bindHost, bindPort, "default")
+  if (lanPort) {
+    await listen(lanHost, lanPort, "lan")
+    await log(`LAN view listening on ${lanHost}:${lanPort}`)
+  }
 
   await log(`DNS server listening on ${bindHost}:${bindPort}`)
   await log(`Serving *.candy -> ${tailscaleIp}`)
 
   console.log(`
 \x1b[36m candy-dns\x1b[0m  \x1b[90mDNS server for .candy TLD\x1b[0m
-\x1b[33m Bind:\x1b[0m      ${bindHost}:${bindPort}
+\x1b[33m Bind:\x1b[0m      ${bindHost}:${bindPort}${lanPort ? `  (LAN view: ${lanHost}:${lanPort})` : ""}
 \x1b[33m TLD:\x1b[0m       .candy
 \x1b[33m Config:\x1b[0m    ${DNS_CONFIG_FILE}
 \x1b[33m Log:\x1b[0m       ${LOG_FILE}

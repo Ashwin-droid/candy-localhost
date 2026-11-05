@@ -448,6 +448,35 @@
       border-color: var(--cyan-dim);
     }
 
+    .btn-icon.lan {
+      width: auto;
+      padding: 0 0.4rem;
+      font-size: 0.6rem;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+
+    .btn-icon.lan.active {
+      color: var(--green);
+      border-color: var(--green);
+    }
+
+    .btn-icon.lan:hover {
+      border-color: var(--green);
+      color: var(--green);
+    }
+
+    .route-lan {
+      font-size: 0.6rem;
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      background: rgba(0, 255, 106, 0.12);
+      color: var(--green);
+      cursor: default;
+    }
+
     .btn-icon.pin:hover {
       border-color: var(--cyan);
       color: var(--cyan);
@@ -2291,16 +2320,19 @@ Misc:
             const r = routes[name];
             const target = r.isRestricted ? r.target : ':' + r.target;
             const persistentBadge = r.persistent ? '<span class="route-persistent">pinned</span>' : '';
+            const lanBadge = r.lan ? `<span class="route-lan" title="${name}.candy is reachable from the LAN">lan</span>` : '';
             return `
               <div class="route-item">
                 <div class="route-info">
                   <span class="route-name">${name}</span>
                   ${persistentBadge}
+                  ${lanBadge}
                   <span class="route-arrow">→</span>
                   <span class="route-port">${target}</span>
                 </div>
                 <div class="route-actions">
                   <button class="btn-icon pin ${r.persistent ? 'active' : ''}" onclick="togglePersistent('${name}', ${!r.persistent})" title="${r.persistent ? 'Unpin route' : 'Pin route (persistent)'}">📌</button>
+                  ${lanToggleButton(name, r.lan)}
                   <button class="btn-icon portal" onclick="openPortal('${name}', ${r.target})" title="Open Portal">◉</button>
                   <button class="btn-icon danger" onclick="deleteRoute('${name}')" title="Delete">×</button>
                 </div>
@@ -2383,6 +2415,38 @@ Misc:
         refreshAll();
       } catch (e) {
         toast('Failed to close portal', 'error');
+      }
+    }
+
+    // "Publish this domain to LAN": opt a name in to resolving and serving at
+    // <name>.candy for devices on the local network, not just the tailnet.
+    function lanToggleButton(name, published) {
+      const title = published
+        ? `Published to LAN: ${name}.candy is reachable from the local network. Click to unpublish.`
+        : `Publish this domain to LAN (${name}.candy is tailnet-only)`;
+      return `<button class="btn-icon lan ${published ? 'active' : ''}" onclick="toggleLan('${escapeJsSingle(name)}', ${!published})" title="${escapeHtml(title)}">LAN</button>`;
+    }
+
+    async function toggleLan(name, publish) {
+      if (publish && !confirm(`Publish ${name}.candy to the LAN?\n\nAny device on your local network will be able to open it.`)) return;
+      try {
+        const res = await apiCall('/lan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, publish })
+        });
+        const data = await res.json();
+        if (data.error) {
+          toast(data.error, 'error');
+        } else if (data.warning) {
+          toast(data.warning, 'error');
+        } else {
+          toast(publish ? `${name}.candy published to LAN (${data.lanIp})` : `${name}.candy is tailnet-only again`, 'success');
+        }
+        refreshRoutes();
+        refreshConfigs();
+      } catch (e) {
+        toast('Failed to update LAN publishing', 'error');
       }
     }
 
@@ -2581,7 +2645,7 @@ Misc:
             const variants = Array.isArray(c.variants) && c.variants.length ? c.variants : [c];
             variants.forEach((variant, idx) => {
               const heading = idx === 0
-                ? `${escapeHtml(name)}.${TLD}${variants.length > 1 ? ` <span style="color: var(--text-dim);">(${variants.length} variants)</span>` : ''}`
+                ? `${escapeHtml(name)}.${TLD}${variants.length > 1 ? ` <span style="color: var(--text-dim);">(${variants.length} variants)</span>` : ''}${c.lan ? ' <span class="route-lan">lan</span>' : ''}`
                 : `${escapeHtml(name)}.${TLD} <span style="color: var(--text-dim);">(variant)</span>`;
               html.push(`
                 <div class="config-item">
@@ -2594,6 +2658,7 @@ Misc:
                     </div>
                   </div>
                   <div class="config-actions">
+                    ${idx === 0 ? lanToggleButton(name, c.lan) : ''}
                     <button class="btn-icon success" onclick="startProcess('${escapeJsSingle(name)}', '${escapeJsSingle(variant.id)}')" title="Start">▶</button>
                     <button class="btn-icon danger" onclick="deleteConfig('${escapeJsSingle(name)}', '${escapeJsSingle(variant.id)}')" title="Delete">×</button>
                   </div>

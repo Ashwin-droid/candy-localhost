@@ -868,6 +868,7 @@ function printHelp() {
   console.log(`  ${c.cyan}candy portal${c.reset} [name]          Open tunnel for server`)
   console.log(`  ${c.cyan}candy list${c.reset}                   List all registered configs`)
   console.log(`  ${c.cyan}candy route${c.reset} [add|rm]          Manage domain routes (--persistent|-p)`)
+  console.log(`  ${c.cyan}candy lan${c.reset} [publish|unpublish] <name>  Make <name>.candy reachable from the LAN (opt-in)`)
   console.log(`  ${c.cyan}candy domain${c.reset} [list|bind|unbind|config]  Manage bound domains`)
   console.log(`  ${c.cyan}candy auth${c.reset} [set|clear|status] Manage bound domain authentication`)
   console.log(`  ${c.cyan}candy mcp${c.reset}                    Start MCP server (stdio) for AI integration`)
@@ -982,10 +983,58 @@ switch (command) {
       } else {
         for (const name of names) {
           const r = res[name]
-          const flags = r.persistent ? ` ${c.cyan}[persistent]${c.reset}` : ''
+          const flags = (r.persistent ? ` ${c.cyan}[persistent]${c.reset}` : '') + (r.lan ? ` ${c.green}[lan]${c.reset}` : '')
           console.log(`  ${c.green}${name}.localhost${c.reset} -> ${r.isRestricted ? r.target : ':' + r.target}${flags}`)
         }
       }
+    }
+    break
+  }
+  case 'lan': {
+    const largs = args.slice(1)
+    const sub = largs[0]
+    if (sub === 'publish' || sub === 'unpublish') {
+      const name = largs[1]
+      if (!name) {
+        console.error(`${c.red}Usage: candy lan ${sub} <name>${c.reset}`)
+        process.exit(1)
+      }
+      const publish = sub === 'publish'
+      const res = await apiPost('/lan', { name, publish })
+      if (!res) {
+        console.error(`${c.red}Daemon not running${c.reset}`)
+        process.exit(1)
+      }
+      if (res.error) {
+        console.error(`${c.red}${res.error}${res.details ? ` (${res.details})` : ''}${c.reset}`)
+        process.exit(1)
+      }
+      if (publish) {
+        console.log(`${c.green}+ ${name}.candy published to LAN${res.lanIp ? ` -> ${res.lanIp}` : ''}${c.reset}`)
+        if (res.warning) console.log(`${c.yellow}${res.warning}${c.reset}`)
+      } else {
+        console.log(`${c.red}- ${name}.candy no longer published to LAN${c.reset}`)
+      }
+    } else if (!sub || sub === 'list' || sub === 'ls') {
+      const res = await apiGet('/lan')
+      if (!res) {
+        console.error(`${c.red}Daemon not running${c.reset}`)
+        process.exit(1)
+      }
+      console.log(`${c.dim}LAN address: ${res.lanIp || 'not detected'}${c.reset}`)
+      const names = Object.keys(res.names || {})
+      if (names.length === 0) {
+        console.log(`${c.dim}No domains registered${c.reset}`)
+      } else {
+        for (const name of names) {
+          console.log(res.names[name]
+            ? `  ${c.green}${name}.candy${c.reset} published`
+            : `  ${c.dim}${name}.candy  tailnet only${c.reset}`)
+        }
+      }
+    } else {
+      console.error(`${c.red}Usage: candy lan [publish|unpublish] <name>${c.reset}`)
+      process.exit(1)
     }
     break
   }

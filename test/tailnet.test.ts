@@ -2,8 +2,11 @@ import { describe, expect, it } from "bun:test"
 
 import {
   buildActionSubdomain,
+  buildLanRecords,
   buildNetworkSnapshot,
   deriveTailscaleHostLabel,
+  isPrivateLanIp,
+  pickCandyDnsView,
   resolveCandyDnsRecord,
   resolveLocalCandyRouteName,
   type RemoteRouteClaim,
@@ -136,5 +139,82 @@ describe("network snapshot", () => {
       localNames: ["hello"],
       hostIp: "100.117.235.58",
     })).toBe("100.104.61.13")
+  })
+})
+
+describe("LAN publishing", () => {
+  const tailscaleIp = "100.86.31.43"
+  const lanIp = "192.168.0.7"
+  const local = [
+    { name: "agh", aliasFqdns: ["agh.homeserver.candy"] },
+    { name: "notes", aliasFqdns: ["notes.homeserver.candy"] },
+  ]
+  const records = {
+    agh: tailscaleIp,
+    "agh.homeserver": tailscaleIp,
+    notes: tailscaleIp,
+    "notes.homeserver": tailscaleIp,
+  }
+
+  it("treats only RFC 1918 addresses as LAN", () => {
+    expect(isPrivateLanIp("192.168.0.42")).toBe(true)
+    expect(isPrivateLanIp("10.1.2.3")).toBe(true)
+    expect(isPrivateLanIp("172.20.0.5")).toBe(true)
+    expect(isPrivateLanIp("::ffff:192.168.0.42")).toBe(true)
+    expect(isPrivateLanIp("172.32.0.5")).toBe(false)
+    expect(isPrivateLanIp("100.86.31.43")).toBe(false)
+    expect(isPrivateLanIp("127.0.0.1")).toBe(false)
+    expect(isPrivateLanIp("8.8.8.8")).toBe(false)
+    expect(isPrivateLanIp("fe80::1")).toBe(false)
+  })
+
+  it("picks the LAN view by listener or by source address", () => {
+    expect(pickCandyDnsView("lan", "127.0.0.1")).toBe("lan")
+    expect(pickCandyDnsView("default", "192.168.0.42")).toBe("lan")
+    expect(pickCandyDnsView("default", "127.0.0.1")).toBe("tailnet")
+    expect(pickCandyDnsView("default", "100.101.102.103")).toBe("tailnet")
+  })
+
+  it("builds LAN records only for published local names and their aliases", () => {
+    expect(buildLanRecords({ published: ["AGH", "gone"], local, lanIp })).toEqual({
+      agh: lanIp,
+      "agh.homeserver": lanIp,
+    })
+    expect(buildLanRecords({ published: [], local, lanIp })).toEqual({})
+    expect(buildLanRecords({ published: ["agh"], local, lanIp: null })).toEqual({})
+  })
+
+  it("answers published names with the LAN IP in the LAN view only", () => {
+    const lanRecords = buildLanRecords({ published: ["agh"], local, lanIp })
+    const resolve = (subdomain: string, view: "lan" | "tailnet") => resolveCandyDnsRecord({
+      subdomain,
+      records,
+      localNames: ["agh", "notes"],
+      hostIp: tailscaleIp,
+      lanRecords: view === "lan" ? lanRecords : undefined,
+    })
+
+    expect(resolve("agh", "lan")).toBe(lanIp)
+    expect(resolve("agh.homeserver", "lan")).toBe(lanIp)
+    expect(resolve("agh", "tailnet")).toBe(tailscaleIp)
+    expect(resolve("agh.homeserver", "tailnet")).toBe(tailscaleIp)
+  })
+
+  it("keeps unpublished names, built-ins and action subdomains on the tailnet", () => {
+    const lanRecords = buildLanRecords({ published: ["agh"], local, lanIp })
+    const resolve = (subdomain: string) => resolveCandyDnsRecord({
+      subdomain,
+      records,
+      localNames: ["agh", "notes"],
+      hostIp: tailscaleIp,
+      lanRecords,
+    })
+
+    expect(resolve("notes")).toBe(tailscaleIp)
+    expect(resolve("candy")).toBe(tailscaleIp)
+    expect(resolve("portal")).toBe(tailscaleIp)
+    expect(resolve("agh.kill")).toBe(tailscaleIp)
+    expect(resolve("agh.p.homeserver")).toBe(tailscaleIp)
+    expect(resolve("missing")).toBeNull()
   })
 })

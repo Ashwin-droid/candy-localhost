@@ -191,6 +191,9 @@ candy list                     List registered server configs
 candy route add <name> <port>  Add manual route (--persistent to survive restarts)
 candy route rm <name>          Remove a route
 candy route                    List routes
+candy lan                      List domains and whether each is published to the LAN
+candy lan publish <name>       Make <name>.candy reachable from the LAN (opt-in)
+candy lan unpublish <name>     Back to tailnet-only
 candy domain list              List bound public domains
 candy domain bind <sub> [--server <name>]  Bind subdomain (defaults serverName=subdomain)
 candy domain unbind <sub>      Remove domain binding
@@ -229,7 +232,7 @@ candy version | -v             Show version
 | `candy_portals` | — | List active tunnels |
 | `candy_input` | `name`, `input?`, `key?` | Send PTY input to server |
 | `candy_domain` | `action`, `subdomain?`, `serverName?`, `force?`, `zone?`, `tunnel?` | Domain management |
-| `candy_route` | `action`, `name?`, `port?`, `persistent?` | Route management |
+| `candy_route` | `action`, `name?`, `port?`, `persistent?` | Route management (`add`, `remove`, `list`, `lan_publish`, `lan_unpublish`) |
 
 ### How MCP Integration Works
 
@@ -292,6 +295,13 @@ Two auth modes:
 | `POST` | `/rename` | `{ oldName, newName }` | Rename route |
 | `GET` | `/routes` | — | List all routes |
 
+#### LAN Publishing
+
+| Method | Path | Body | Description |
+|--------|------|------|-------------|
+| `GET` | `/lan` | — | Detected LAN IP and which names are published |
+| `POST` | `/lan` | `{ name, publish }` | Publish (`true`, default) or unpublish (`false`) `<name>.candy` on the LAN |
+
 #### Processes
 
 | Method | Path | Body | Description |
@@ -352,6 +362,7 @@ When Tailscale is installed and connected, candy automatically detects the machi
 - **Cross-device access.** Any device on your tailnet can reach your dev servers by name — phone, laptop, VM, etc.
 - **Host-aware network registry.** The candy network view shows which Tailscale host is advertising each route, plus the canonical and alias `.candy` names for every claim.
 - **Caddy auto-config.** The generated Caddyfile includes `.candy` route blocks bound to the Tailscale IP alongside the `.localhost` blocks.
+- **Opt-in LAN publishing.** Individual names can also be served to the local network. See [Publish to LAN](#publish-to-lan-opt-in).
 
 If Tailscale is not installed or not connected, candy runs normally with `.localhost` only. No configuration needed — detection is automatic.
 
@@ -365,6 +376,46 @@ A companion DNS daemon resolves `*.candy` queries to your Tailscale IP so the `.
 - Watches `~/.config/candy/candy-dns.json` for config changes
 
 Point your tailnet's DNS to this machine for the `.candy` zone, or configure per-device DNS to resolve `.candy` to the Tailscale IP.
+
+`CANDY_DNS_HOST` / `CANDY_DNS_PORT` override the bind address when another resolver owns `:53` and forwards `candy` here.
+
+### Publish to LAN (opt-in)
+
+`.candy` is tailnet-only by default: names resolve to the Tailscale IP and Caddy serves them only on that address. A device on your local network that is not on the tailnet (a TV, a guest phone) cannot reach them.
+
+Publishing a name changes that for that one name:
+
+```bash
+candy lan publish myapp     # or the LAN button on the route / server config in the portal
+candy lan unpublish myapp
+```
+
+For a published name:
+
+- Caddy also binds `<name>.candy` (and its host alias) to the machine's LAN IP. Kill/portal subdomains, the portal UI and every unpublished name stay Tailscale-only.
+- `candy-dns` answers with the LAN IP, but only in its **LAN view**. Tailnet clients keep getting the Tailscale IP, so the name still works away from home.
+
+The opt-in is stored per name in `~/.config/candy/lan.json`, applies to routes and server configs alike, and is dropped when the name is removed. The LAN IP is the source address of the default route (RFC 1918 only); set `CANDY_LAN_IP` to override.
+
+A query is in the LAN view when:
+
+- it comes straight from an RFC 1918 address (candy-dns bound to a LAN-reachable address), or
+- it arrives on the dedicated LAN listener, enabled with `CANDY_DNS_LAN_PORT` (and optionally `CANDY_DNS_LAN_HOST`).
+
+The second form is for a front resolver that hides the client address. Point the resolver's LAN clients at the LAN listener:
+
+- **dnsmasq** serving only the LAN: `server=/candy/127.0.0.1#5336`
+- **AdGuard Home** serving both LAN and tailnet: keep `[/candy/]127.0.0.1:5335` as the global upstream and add a persistent client for the LAN subnet (e.g. `192.168.0.0/24`) with upstream `[/candy/]127.0.0.1:5336` and its own upstream cache enabled. Without the per-client cache AdGuard Home stops caching for those clients.
+
+```ini
+# /etc/systemd/system/candy-dns.service.d/override.conf
+[Service]
+Environment="CANDY_DNS_HOST=127.0.0.1"
+Environment="CANDY_DNS_PORT=5335"
+Environment="CANDY_DNS_LAN_PORT=5336"
+```
+
+LAN devices see Caddy's internal CA, same as tailnet devices: trust the Caddy root certificate or accept the warning.
 
 ## Domain Binding (Cloudflare)
 
@@ -427,6 +478,7 @@ Runs as the installing user with `CAP_NET_BIND_SERVICE` for port 53 — not root
 |------|---------|
 | `~/.config/candy/servers.json` | Server configurations (name → variants) |
 | `~/.config/candy/routes.json` | Persistent routes |
+| `~/.config/candy/lan.json` | Names published to the LAN |
 | `~/.config/candy/domains.json` | Domain binding config (zone, tunnel, bindings) |
 | `~/.config/candy/candy-grudge.lock` | Bound-domain auth grudge state |
 | `~/.config/candy/mcp-secret` | MCP auth bootstrap secret |

@@ -508,13 +508,13 @@ This is a READ-ONLY operation - safe to call anytime without asking.`,
   },
   {
     name: "candy_route",
-    description: "Add, remove, or list domain routes. Use persistent flag for routes that survive daemon restarts.",
+    description: "Add, remove, or list domain routes. Use persistent flag for routes that survive daemon restarts. lan_publish / lan_unpublish opt a name in or out of being reachable at <name>.candy from the local network (off by default; .candy is Tailscale-only otherwise).",
     inputSchema: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          description: "Action: add, remove, or list"
+          description: "Action: add, remove, list, lan_publish, or lan_unpublish"
         },
         name: {
           type: "string",
@@ -916,16 +916,28 @@ async function handleRequest(request: MCPRequest): Promise<MCPResponse | null> {
           }
           case "candy_route": {
             const { action: routeAction, name: routeName, port: routePort, persistent: routePersistent } = toolArgs as any
+            const post = (path: string, body: unknown) =>
+              daemonFetch(path, { method: "POST", headers: { "X-Candy-Actor": "AI" }, body: JSON.stringify(body) })
             if (routeAction === "list") {
-              const res = await fetch(`${API}/routes`, { headers: authHeaders() }).then(r => r.json())
-              const entries = Object.entries(res as Record<string, any>)
-              result = entries.length === 0 ? "No routes" : entries.map(([n, r]: [string, any]) => `${n}.localhost -> ${typeof r.target === "string" ? r.target : ":" + r.target}${r.persistent ? " [persistent]" : ""}`).join("\n")
+              const res = await daemonFetch("/routes")
+              const entries = Object.entries((res || {}) as Record<string, any>)
+              result = res?.error && typeof res.error === "string"
+                ? `Error: ${res.error}`
+                : entries.length === 0 ? "No routes" : entries.map(([n, r]: [string, any]) => `${n}.localhost -> ${typeof r.target === "string" ? r.target : ":" + r.target}${r.persistent ? " [persistent]" : ""}${r.lan ? " [lan]" : ""}`).join("\n")
             } else if (routeAction === "add") {
-              const res = await fetch(`${API}/register`, { method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() }, body: JSON.stringify({ name: routeName, port: routePort, persistent: routePersistent || false }) }).then(r => r.json())
-              result = (res as any).error ? `Error: ${(res as any).error}` : `Route added: ${routeName}.localhost -> :${routePort}${routePersistent ? " (persistent)" : ""}`
+              const res = await post("/register", { name: routeName, port: routePort, persistent: routePersistent || false })
+              result = res?.error ? `Error: ${res.error}` : `Route added: ${routeName}.localhost -> :${routePort}${routePersistent ? " (persistent)" : ""}`
             } else if (routeAction === "remove") {
-              const res = await fetch(`${API}/register/${routeName}`, { method: "DELETE", headers: authHeaders() }).then(r => r.json())
-              result = (res as any).error ? `Error: ${(res as any).error}` : `Route removed: ${routeName}.localhost`
+              const res = await daemonFetch(`/register/${routeName}`, { method: "DELETE", headers: { "X-Candy-Actor": "AI" } })
+              result = res?.error ? `Error: ${res.error}` : `Route removed: ${routeName}.localhost`
+            } else if (routeAction === "lan_publish" || routeAction === "lan_unpublish") {
+              const publish = routeAction === "lan_publish"
+              const res = await post("/lan", { name: routeName, publish })
+              result = res?.error
+                ? `Error: ${res.error}`
+                : publish
+                  ? `Published to LAN: ${routeName}.candy -> ${res.lanIp || "no LAN address detected"}${res.warning ? ` (${res.warning})` : ""}`
+                  : `Unpublished from LAN: ${routeName}.candy`
             } else { result = "Unknown action" }
             break
           }

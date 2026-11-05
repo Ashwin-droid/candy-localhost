@@ -85,21 +85,88 @@ export const buildActionSubdomain = (
     : `${cleanName}.${action}`
 }
 
+// ---------------------------------------------------------------------------
+// LAN publishing
+//
+// .candy names resolve to the Tailscale IP by default. A name that was opted in
+// ("published to LAN") additionally resolves to this machine's LAN IP, but only
+// for queries that arrive in the LAN view.
+// ---------------------------------------------------------------------------
+
+export type CandyDnsView = "tailnet" | "lan"
+
+const parseIpv4 = (ip: string): number[] | null => {
+  const parts = ip.trim().replace(/^::ffff:/i, "").split(".")
+  if (parts.length !== 4) return null
+  const octets = parts.map(part => (/^\d{1,3}$/.test(part) ? Number(part) : NaN))
+  return octets.every(octet => octet >= 0 && octet <= 255) ? octets : null
+}
+
+// RFC 1918 only. Tailscale's 100.64.0.0/10 and loopback are deliberately not LAN.
+export const isPrivateLanIp = (ip: string): boolean => {
+  const octets = parseIpv4(ip)
+  if (!octets) return false
+  const [a, b] = octets
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
+}
+
+// A query gets the LAN view when it arrives on the dedicated LAN listener (a
+// front resolver such as AdGuard Home forwards its LAN clients there), or when
+// candy-dns is queried directly from an RFC 1918 address.
+export const pickCandyDnsView = (
+  listener: "default" | "lan",
+  sourceIp: string,
+): CandyDnsView => (listener === "lan" || isPrivateLanIp(sourceIp) ? "lan" : "tailnet")
+
+// name -> LAN IP for every published local name, plus its host-scoped aliases.
+export const buildLanRecords = ({
+  published,
+  local,
+  lanIp,
+  tld = "candy",
+}: {
+  published: Iterable<string>
+  local: Iterable<Pick<NetworkRegistryEntry, "name" | "aliasFqdns">>
+  lanIp: string | null
+  tld?: string
+}): Record<string, string> => {
+  const records: Record<string, string> = {}
+  if (!lanIp) return records
+
+  const publishedSet = new Set([...published].map(name => name.trim().toLowerCase()))
+  const suffix = `.${tld}`
+  for (const entry of local) {
+    if (!publishedSet.has(entry.name)) continue
+    records[entry.name] = lanIp
+    for (const fqdn of entry.aliasFqdns) {
+      if (fqdn.endsWith(suffix)) records[fqdn.slice(0, -suffix.length)] = lanIp
+    }
+  }
+  return records
+}
+
 export const resolveCandyDnsRecord = ({
   subdomain,
   records,
   localNames = [],
   hostIp,
+  lanRecords,
 }: {
   subdomain: string
   records?: Record<string, string>
   localNames?: Iterable<string>
   hostIp: string
+  // Pass only for queries in the LAN view. Published names win; everything
+  // else (action subdomains, unpublished names) resolves as on the tailnet.
+  lanRecords?: Record<string, string>
 }): string | null => {
   const requested = subdomain.trim().toLowerCase()
   if (!requested) return null
 
   if (CANDY_BUILTIN_NAMES.has(requested)) return hostIp
+
+  const lanTarget = lanRecords?.[requested]
+  if (lanTarget) return lanTarget
 
   const localNameSet = new Set(
     [...localNames]

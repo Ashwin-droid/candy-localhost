@@ -3,7 +3,9 @@
  *
  * Responds to *.candy A record queries with the machine's Tailscale IP.
  * Names published to the LAN answer with the LAN IP instead, but only for
- * queries in the LAN view (see pickCandyDnsView).
+ * queries in the LAN view (see pickCandyDnsView). The LAN view also answers
+ * this machine's ts.net hostname with the LAN IP while a published name is
+ * served over HTTPS on it (lanHostRecords).
  * Watches ~/.config/candy/candy-dns.json for the list of known server names.
  * Zero npm dependencies - pure Bun stdlib.
  */
@@ -43,6 +45,7 @@ interface DnsConfig {
   records?: Record<string, string>  // name -> IP mapping
   lanIp?: string | null
   lanRecords?: Record<string, string>  // published name -> LAN IP (LAN view only)
+  lanHostRecords?: Record<string, string>  // full hostname -> LAN IP (LAN view only)
 }
 
 let config: DnsConfig | null = null
@@ -121,18 +124,15 @@ const buildResponse = (
   queryBuf: Buffer,
   queryId: number,
   name: string,
-  ip: string | null, // null = NXDOMAIN
+  ip: string | null, // null = no answer
+  rcode: 0 | 3 = ip ? 0 : 3, // NOERROR + no answer = NODATA (name exists, other type)
 ): Buffer => {
   // Header: 12 bytes
   const header = Buffer.alloc(12)
   // Transaction ID
   header.writeUInt16BE(queryId, 0)
   // Flags: QR=1 (response), AA=1 (authoritative), RCODE=0 or 3
-  if (ip) {
-    header.writeUInt16BE(0x8400, 2) // QR + AA, no error
-  } else {
-    header.writeUInt16BE(0x8403, 2) // QR + AA, NXDOMAIN
-  }
+  header.writeUInt16BE(0x8400 | rcode, 2) // QR + AA, NOERROR or NXDOMAIN
   // QDCOUNT = 1
   header.writeUInt16BE(1, 4)
   // ANCOUNT = 1 if we have an answer, 0 otherwise
@@ -247,6 +247,19 @@ const main = async () => {
           const tld = config?.tld || "candy"
           const suffix = `.${tld}`
 
+          const view = pickCandyDnsView(listener, addr)
+
+          // This machine's ts.net hostname, LAN view only. Other record types get
+          // NODATA rather than NXDOMAIN, so resolvers don't cache the whole name
+          // as nonexistent (RFC 8020).
+          const hostIp = view === "lan" ? config?.lanHostRecords?.[nameLower] : undefined
+          if (hostIp) {
+            const isA = qtype === 1 && qclass === 1
+            socket.send(buildResponse(Buffer.from(buf), queryId, name, isA ? hostIp : null, 0), port, addr)
+            if (isA) log(`A ${nameLower} -> ${hostIp} [lan] (from ${addr}:${port})`)
+            return
+          }
+
           // Only handle queries ending in .candy
           if (!nameLower.endsWith(suffix)) {
             const response = buildResponse(Buffer.from(buf), queryId, name, null)
@@ -264,8 +277,6 @@ const main = async () => {
             socket.send(response, port, addr)
             return
           }
-
-          const view = pickCandyDnsView(listener, addr)
 
           // Per-name IP resolution, including host-scoped aliases and action subdomains.
           const ip = resolveCandyDnsRecord({

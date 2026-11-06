@@ -378,7 +378,7 @@
     const escapedServerName = serverName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const candySuffix = TLD ? '.' + TLD : '';
     const getServiceHost = () => {
-      if (_isBoundDomain || !TLD) return _host;
+      if (_isBoundDomain || !TLD) return location.host;  // keeps a :port (ts.net HTTPS)
       const left = _host.endsWith(candySuffix) ? _host.slice(0, -candySuffix.length) : _host;
       const actionMatch = left.match(new RegExp(`^${escapedServerName}\\.(?:kill|k|portal|p)(?:\\.(.+))?$`));
       if (!actionMatch) return _host;

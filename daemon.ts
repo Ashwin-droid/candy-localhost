@@ -221,6 +221,9 @@ let tailscaleIp: string | null = null
 // not just the tailnet. Persisted to lan.json. Off for every name by default.
 let lanIp: string | null = null
 const lanPublished = new Set<string>()
+// Published names that are also served over HTTPS on this machine's ts.net
+// hostname: name -> port. Always a subset of lanPublished.
+const lanHttps = new Map<string, number>()
 const LAN_IP_REFRESH_INTERVAL = 5 * 60 * 1000  // 5 minutes
 
 // Reserved domain names (cannot be used for servers/routes)
@@ -1069,11 +1072,18 @@ const loadLanPublished = async () => {
   try {
     const file = Bun.file(LAN_FILE)
     if (!await file.exists()) return
-    const data = await file.json() as { published?: unknown }
+    const data = await file.json() as { published?: unknown, https?: unknown }
     lanPublished.clear()
+    lanHttps.clear()
     if (Array.isArray(data.published)) {
       for (const name of data.published) {
         if (typeof name === "string" && name && !isReserved(name)) lanPublished.add(name.toLowerCase())
+      }
+    }
+    if (data.https && typeof data.https === "object") {
+      for (const [name, port] of Object.entries(data.https as Record<string, unknown>)) {
+        const key = name.toLowerCase()
+        if (lanPublished.has(key) && isValidLanHttpsPort(port)) lanHttps.set(key, port)
       }
     }
   } catch {}
@@ -1081,10 +1091,70 @@ const loadLanPublished = async () => {
 
 const saveLanPublished = async () => {
   await $`mkdir -p ${CANDY_CONFIG_DIR}`.quiet().nothrow()
-  await Bun.write(LAN_FILE, JSON.stringify({ published: [...lanPublished].sort() }, null, 2))
+  const https = Object.fromEntries([...lanHttps].sort(([a], [b]) => a.localeCompare(b)))
+  await Bun.write(LAN_FILE, JSON.stringify({ published: [...lanPublished].sort(), https }, null, 2))
 }
 
 const isLanPublished = (name: string): boolean => lanPublished.has(name.toLowerCase())
+
+// ---------------------------------------------------------------------------
+// HTTPS on the LAN with a real certificate
+//
+// <name>.candy uses Caddy's internal CA, which LAN devices don't trust. A
+// published name can also get a port on this machine's Tailscale hostname
+// (https://<host>.<tailnet>.ts.net:<port>). Caddy gets a publicly trusted
+// certificate for that name from tailscaled and serves it on the LAN IP only;
+// candy-dns's LAN view answers the hostname with the LAN IP. The Tailscale IP
+// is left alone: on the tailnet MagicDNS resolves the hostname to the
+// Tailscale IP, where `tailscale serve` may own the same port (and that's the
+// way to give tailnet devices the same URL).
+// ---------------------------------------------------------------------------
+
+const LAN_HTTPS_PORT_START = 8443
+const LAN_HTTPS_PORT_SEARCH = 200
+const LAN_HTTPS_RESERVED_PORTS = new Set([9999])
+
+function isValidLanHttpsPort(port: unknown): port is number {
+  return typeof port === "number" && Number.isInteger(port) && port >= 1024 && port <= 65535
+}
+
+// This machine's MagicDNS name (e.g. "homeserver.example.ts.net"), if known.
+const getTailnetHostname = (): string | null => normalizeTailscaleDnsName(tailscaleSelf?.dnsName)
+
+const lanHttpsUrl = (name: string): string | null => {
+  const port = lanHttps.get(name.toLowerCase())
+  const host = getTailnetHostname()
+  return port && host ? `https://${host}:${port}` : null
+}
+
+const canBindPort = (hostname: string, port: number): boolean => {
+  try {
+    const listener = Bun.listen({ hostname, port, socket: { data() {} } })
+    listener.stop(true)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// Why `port` can't be used for <name>'s HTTPS site, or null if it can.
+const lanHttpsPortProblem = async (name: string, port: number): Promise<string | null> => {
+  if (!isValidLanHttpsPort(port)) return "Port must be between 1024 and 65535."
+  if (LAN_HTTPS_RESERVED_PORTS.has(port)) return `Port ${port} is reserved for the candy daemon.`
+  for (const [other, otherPort] of lanHttps) {
+    if (other !== name && otherPort === port) return `Port ${port} is already used by ${other}.`
+  }
+  if (lanHttps.get(name) === port) return null  // already ours, Caddy holds it
+  if (lanIp && !canBindPort(lanIp, port)) return `Port ${port} is already in use on ${lanIp}.`
+  return null
+}
+
+const pickLanHttpsPort = async (name: string): Promise<number | null> => {
+  for (let port = LAN_HTTPS_PORT_START; port < LAN_HTTPS_PORT_START + LAN_HTTPS_PORT_SEARCH; port++) {
+    if (!await lanHttpsPortProblem(name, port)) return port
+  }
+  return null
+}
 
 // Addresses a <name>.candy site block binds to. Unpublished names stay
 // Tailscale-only; published names are also served on the LAN IP.
@@ -1099,7 +1169,10 @@ const setLanPublished = async (name: string, publish: boolean, actor: Actor = 'P
   const key = name.toLowerCase()
   if (publish === lanPublished.has(key)) return
   if (publish) lanPublished.add(key)
-  else lanPublished.delete(key)
+  else {
+    lanPublished.delete(key)
+    lanHttps.delete(key)
+  }
   await saveLanPublished()
   auditLog(publish ? 'LAN_PUBLISH' : 'LAN_UNPUBLISH', `${key}.candy${publish && lanIp ? ` -> ${lanIp}` : ''}`, actor)
   await syncCaddy()
@@ -1111,6 +1184,7 @@ const forgetLanPublishedIfGone = async (name: string): Promise<boolean> => {
   const key = name.toLowerCase()
   if (!lanPublished.has(key) || routes.has(name) || serverConfigs.has(name)) return false
   lanPublished.delete(key)
+  lanHttps.delete(key)
   await saveLanPublished()
   auditLog('LAN_UNPUBLISH', `${key}.candy (name removed)`, 'System')
   return true
@@ -1147,8 +1221,14 @@ const syncDnsConfig = async () => {
   // only for queries in its LAN view.
   const lanRecords = buildLanRecords({ published: lanPublished, local: snapshot.local, lanIp })
 
+  // Names outside .candy that the LAN view answers: this machine's ts.net
+  // hostname, while any published name is served over HTTPS on it.
+  const tailnetHost = normalizeTailscaleDnsName(localIdentity?.dnsName)
+  const lanHostRecords: Record<string, string> = {}
+  if (tailnetHost && lanIp && lanHttps.size > 0) lanHostRecords[tailnetHost] = lanIp
+
   await Bun.write(DNS_CONFIG_FILE, JSON.stringify({
-    tailscaleIp, tld: "candy", servers, records, lanIp, lanRecords
+    tailscaleIp, tld: "candy", servers, records, lanIp, lanRecords, lanHostRecords
   }, null, 2))
 }
 
@@ -2404,6 +2484,33 @@ const syncCaddy = async () => {
     }
   }
 
+  // HTTPS on the tailnet hostname: https://<host>.ts.net:<port> per name, with
+  // a certificate from tailscaled. LAN IP only; the Tailscale IP's ports belong
+  // to `tailscale serve`.
+  const tailnetHost = getTailnetHostname()
+  if (tailnetHost && lanIp && lanIp !== tailscaleIp) {
+    for (const [name, port] of [...lanHttps].sort(([a], [b]) => a.localeCompare(b))) {
+      const route = routes.get(name)
+      if (!route && !serverConfigs.has(name)) continue
+      // Not running yet: the daemon's lazy-start page picks the server by Host.
+      const proxy = route
+        ? `reverse_proxy ${typeof route.target === "number" ? `localhost:${route.target}` : route.target}`
+        : `reverse_proxy localhost:9999 {
+    header_up Host ${name}.candy
+  }`
+      content += `${tailnetHost}:${port} {
+  bind ${lanIp}
+  tls {
+    get_certificate tailscale
+  }
+  ${proxy}
+  log
+}
+
+`
+    }
+  }
+
   // Tunnel domains (trycloudflare.com) - route to local ports
   for (const [name, { port, url }] of portals) {
     if (url) {
@@ -2577,11 +2684,13 @@ const syncCaddy = async () => {
   await Bun.write(CADDYFILE, content)
 
   try {
-    await fetch("http://localhost:2019/load", {
+    const res = await fetch("http://localhost:2019/load", {
       method: "POST",
       headers: { "Content-Type": "text/caddyfile" },
       body: content,
     })
+    // Caddy keeps running the previous config when a load is rejected.
+    if (!res.ok) console.log(`\x1b[31mCaddy rejected the new config:\x1b[0m ${(await res.text()).trim()}`)
   } catch (e) {
     console.log("\x1b[31mFailed to reload Caddy - is it running?\x1b[0m")
   }
@@ -3259,8 +3368,16 @@ const controlServer = Bun.serve({
 
       // The LAN opt-in follows the route, unless a server config keeps the old name.
       if (isLanPublished(oldName)) {
-        if (!serverConfigs.has(oldName)) lanPublished.delete(oldName.toLowerCase())
-        lanPublished.add(newName.toLowerCase())
+        const oldKey = oldName.toLowerCase()
+        const newKey = newName.toLowerCase()
+        const httpsPort = lanHttps.get(oldKey)
+        if (!serverConfigs.has(oldName)) {
+          lanPublished.delete(oldKey)
+          lanHttps.delete(oldKey)
+        }
+        lanPublished.add(newKey)
+        // A port can only belong to one name, so HTTPS moves only with the whole opt-in.
+        if (httpsPort !== undefined && !lanHttps.has(oldKey)) lanHttps.set(newKey, httpsPort)
         await saveLanPublished()
       }
 
@@ -3277,7 +3394,7 @@ const controlServer = Bun.serve({
     }
 
     if (req.method === "GET" && url.pathname === "/routes") {
-      const routeList: Record<string, { target: number | string, isRestricted: boolean, persistent: boolean, lan: boolean }> = {}
+      const routeList: Record<string, { target: number | string, isRestricted: boolean, persistent: boolean, lan: boolean, lanHttps: string | null }> = {}
       for (const [name, route] of routes) {
         if (isReserved(name)) continue  // hide reserved
         routeList[name] = {
@@ -3285,6 +3402,7 @@ const controlServer = Bun.serve({
           isRestricted: typeof route.target === "string",
           persistent: route.persistent,
           lan: isLanPublished(name),
+          lanHttps: isLanPublished(name) ? lanHttpsUrl(name) : null,
         }
       }
       return Response.json(routeList, { headers: corsHeaders })
@@ -3298,15 +3416,18 @@ const controlServer = Bun.serve({
         .sort((a, b) => a.localeCompare(b))
       return Response.json({
         lanIp,
+        tailnetHost: getTailnetHostname(),
         published: [...lanPublished].sort(),
         names: Object.fromEntries(names.map(name => [name, isLanPublished(name)])),
+        https: Object.fromEntries([...lanHttps].map(([name, port]) => [name, { port, url: lanHttpsUrl(name) }])),
       }, { headers: corsHeaders })
     }
 
     if (req.method === "POST" && url.pathname === "/lan") {
-      const body = await req.json() as { name?: string; publish?: boolean }
+      const body = await req.json() as { name?: string; publish?: boolean; https?: boolean; port?: number }
       const name = typeof body.name === "string" ? body.name.trim() : ""
       const publish = body.publish !== false
+      const key = name.toLowerCase()
 
       if (!name || isReserved(name)) {
         return Response.json({ error: "That name is reserved. Nice try though.", details: name }, { status: 403, headers: corsHeaders })
@@ -3315,14 +3436,47 @@ const controlServer = Bun.serve({
         return Response.json({ error: pick(msg.notFound), details: name }, { status: 404, headers: corsHeaders })
       }
 
+      // Optional HTTPS on the tailnet hostname (https: true/false; omitted = unchanged)
+      let httpsChange: "on" | "off" | null = null
+      if (publish && body.https === true) {
+        if (!getTailnetHostname()) {
+          return Response.json({ error: "HTTPS needs this machine's Tailscale hostname, and Tailscale isn't reporting one." }, { status: 409, headers: corsHeaders })
+        }
+        const port = body.port !== undefined ? Number(body.port) : (lanHttps.get(key) ?? await pickLanHttpsPort(key))
+        if (port === null) {
+          return Response.json({ error: "No free port found for HTTPS. Pass one explicitly." }, { status: 409, headers: corsHeaders })
+        }
+        const problem = await lanHttpsPortProblem(key, port)
+        if (problem) return Response.json({ error: problem, details: String(port) }, { status: 409, headers: corsHeaders })
+        if (lanHttps.get(key) !== port) {
+          lanHttps.set(key, port)
+          httpsChange = "on"
+        }
+      } else if (body.https === false && lanHttps.has(key)) {
+        lanHttps.delete(key)
+        httpsChange = "off"
+      }
+
       const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      const wasPublished = isLanPublished(name)
       await setLanPublished(name, publish, actor)
-      log(publish ? "LAN" : "UNLAN", `${name}.candy${publish && lanIp ? ` -> ${lanIp}` : ""}`)
+      if (httpsChange && publish) {
+        // setLanPublished only saves and reloads when the opt-in itself changed.
+        if (wasPublished) {
+          await saveLanPublished()
+          await syncCaddy()
+        }
+        auditLog(httpsChange === "on" ? 'LAN_HTTPS_ON' : 'LAN_HTTPS_OFF', `${key}${httpsChange === "on" ? ` -> ${lanHttpsUrl(key)}` : ''}`, actor)
+      }
+      const httpsUrl = isLanPublished(name) ? lanHttpsUrl(name) : null
+      log(publish ? "LAN" : "UNLAN", `${name}.candy${publish && lanIp ? ` -> ${lanIp}` : ""}${httpsUrl ? ` + ${httpsUrl}` : ""}`)
       return Response.json({
         name,
         domain: `${name}.candy`,
         published: isLanPublished(name),
         lanIp,
+        httpsUrl,
+        httpsPort: lanHttps.get(key) ?? null,
         ...(publish && !lanIp ? { warning: "No LAN address detected. Set CANDY_LAN_IP to publish." } : {}),
       }, { headers: corsHeaders })
     }
@@ -3790,6 +3944,7 @@ const controlServer = Bun.serve({
           count: entries.length,
           variants: entries.map(c => ({ id: c.id, cwd: c.cwd, cmd: c.cmd })),
           lan: isLanPublished(name),
+          lanHttps: isLanPublished(name) ? lanHttpsUrl(name) : null,
         }
       }
       return Response.json({ success: true, configs }, { headers: corsHeaders })
@@ -4623,7 +4778,7 @@ const tailscaleStatus = tailscaleIp
   ? `\x1b[33mTailscale:\x1b[0m   ${tailscaleIp} (*.candy domains active)`
   : `\x1b[90mTailscale:\x1b[0m   not detected (*.candy domains disabled)`
 const lanStatus = lanIp
-  ? `\x1b[33mLAN:\x1b[0m         ${lanIp} (${lanPublished.size} published)`
+  ? `\x1b[33mLAN:\x1b[0m         ${lanIp} (${lanPublished.size} published${lanHttps.size ? `, ${lanHttps.size} with HTTPS` : ''})`
   : `\x1b[90mLAN:\x1b[0m         not detected (LAN publishing disabled)`
 
 console.log(`

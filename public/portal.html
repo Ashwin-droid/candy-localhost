@@ -2320,7 +2320,7 @@ Misc:
             const r = routes[name];
             const target = r.isRestricted ? r.target : ':' + r.target;
             const persistentBadge = r.persistent ? '<span class="route-persistent">pinned</span>' : '';
-            const lanBadge = r.lan ? `<span class="route-lan" title="${name}.candy is reachable from the LAN">lan</span>` : '';
+            const lanBadge = r.lan ? `<span class="route-lan" title="${name}.candy is reachable from the LAN">lan</span>${lanHttpsLink(r.lanHttps)}` : '';
             return `
               <div class="route-item">
                 <div class="route-info">
@@ -2332,7 +2332,7 @@ Misc:
                 </div>
                 <div class="route-actions">
                   <button class="btn-icon pin ${r.persistent ? 'active' : ''}" onclick="togglePersistent('${name}', ${!r.persistent})" title="${r.persistent ? 'Unpin route' : 'Pin route (persistent)'}">📌</button>
-                  ${lanToggleButton(name, r.lan)}
+                  ${lanToggleButton(name, r.lan, r.lanHttps)}
                   <button class="btn-icon portal" onclick="openPortal('${name}', ${r.target})" title="Open Portal">◉</button>
                   <button class="btn-icon danger" onclick="deleteRoute('${name}')" title="Delete">×</button>
                 </div>
@@ -2420,11 +2420,38 @@ Misc:
 
     // "Publish this domain to LAN": opt a name in to resolving and serving at
     // <name>.candy for devices on the local network, not just the tailnet.
-    function lanToggleButton(name, published) {
+    function lanToggleButton(name, published, httpsUrl) {
       const title = published
         ? `Published to LAN: ${name}.candy is reachable from the local network. Click to unpublish.`
         : `Publish this domain to LAN (${name}.candy is tailnet-only)`;
-      return `<button class="btn-icon lan ${published ? 'active' : ''}" onclick="toggleLan('${escapeJsSingle(name)}', ${!published})" title="${escapeHtml(title)}">LAN</button>`;
+      const lan = `<button class="btn-icon lan ${published ? 'active' : ''}" onclick="toggleLan('${escapeJsSingle(name)}', ${!published})" title="${escapeHtml(title)}">LAN</button>`;
+      if (!published) return lan;
+      // HTTPS with a real certificate on this machine's ts.net hostname (LAN only)
+      const httpsTitle = httpsUrl
+        ? `Served on the LAN at ${httpsUrl} with a trusted certificate. Click to turn off.`
+        : `Also serve on the LAN at https://<this machine>.ts.net:<port> with a trusted certificate`;
+      return lan + `<button class="btn-icon lan ${httpsUrl ? 'active' : ''}" onclick="toggleLanHttps('${escapeJsSingle(name)}', ${!httpsUrl})" title="${escapeHtml(httpsTitle)}">TLS</button>`;
+    }
+
+    function lanHttpsLink(httpsUrl) {
+      return httpsUrl ? ` <a class="route-lan" href="${escapeHtml(httpsUrl)}" target="_blank" title="LAN HTTPS (trusted certificate)">${escapeHtml(httpsUrl.replace(/^https:\/\//, ''))}</a>` : '';
+    }
+
+    async function toggleLanHttps(name, https) {
+      try {
+        const res = await apiCall('/lan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, publish: true, https })
+        });
+        const data = await res.json();
+        if (data.error) toast(data.error, 'error');
+        else toast(https ? `${name} on the LAN at ${data.httpsUrl}` : `${name}: ts.net HTTPS off`, 'success');
+        refreshRoutes();
+        refreshConfigs();
+      } catch (e) {
+        toast('Failed to update LAN HTTPS', 'error');
+      }
     }
 
     async function toggleLan(name, publish) {
@@ -2645,7 +2672,7 @@ Misc:
             const variants = Array.isArray(c.variants) && c.variants.length ? c.variants : [c];
             variants.forEach((variant, idx) => {
               const heading = idx === 0
-                ? `${escapeHtml(name)}.${TLD}${variants.length > 1 ? ` <span style="color: var(--text-dim);">(${variants.length} variants)</span>` : ''}${c.lan ? ' <span class="route-lan">lan</span>' : ''}`
+                ? `${escapeHtml(name)}.${TLD}${variants.length > 1 ? ` <span style="color: var(--text-dim);">(${variants.length} variants)</span>` : ''}${c.lan ? ' <span class="route-lan">lan</span>' + lanHttpsLink(c.lanHttps) : ''}`
                 : `${escapeHtml(name)}.${TLD} <span style="color: var(--text-dim);">(variant)</span>`;
               html.push(`
                 <div class="config-item">
@@ -2658,7 +2685,7 @@ Misc:
                     </div>
                   </div>
                   <div class="config-actions">
-                    ${idx === 0 ? lanToggleButton(name, c.lan) : ''}
+                    ${idx === 0 ? lanToggleButton(name, c.lan, c.lanHttps) : ''}
                     <button class="btn-icon success" onclick="startProcess('${escapeJsSingle(name)}', '${escapeJsSingle(variant.id)}')" title="Start">▶</button>
                     <button class="btn-icon danger" onclick="deleteConfig('${escapeJsSingle(name)}', '${escapeJsSingle(variant.id)}')" title="Delete">×</button>
                   </div>

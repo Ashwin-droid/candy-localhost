@@ -508,7 +508,7 @@ This is a READ-ONLY operation - safe to call anytime without asking.`,
   },
   {
     name: "candy_route",
-    description: "Add, remove, or list domain routes. Use persistent flag for routes that survive daemon restarts. lan_publish / lan_unpublish opt a name in or out of being reachable at <name>.candy from the local network (off by default; .candy is Tailscale-only otherwise).",
+    description: "Add, remove, or list domain routes. Use persistent flag for routes that survive daemon restarts. lan_publish / lan_unpublish opt a name in or out of being reachable at <name>.candy from the local network (off by default; .candy is Tailscale-only otherwise). With lan_publish, https: true also serves the site at https://<host>.ts.net:<port> on the LAN with a publicly trusted certificate (port optional; https: false turns that off).",
     inputSchema: {
       type: "object",
       properties: {
@@ -527,6 +527,10 @@ This is a READ-ONLY operation - safe to call anytime without asking.`,
         persistent: {
           type: "boolean",
           description: "If true, route survives daemon restarts"
+        },
+        https: {
+          type: "boolean",
+          description: "lan_publish only: serve over HTTPS on this machine's ts.net hostname (LAN). port picks the port; auto-assigned otherwise"
         }
       },
       required: ["action"]
@@ -923,7 +927,7 @@ async function handleRequest(request: MCPRequest): Promise<MCPResponse | null> {
               const entries = Object.entries((res || {}) as Record<string, any>)
               result = res?.error && typeof res.error === "string"
                 ? `Error: ${res.error}`
-                : entries.length === 0 ? "No routes" : entries.map(([n, r]: [string, any]) => `${n}.localhost -> ${typeof r.target === "string" ? r.target : ":" + r.target}${r.persistent ? " [persistent]" : ""}${r.lan ? " [lan]" : ""}`).join("\n")
+                : entries.length === 0 ? "No routes" : entries.map(([n, r]: [string, any]) => `${n}.localhost -> ${typeof r.target === "string" ? r.target : ":" + r.target}${r.persistent ? " [persistent]" : ""}${r.lan ? " [lan]" : ""}${r.lanHttps ? ` [${r.lanHttps}]` : ""}`).join("\n")
             } else if (routeAction === "add") {
               const res = await post("/register", { name: routeName, port: routePort, persistent: routePersistent || false })
               result = res?.error ? `Error: ${res.error}` : `Route added: ${routeName}.localhost -> :${routePort}${routePersistent ? " (persistent)" : ""}`
@@ -932,11 +936,17 @@ async function handleRequest(request: MCPRequest): Promise<MCPResponse | null> {
               result = res?.error ? `Error: ${res.error}` : `Route removed: ${routeName}.localhost`
             } else if (routeAction === "lan_publish" || routeAction === "lan_unpublish") {
               const publish = routeAction === "lan_publish"
-              const res = await post("/lan", { name: routeName, publish })
+              const https = (toolArgs as any)?.https
+              const res = await post("/lan", {
+                name: routeName,
+                publish,
+                ...(publish && typeof https === "boolean" ? { https } : {}),
+                ...(publish && https === true && routePort ? { port: routePort } : {}),
+              })
               result = res?.error
                 ? `Error: ${res.error}`
                 : publish
-                  ? `Published to LAN: ${routeName}.candy -> ${res.lanIp || "no LAN address detected"}${res.warning ? ` (${res.warning})` : ""}`
+                  ? `Published to LAN: ${routeName}.candy -> ${res.lanIp || "no LAN address detected"}${res.httpsUrl ? `, HTTPS: ${res.httpsUrl}` : ""}${res.warning ? ` (${res.warning})` : ""}`
                   : `Unpublished from LAN: ${routeName}.candy`
             } else { result = "Unknown action" }
             break

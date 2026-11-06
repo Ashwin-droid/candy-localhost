@@ -194,6 +194,10 @@ candy route                    List routes
 candy lan                      List domains and whether each is published to the LAN
 candy lan publish <name>       Make <name>.candy reachable from the LAN (opt-in)
 candy lan unpublish <name>     Back to tailnet-only
+candy lan publish <name> --https[=port]
+                               Also serve https://<host>.ts.net:<port> on the LAN (trusted cert)
+candy lan publish <name> --no-https
+                               Drop the ts.net HTTPS site, keep <name>.candy on the LAN
 candy domain list              List bound public domains
 candy domain bind <sub> [--server <name>]  Bind subdomain (defaults serverName=subdomain)
 candy domain unbind <sub>      Remove domain binding
@@ -232,7 +236,7 @@ candy version | -v             Show version
 | `candy_portals` | — | List active tunnels |
 | `candy_input` | `name`, `input?`, `key?` | Send PTY input to server |
 | `candy_domain` | `action`, `subdomain?`, `serverName?`, `force?`, `zone?`, `tunnel?` | Domain management |
-| `candy_route` | `action`, `name?`, `port?`, `persistent?` | Route management (`add`, `remove`, `list`, `lan_publish`, `lan_unpublish`) |
+| `candy_route` | `action`, `name?`, `port?`, `persistent?` | Route management (`add`, `remove`, `list`, `lan_publish`, `lan_unpublish`); `https?` with `lan_publish` |
 
 ### How MCP Integration Works
 
@@ -300,7 +304,7 @@ Two auth modes:
 | Method | Path | Body | Description |
 |--------|------|------|-------------|
 | `GET` | `/lan` | — | Detected LAN IP and which names are published |
-| `POST` | `/lan` | `{ name, publish }` | Publish (`true`, default) or unpublish (`false`) `<name>.candy` on the LAN |
+| `POST` | `/lan` | `{ name, publish, https?, port? }` | Publish (`true`, default) or unpublish (`false`) `<name>.candy` on the LAN. `https: true` also serves it at `https://<host>.ts.net:<port>` on the LAN (port auto-picked from 8443 up if omitted); `https: false` turns that off |
 
 #### Processes
 
@@ -417,6 +421,25 @@ Environment="CANDY_DNS_LAN_PORT=5336"
 
 LAN devices see Caddy's internal CA, same as tailnet devices: trust the Caddy root certificate or accept the warning.
 
+#### HTTPS with a trusted certificate (`--https`)
+
+Apps that refuse self-signed certificates (password managers, mobile apps) can use this machine's Tailscale hostname instead:
+
+```bash
+candy lan publish vault --https=9443   # -> https://<host>.<tailnet>.ts.net:9443
+candy lan publish vault --no-https
+```
+
+- Caddy serves `https://<host>.<tailnet>.ts.net:<port>` on the **LAN IP only**, with a Let's Encrypt certificate fetched from `tailscaled` (`get_certificate tailscale`).
+- `candy-dns`'s LAN view answers the ts.net hostname with the LAN IP (A record; other types get NODATA). The tailnet view doesn't answer it.
+- The Tailscale IP is left alone. On the tailnet, MagicDNS resolves the hostname to the Tailscale IP, so to give tailnet devices the same URL, serve the same port there with `tailscale serve --https=<port> http://127.0.0.1:<app port>`. The same URL then works at home and on the tailnet, and nothing is exposed to the internet.
+
+One-time setup:
+
+- Caddy runs as your user, so it needs `tailscaled` access for certificates: `sudo tailscale set --operator=$USER`.
+- The front resolver must send LAN clients' queries for the hostname to the LAN listener. With AdGuard Home, add `[/<host>.<tailnet>.ts.net/]127.0.0.1:5336` to the LAN persistent client's upstreams, next to the `.candy` one.
+- Devices with their own DNS (Android Private DNS, DoH in the browser) skip the LAN resolver and won't see the LAN address.
+
 ## Domain Binding (Cloudflare)
 
 Requires `~/.config/candy/domains.json` with zone and tunnel configuration.
@@ -478,7 +501,7 @@ Runs as the installing user with `CAP_NET_BIND_SERVICE` for port 53 — not root
 |------|---------|
 | `~/.config/candy/servers.json` | Server configurations (name → variants) |
 | `~/.config/candy/routes.json` | Persistent routes |
-| `~/.config/candy/lan.json` | Names published to the LAN |
+| `~/.config/candy/lan.json` | Names published to the LAN, and their ts.net HTTPS ports |
 | `~/.config/candy/domains.json` | Domain binding config (zone, tunnel, bindings) |
 | `~/.config/candy/candy-grudge.lock` | Bound-domain auth grudge state |
 | `~/.config/candy/mcp-secret` | MCP auth bootstrap secret |

@@ -869,6 +869,8 @@ function printHelp() {
   console.log(`  ${c.cyan}candy list${c.reset}                   List all registered configs`)
   console.log(`  ${c.cyan}candy route${c.reset} [add|rm]          Manage domain routes (--persistent|-p)`)
   console.log(`  ${c.cyan}candy lan${c.reset} [publish|unpublish] <name>  Make <name>.candy reachable from the LAN (opt-in)`)
+  console.log(`      ${c.dim}publish <name> --https[=port]  also serve https://<host>.ts.net:<port> on the LAN (real cert)${c.reset}`)
+  console.log(`      ${c.dim}publish <name> --no-https      drop the ts.net HTTPS site, keep <name>.candy${c.reset}`)
   console.log(`  ${c.cyan}candy domain${c.reset} [list|bind|unbind|config]  Manage bound domains`)
   console.log(`  ${c.cyan}candy auth${c.reset} [set|clear|status] Manage bound domain authentication`)
   console.log(`  ${c.cyan}candy mcp${c.reset}                    Start MCP server (stdio) for AI integration`)
@@ -1000,7 +1002,20 @@ switch (command) {
         process.exit(1)
       }
       const publish = sub === 'publish'
-      const res = await apiPost('/lan', { name, publish })
+      const body: Record<string, unknown> = { name, publish }
+      for (const flag of largs.slice(2)) {
+        const httpsFlag = flag.match(/^--https(?:=(\d+))?$/)
+        if (httpsFlag && publish) {
+          body.https = true
+          if (httpsFlag[1]) body.port = Number(httpsFlag[1])
+        } else if (flag === '--no-https' && publish) {
+          body.https = false
+        } else {
+          console.error(`${c.red}Unknown option: ${flag}${c.reset}`)
+          process.exit(1)
+        }
+      }
+      const res = await apiPost('/lan', body)
       if (!res) {
         console.error(`${c.red}Daemon not running${c.reset}`)
         process.exit(1)
@@ -1011,6 +1026,8 @@ switch (command) {
       }
       if (publish) {
         console.log(`${c.green}+ ${name}.candy published to LAN${res.lanIp ? ` -> ${res.lanIp}` : ''}${c.reset}`)
+        if (res.httpsUrl) console.log(`${c.green}+ ${res.httpsUrl}${c.reset} ${c.dim}(LAN, trusted cert)${c.reset}`)
+        else if (body.https === false) console.log(`${c.dim}  HTTPS on the tailnet hostname is off${c.reset}`)
         if (res.warning) console.log(`${c.yellow}${res.warning}${c.reset}`)
       } else {
         console.log(`${c.red}- ${name}.candy no longer published to LAN${c.reset}`)
@@ -1027,8 +1044,9 @@ switch (command) {
         console.log(`${c.dim}No domains registered${c.reset}`)
       } else {
         for (const name of names) {
+          const https = res.https?.[name]?.url
           console.log(res.names[name]
-            ? `  ${c.green}${name}.candy${c.reset} published`
+            ? `  ${c.green}${name}.candy${c.reset} published${https ? `  ${c.cyan}${https}${c.reset}` : ''}`
             : `  ${c.dim}${name}.candy  tailnet only${c.reset}`)
         }
       }

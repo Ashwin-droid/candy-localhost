@@ -176,7 +176,7 @@ Routes map `<name>.localhost` to a target. There are three kinds:
 - **Auto-routes.** Created automatically when a managed process starts and a port is detected. Removed when the process stops (unless marked persistent).
 - **Manual routes.** Created via `candy route add <name> <port>` or `POST /register`. Point a domain at a port or external URL without a managed process.
 - **Persistent routes.** Any route created with `--persistent` (CLI) or `persistent: true` (API) survives daemon restarts. Stored in `~/.config/candy/routes.json`. Non-persistent routes exist only in memory.
-- **Restricted routes.** When `target` is an `http(s)` URL instead of a port number, the route proxies to an external service. The UI shows a restricted-zone overlay for these.
+- **External routes.** When `target` is an `http(s)` URL instead of a port number, the route proxies to an external service.
 
 ## CLI Reference
 
@@ -294,7 +294,7 @@ Two auth modes:
 
 | Method | Path | Body | Description |
 |--------|------|------|-------------|
-| `POST` | `/register` | `{ name, port?, target?, persistent? }` | Add route (`target` with http(s) creates restricted route) |
+| `POST` | `/register` | `{ name, port?, target?, persistent? }` | Add route (`target` with http(s) proxies to an external URL) |
 | `DELETE` | `/register/:name` | — | Remove route and stop associated process |
 | `POST` | `/rename` | `{ oldName, newName }` | Rename route |
 | `GET` | `/routes` | — | List all routes |
@@ -454,11 +454,12 @@ Requires `~/.config/candy/domains.json` with zone and tunnel configuration.
 |------|---------|
 | `portal.html` | Dashboard with GUI panels (routes, portals, domains, processes, configs) + CLI terminal + log viewer with PTY passthrough |
 | `candy.html` | Registration page (quick route mode + lazy server config mode) |
-| `terminal.html` | Alternate registration UI |
 | `starting.html` | Startup progress with live log SSE, manual port assignment, variant chooser |
 | `crashed.html` | Crash page with recent logs and restart action |
 | `killed.html` | Kill confirmation page |
 | `portaling.html` | Tunnel creation progress with polling and redirect |
+| `login.html` | Password prompt for protected bound domains |
+| `blocked.html` | Access denied page shown while an IP is locked out after failed logins |
 
 ## Protocol Handler
 

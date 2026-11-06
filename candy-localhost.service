@@ -3,7 +3,7 @@
 # Enable with:  sudo systemctl enable --now candy-localhost@$USER
 
 [Unit]
-Description=candy-localhost daemon - We hand out domains like it's 1980
+Description=candy-localhost daemon
 After=network.target
 
 [Service]

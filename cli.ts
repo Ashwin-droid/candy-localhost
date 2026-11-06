@@ -857,7 +857,6 @@ async function cmdDomain(args: string[]) {
 
 function printHelp() {
   console.log(`${c.cyan}${c.bold}🍬 candy-localhost${c.reset} ${c.dim}v${VERSION}${c.reset}`)
-  console.log(`${c.dim}we hand out domains like it's 1980${c.reset}`)
   console.log()
   console.log(`${c.white}Usage:${c.reset}`)
   console.log(`  ${c.cyan}candy dev${c.reset} [cmd...]           Run dev server (uses saved config or auto-detects)`)

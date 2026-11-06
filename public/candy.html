@@ -3,815 +3,271 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>candy-localhost - Claim Your Domain!</title>
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <title>Register route · candy</title>
+  <link rel="icon" href="/favicon.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;800&family=Fredoka+One&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --pink: #ff6b9d;
-      --pink-light: #ffa0c0;
-      --purple: #c86bff;
-      --yellow: #ffe66b;
-      --mint: #6bffc8;
-      --blue: #6bb5ff;
-      --white: #fffef5;
-      --dark: #2d1b4e;
+      --bg: #0b0b10;
+      --surface: #13131b;
+      --surface-2: #191923;
+      --border: #24242f;
+      --border-bright: #33333f;
+      --text: #e6e6ee;
+      --text-dim: #8a8a99;
+      --text-muted: #5a5a68;
+      --accent: #00d8f0;
+      --accent-soft: rgba(0, 216, 240, 0.12);
+      --green: #2ee67a;
+      --red: #ff4d6d;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+      --font-sans: 'Space Grotesk', system-ui, sans-serif;
+      --radius: 10px;
     }
-
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-
-    html, body {
-      height: 100%;
-      font-family: 'Nunito', sans-serif;
-      background: linear-gradient(135deg, var(--pink-light) 0%, var(--purple) 50%, var(--blue) 100%);
-      background-size: 400% 400%;
-      animation: gradientShift 15s ease infinite;
-      overflow-x: hidden;
-    }
-
-    @keyframes gradientShift {
-      0%, 100% { background-position: 0% 50%; }
-      50% { background-position: 100% 50%; }
-    }
-
-    @keyframes float {
-      0%, 100% { transform: translateY(0px) rotate(0deg); }
-      50% { transform: translateY(-20px) rotate(5deg); }
-    }
-
-    @keyframes sparkle {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.5; transform: scale(1.2); }
-    }
-
-    @keyframes bounce {
-      0%, 100% { transform: translateY(0); }
-      50% { transform: translateY(-10px); }
-    }
-
-    .container {
-      min-height: 100vh;
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg);
+      color: var(--text);
       display: flex;
-      flex-direction: column;
       align-items: center;
       justify-content: center;
-      padding: 2rem;
-      position: relative;
+      min-height: 100vh;
+      padding: 24px 16px;
+      -webkit-font-smoothing: antialiased;
     }
-
-    /* Floating candy decorations */
-    .candy {
-      position: fixed;
-      font-size: 2rem;
-      animation: float 6s ease-in-out infinite;
-      pointer-events: auto;
-      opacity: 0.7;
-      cursor: pointer;
-      transition: transform 0.2s ease, opacity 0.2s ease;
-      z-index: 10;
-      user-select: none;
-    }
-    .candy:hover {
-      transform: scale(1.3) !important;
-      opacity: 1;
-    }
-    .candy.is-eye {
-      cursor: default;
-      animation: float 6s ease-in-out infinite, eyePulse 2s ease-in-out infinite;
-    }
-    .candy:nth-child(1) { top: 10%; left: 5%; animation-delay: 0s; }
-    .candy:nth-child(2) { top: 20%; right: 10%; animation-delay: 1s; }
-    .candy:nth-child(3) { bottom: 15%; left: 15%; animation-delay: 2s; }
-    .candy:nth-child(4) { bottom: 25%; right: 5%; animation-delay: 3s; }
-    .candy:nth-child(5) { top: 50%; left: 3%; animation-delay: 4s; }
-    .candy:nth-child(6) { top: 40%; right: 3%; animation-delay: 5s; }
-
-    @keyframes eyePulse {
-      0%, 100% { opacity: 0.7; }
-      50% { opacity: 1; }
-    }
-
-    /* Comic speech bubble */
-    .speech-bubble {
-      position: fixed;
-      background: white;
-      border: 3px solid var(--dark);
-      border-radius: 20px;
-      padding: 10px 15px;
-      font-family: 'Nunito', sans-serif;
-      font-weight: 800;
-      font-size: 0.9rem;
-      color: var(--dark);
-      z-index: 1000;
-      pointer-events: none;
-      animation: bubblePop 0.3s ease-out, bubbleFade 2s ease-in 0.5s forwards;
-      box-shadow: 3px 3px 0 var(--dark);
-    }
-    .speech-bubble::after {
-      content: '';
-      position: absolute;
-      bottom: -15px;
-      left: 20px;
-      border: 10px solid transparent;
-      border-top-color: var(--dark);
-    }
-    .speech-bubble::before {
-      content: '';
-      position: absolute;
-      bottom: -10px;
-      left: 23px;
-      border: 7px solid transparent;
-      border-top-color: white;
-      z-index: 1;
-    }
-    @keyframes bubblePop {
-      0% { transform: scale(0); opacity: 0; }
-      50% { transform: scale(1.2); }
-      100% { transform: scale(1); opacity: 1; }
-    }
-    @keyframes bubbleFade {
-      0% { opacity: 1; }
-      100% { opacity: 0; }
-    }
-
     .card {
-      background: var(--white);
-      border-radius: 30px;
-      padding: 3rem;
-      max-width: 500px;
       width: 100%;
-      box-shadow:
-        0 20px 60px rgba(45, 27, 78, 0.3),
-        0 0 0 5px var(--pink),
-        0 0 0 10px var(--purple);
-      position: relative;
+      max-width: 460px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
       overflow: hidden;
     }
-
-    .card::before {
-      content: "";
-      position: absolute;
-      top: -50%;
-      left: -50%;
-      width: 200%;
-      height: 200%;
-      background: radial-gradient(circle, var(--yellow) 0%, transparent 70%);
-      opacity: 0.1;
-      pointer-events: none;
+    .card-head {
+      padding: 22px 24px 18px;
+      border-bottom: 1px solid var(--border);
     }
-
-    .logo {
-      font-family: 'Fredoka One', cursive;
-      font-size: 2.5rem;
-      text-align: center;
-      background: linear-gradient(135deg, var(--pink) 0%, var(--purple) 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
-      margin-bottom: 0.5rem;
+    .brand {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      letter-spacing: 0.04em;
+      margin-bottom: 14px;
+      display: flex;
+      justify-content: space-between;
     }
-
-    .tagline {
-      text-align: center;
-      color: var(--dark);
-      opacity: 0.7;
-      font-size: 1rem;
-      margin-bottom: 2rem;
-    }
-
-    .domain-box {
-      background: linear-gradient(135deg, var(--mint) 0%, var(--blue) 100%);
-      border-radius: 20px;
-      padding: 1.5rem;
-      text-align: center;
-      margin-bottom: 2rem;
-    }
-
-    .domain-label {
-      font-size: 0.85rem;
-      color: var(--dark);
-      opacity: 0.7;
-      margin-bottom: 0.5rem;
-    }
-
-    .domain-name {
-      font-family: 'Fredoka One', cursive;
-      font-size: 2rem;
-      color: var(--dark);
+    .brand a { color: var(--text-dim); text-decoration: none; }
+    .brand a:hover { color: var(--accent); }
+    .domain {
+      font-family: var(--font-mono);
+      font-size: 1.35rem;
+      font-weight: 700;
       word-break: break-all;
     }
-
-    .domain-tld {
-      opacity: 0.6;
+    .domain .tld { color: var(--text-muted); font-weight: 400; }
+    .sub {
+      margin-top: 6px;
+      font-size: 0.88rem;
+      color: var(--text-dim);
     }
-
-    .status {
+    .sub .dot {
       display: inline-block;
-      background: var(--yellow);
-      color: var(--dark);
-      padding: 0.5rem 1rem;
-      border-radius: 50px;
-      font-weight: 600;
-      font-size: 0.9rem;
-      margin-top: 1rem;
-      animation: bounce 2s ease-in-out infinite;
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      margin-right: 6px;
+      vertical-align: 1px;
     }
-
-    .form-section {
-      margin: 1.5rem 0;
+    form { padding: 20px 24px 24px; }
+    .tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 3px;
+      margin-bottom: 20px;
     }
-
-    .input-group {
-      display: flex;
-      gap: 1rem;
-      flex-wrap: wrap;
+    .tab {
+      font: 500 0.85rem var(--font-sans);
+      color: var(--text-dim);
+      background: none;
+      border: 0;
+      border-radius: 6px;
+      padding: 8px 0;
+      cursor: pointer;
     }
-
-    .input-wrapper {
-      flex: 1;
-      min-width: 150px;
-    }
-
-    .input-label {
+    .tab.active { background: var(--surface-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-bright); }
+    .tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .field { margin-bottom: 14px; }
+    label.lbl {
       display: block;
-      font-weight: 600;
-      color: var(--dark);
-      margin-bottom: 0.5rem;
-      font-size: 0.9rem;
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--text-dim);
+      margin-bottom: 6px;
     }
-
-    input[type="text"] {
+    input[type=text] {
       width: 100%;
-      padding: 1rem 1.25rem;
-      border: 3px solid var(--pink-light);
-      border-radius: 15px;
-      font-family: 'Nunito', sans-serif;
-      font-size: 1.2rem;
-      font-weight: 600;
-      color: var(--dark);
-      background: var(--white);
+      font: 0.95rem var(--font-mono);
+      color: var(--text);
+      background: var(--bg);
+      border: 1px solid var(--border-bright);
+      border-radius: 8px;
+      padding: 10px 12px;
       outline: none;
-      transition: all 0.3s;
+      transition: border-color 0.15s, box-shadow 0.15s;
     }
-
-    input[type="text"]:focus {
-      border-color: var(--purple);
-      box-shadow: 0 0 0 4px rgba(200, 107, 255, 0.2);
+    input[type=text]::placeholder { color: var(--text-muted); }
+    input[type=text]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .hint { font-size: 0.75rem; color: var(--text-muted); margin-top: 6px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .chip {
+      font: 0.72rem var(--font-mono);
+      color: var(--text-dim);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 10px;
+      cursor: pointer;
     }
-
-    input[type="text"]::placeholder {
-      color: var(--pink-light);
+    .chip:hover { color: var(--accent); border-color: var(--accent); }
+    .options {
+      border-top: 1px solid var(--border);
+      margin-top: 18px;
+      padding-top: 14px;
+      display: grid;
+      gap: 10px;
     }
-
-    input[type="text"]::-webkit-outer-spin-button,
-    input[type="text"]::-webkit-inner-spin-button {
-      -webkit-appearance: none;
-      margin: 0;
-    }
-    input[type="text"] { -moz-appearance: textfield; }
-
+    .opt { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+    .opt input { margin-top: 3px; accent-color: var(--accent); width: 15px; height: 15px; }
+    .opt-title { font-size: 0.88rem; }
+    .opt-desc { font-size: 0.75rem; color: var(--text-muted); }
     .btn {
       width: 100%;
-      margin-top: 1rem;
-      padding: 1rem 2rem;
-      background: linear-gradient(135deg, var(--pink) 0%, var(--purple) 100%);
-      border: none;
-      border-radius: 15px;
-      color: white;
-      font-family: 'Fredoka One', cursive;
-      font-size: 1.3rem;
-      cursor: pointer;
-      transition: all 0.3s;
-      box-shadow: 0 5px 20px rgba(255, 107, 157, 0.4);
-    }
-
-    .btn:hover {
-      transform: translateY(-3px);
-      box-shadow: 0 8px 30px rgba(255, 107, 157, 0.5);
-    }
-
-    .btn:active {
-      transform: translateY(0);
-    }
-
-    .btn:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
-      transform: none;
-    }
-
-    /* Alleyway checkbox - still here but cute */
-    .alleyway-option {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      margin-top: 1.25rem;
-      cursor: pointer;
-      user-select: none;
-    }
-
-    .alleyway-option input[type="checkbox"] {
-      display: none;
-    }
-
-    .checkbox-custom {
-      width: 1.5rem;
-      height: 1.5rem;
-      border: 3px solid var(--pink-light);
+      margin-top: 20px;
+      font: 600 0.92rem var(--font-sans);
+      color: #04161a;
+      background: var(--accent);
+      border: 0;
       border-radius: 8px;
-      position: relative;
-      transition: all 0.2s;
-    }
-
-    .alleyway-option:hover .checkbox-custom {
-      border-color: var(--purple);
-    }
-
-    .alleyway-option input:checked + .checkbox-custom {
-      background: linear-gradient(135deg, var(--pink) 0%, var(--purple) 100%);
-      border-color: var(--purple);
-    }
-
-    .alleyway-option input:checked + .checkbox-custom::after {
-      content: "✓";
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      color: white;
-      font-size: 1rem;
-      font-weight: bold;
-    }
-
-    .checkbox-label {
-      font-weight: 600;
-      color: var(--dark);
-    }
-
-    .checkbox-hint {
-      font-size: 0.85rem;
-      color: var(--dark);
-      opacity: 0.5;
-    }
-
-    .fine-print {
-      margin-top: 2rem;
-      text-align: center;
-      font-size: 0.85rem;
-      color: var(--dark);
-      opacity: 0.6;
-      line-height: 1.6;
-    }
-
-    .fine-print .highlight {
-      color: var(--purple);
-      font-weight: 600;
-    }
-
-    /* Mode Toggle */
-    .mode-toggle {
-      display: flex;
-      gap: 0.5rem;
-      margin-bottom: 1.5rem;
-      background: linear-gradient(135deg, var(--pink-light) 0%, var(--purple) 50%);
-      padding: 4px;
-      border-radius: 12px;
-    }
-
-    .mode-btn {
-      flex: 1;
-      padding: 0.75rem 1rem;
-      border: none;
-      border-radius: 10px;
-      font-family: 'Nunito', sans-serif;
-      font-weight: 600;
-      font-size: 0.95rem;
+      padding: 11px 0;
       cursor: pointer;
-      transition: all 0.3s;
-      background: transparent;
-      color: var(--white);
+      transition: filter 0.15s;
     }
-
-    .mode-btn:hover:not(.active) {
-      background: rgba(255, 255, 255, 0.2);
-    }
-
-    .mode-btn.active {
-      background: var(--white);
-      color: var(--dark);
-      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
-    }
-
-    .mode-content {
+    .btn:hover { filter: brightness(1.1); }
+    .btn:disabled { opacity: 0.55; cursor: progress; }
+    .msg {
       display: none;
+      margin-top: 14px;
+      font-size: 0.85rem;
+      padding: 10px 12px;
+      border-radius: 8px;
     }
-
-    .mode-content.active {
-      display: block;
-    }
-
-    /* Preset chips for lazy mode */
-    .preset-chips {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.5rem;
-      margin-top: 0.75rem;
-    }
-
-    .preset-chip {
-      padding: 0.4rem 0.8rem;
-      background: linear-gradient(135deg, var(--mint) 0%, var(--blue) 100%);
-      border-radius: 20px;
-      font-size: 0.8rem;
-      font-weight: 600;
-      color: var(--dark);
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-
-    .preset-chip:hover {
-      transform: scale(1.05);
-      box-shadow: 0 2px 10px rgba(107, 255, 200, 0.4);
-    }
-
-    /* Messages */
-    .error-message {
-      display: none;
-      background: #ffe0e0;
-      border: 2px solid #ff6b6b;
-      border-radius: 15px;
-      padding: 1rem;
-      margin-top: 1rem;
-      color: #d63031;
-      font-weight: 600;
-      text-align: center;
-    }
-
-    .error-message.active {
-      display: block;
-      animation: bounce 0.5s ease;
-    }
-
-    .success-message {
-      display: none;
-      background: linear-gradient(135deg, var(--mint) 0%, var(--blue) 100%);
-      border-radius: 15px;
-      padding: 1rem;
-      margin-top: 1rem;
-      color: var(--dark);
-      font-weight: 600;
-      text-align: center;
-    }
-
-    .success-message.active {
-      display: block;
-      animation: bounce 0.5s ease;
-    }
-
-    /* Loading overlay */
-    .loading-overlay {
-      display: none;
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background: rgba(255, 255, 255, 0.95);
-      z-index: 1000;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .loading-overlay.active {
-      display: flex;
-    }
-
-    .loading-spinner {
-      width: 60px;
-      height: 60px;
-      border: 5px solid var(--pink-light);
-      border-top-color: var(--purple);
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-    }
-
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
-
-    .loading-text {
-      margin-top: 1.5rem;
-      font-family: 'Fredoka One', cursive;
-      font-size: 1.5rem;
-      color: var(--dark);
-    }
-
-    .loading-subtext {
-      color: var(--dark);
-      opacity: 0.6;
-      margin-top: 0.5rem;
-    }
-
-    /* YANDERE RESTRICTED ZONE - the mask slips */
-    .restricted-overlay {
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background: #1a0000;
-      z-index: 10000;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      flex-direction: column;
-      text-align: center;
-      padding: 40px;
-      overflow: hidden;
-    }
-
-    .restricted-overlay::before {
-      content: "";
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background: linear-gradient(180deg, transparent 0%, rgba(139, 0, 0, 0.3) 100%);
-      animation: bloodPulse 2s ease-in-out infinite;
-    }
-
-    @keyframes bloodPulse {
-      0%, 100% { opacity: 0.5; }
-      50% { opacity: 1; }
-    }
-
-    .restricted-overlay.active {
-      display: flex;
-      animation: yandereAppear 0.5s ease-out;
-    }
-
-    @keyframes yandereAppear {
-      0% { opacity: 0; }
-      30% { opacity: 1; }
-      35% { opacity: 0.3; }
-      40% { opacity: 1; }
-      100% { opacity: 1; }
-    }
-
-    .restricted-warning {
-      font-family: 'Fredoka One', cursive;
-      font-size: 48px;
-      color: #ff6b9d;
-      position: relative;
-      z-index: 1;
-    }
-
-    .restricted-warning::after {
-      content: "You're leaving.";
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      color: #8b0000;
-      animation: glitchText 3s ease-in-out infinite;
-      clip-path: inset(0 0 0 0);
-    }
-
-    @keyframes glitchText {
-      0%, 90%, 100% { clip-path: inset(0 100% 0 0); }
-      92%, 98% { clip-path: inset(0 0 0 0); }
-    }
-
-    .restricted-message {
-      font-family: 'Nunito', sans-serif;
-      font-size: 20px;
-      color: #ffb0b0;
-      margin-top: 40px;
-      line-height: 2;
-      max-width: 450px;
-      position: relative;
-      z-index: 1;
-    }
-
-    .restricted-message .sweet {
-      color: #ff6b9d;
-      display: block;
-      margin-top: 10px;
-    }
-
-    .restricted-message .crack {
-      color: #8b0000;
-      font-weight: 800;
-      display: block;
-      margin-top: 25px;
-      font-size: 18px;
-      letter-spacing: 1px;
-    }
-
-    .restricted-submessage {
-      color: #660000;
-      font-size: 14px;
-      margin-top: 50px;
-      position: relative;
-      z-index: 1;
-      font-family: 'Nunito', sans-serif;
-    }
-
-    .drip {
-      position: absolute;
-      width: 3px;
-      height: 0;
-      background: linear-gradient(180deg, #8b0000 0%, #4a0000 100%);
-      top: 0;
-      animation: drip 4s ease-in infinite;
-      border-radius: 0 0 3px 3px;
-    }
-
-    @keyframes drip {
-      0% { height: 0; opacity: 1; }
-      70% { height: 150px; opacity: 1; }
-      100% { height: 150px; opacity: 0; }
-    }
+    .msg.show { display: block; }
+    .msg.error { color: var(--red); background: rgba(255, 77, 109, 0.08); border: 1px solid rgba(255, 77, 109, 0.25); }
+    .msg.ok { color: var(--green); background: rgba(46, 230, 122, 0.08); border: 1px solid rgba(46, 230, 122, 0.25); }
+    .msg.info { color: var(--text-dim); background: var(--surface-2); border: 1px solid var(--border); }
   </style>
 </head>
 <body>
-  <!-- YANDERE RESTRICTED ZONE OVERLAY -->
-  <div class="restricted-overlay" id="restrictedOverlay">
-    <div class="drip" style="left: 15%;"></div>
-    <div class="drip" style="left: 45%; animation-delay: 1.5s;"></div>
-    <div class="drip" style="left: 78%; animation-delay: 0.8s;"></div>
-    <div class="restricted-warning">You're leaving?</div>
-    <div class="restricted-message">
-      I can reach outside for you.
-      <span class="sweet">I would do anything for you.</span>
-      <span class="crack">Don't forget who helped you.</span>
+  <main class="card">
+    <div class="card-head">
+      <div class="brand"><span>candy-localhost</span><a href="https://portal.localhost" id="portalLink">open portal →</a></div>
+      <div class="domain"><span id="domainName">…</span><span class="tld" id="domainTld"></span></div>
+      <div class="sub"><span class="dot"></span>Not registered yet. Point it at a port or a command.</div>
     </div>
-    <div class="restricted-submessage">establishing external connection...</div>
-  </div>
 
-  <!-- Floating candy -->
-  <div class="candy">🍬</div>
-  <div class="candy">🍭</div>
-  <div class="candy">🍫</div>
-  <div class="candy">🧁</div>
-  <div class="candy">🍩</div>
-  <div class="candy">🍪</div>
-
-  <div class="container">
-    <div class="card">
-      <div class="logo">candy-localhost</div>
-      <div class="tagline">Free domains! No waiting! It's like magic! ✨</div>
-
-      <div class="domain-box">
-        <div class="domain-label">You're trying to visit:</div>
-        <div class="domain-name">
-          <span id="domainName">loading</span><span class="domain-tld">.localhost</span>
-        </div>
-        <div class="status">✨ Available!</div>
+    <form id="registerForm" novalidate>
+      <div class="tabs" role="tablist">
+        <button type="button" class="tab active" data-mode="quick" role="tab" aria-selected="true">Existing port</button>
+        <button type="button" class="tab" data-mode="lazy" role="tab" aria-selected="false">Start on demand</button>
       </div>
 
-      <div class="form-section">
-        <!-- Mode Toggle -->
-        <div class="mode-toggle">
-          <button type="button" class="mode-btn active" data-mode="quick" id="quickModeBtn">⚡ Quick</button>
-          <button type="button" class="mode-btn" data-mode="lazy" id="lazyModeBtn">🚀 Lazy Server</button>
+      <div class="panel active" data-panel="quick">
+        <div class="field">
+          <label class="lbl" for="portInput">Port or URL</label>
+          <input type="text" id="portInput" placeholder="3000" autocomplete="off" spellcheck="false">
+          <div class="hint">A local port, or an http(s) URL to proxy to.</div>
         </div>
+      </div>
 
-        <form id="registerForm">
-          <!-- Quick Mode: Just port -->
-          <div id="quickMode" class="mode-content active">
-            <div class="input-group">
-              <div class="input-wrapper">
-                <label class="input-label">Which port is your app on?</label>
-                <input
-                  type="text"
-                  id="portInput"
-                  placeholder="3000"
-                  min="1"
-                  max="65535"
-                >
-              </div>
-            </div>
+      <div class="panel" data-panel="lazy">
+        <div class="field">
+          <label class="lbl" for="cwdInput">Project folder</label>
+          <input type="text" id="cwdInput" placeholder="~/projects/myapp" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <label class="lbl" for="cmdInput">Start command</label>
+          <input type="text" id="cmdInput" placeholder="npm run dev" autocomplete="off" spellcheck="false">
+          <div class="chips">
+            <button type="button" class="chip" data-cmd="npm run dev">npm run dev</button>
+            <button type="button" class="chip" data-cmd="bun dev">bun dev</button>
+            <button type="button" class="chip" data-cmd="pnpm dev">pnpm dev</button>
+            <button type="button" class="chip" data-cmd="yarn dev">yarn dev</button>
           </div>
-
-          <!-- Lazy Mode: cwd + cmd -->
-          <div id="lazyMode" class="mode-content">
-            <div class="input-wrapper" style="margin-bottom: 1rem;">
-              <label class="input-label">📁 Project folder</label>
-              <input
-                type="text"
-                id="cwdInput"
-                placeholder="~/projects/myapp"
-              >
-            </div>
-            <div class="input-wrapper">
-              <label class="input-label">🖥️ Start command</label>
-              <input
-                type="text"
-                id="cmdInput"
-                placeholder="npm run dev"
-              >
-            </div>
-            <div class="preset-chips">
-              <span class="preset-chip" data-cmd="npm run dev">npm run dev</span>
-              <span class="preset-chip" data-cmd="bun dev">bun dev</span>
-              <span class="preset-chip" data-cmd="pnpm dev">pnpm dev</span>
-              <span class="preset-chip" data-cmd="yarn dev">yarn dev</span>
-            </div>
-          </div>
-
-          <label class="alleyway-option">
-            <input type="checkbox" id="persistent">
-            <span class="checkbox-custom"></span>
-            <span class="checkbox-label">Keep it forever!</span>
-            <span class="checkbox-hint">(survives restarts)</span>
-          </label>
-          <label class="alleyway-option">
-            <input type="checkbox" id="alleyway">
-            <span class="checkbox-custom"></span>
-            <span class="checkbox-label">Share with friends!</span>
-            <span class="checkbox-hint">(creates a public link)</span>
-          </label>
-          <button type="submit" class="btn" id="submitBtn">
-            🎉 Claim My Domain!
-          </button>
-        </form>
-
-        <div class="error-message" id="errorMessage"></div>
-        <div class="success-message" id="successMessage">
-          🎉 Yay! Redirecting you now...
-        </div>
-        <div class="success-message" id="portalMessage" style="display:none;">
-          🌐 Link created! It'll open in ~30 seconds!
+          <div class="hint">The server starts when you visit the domain and its port is detected automatically.</div>
         </div>
       </div>
 
-      <div class="fine-print">
-        <p>Just enter your port and claim your domain!</p>
-        <p>It's <span class="highlight">totally free</span> and takes 2 seconds!</p>
+      <div class="options" id="routeOptions">
+        <label class="opt">
+          <input type="checkbox" id="persistent">
+          <span><span class="opt-title">Pin route</span><br><span class="opt-desc">Keep it across daemon restarts.</span></span>
+        </label>
+        <label class="opt">
+          <input type="checkbox" id="portal">
+          <span><span class="opt-title">Open a portal</span><br><span class="opt-desc">Create a public Cloudflare tunnel link.</span></span>
+        </label>
       </div>
-    </div>
-  </div>
 
-  <div class="loading-overlay" id="loadingOverlay">
-    <div class="loading-spinner"></div>
-    <div class="loading-text" id="loadingText">Setting things up...</div>
-    <div class="loading-subtext" id="loadingSubtext">This only takes a moment!</div>
-  </div>
+      <button type="submit" class="btn" id="submitBtn">Register</button>
+      <div class="msg" id="msg" role="status"></div>
+    </form>
+  </main>
 
   <script>
-    const API = '';
-    const _host = location.hostname;
-    const _isBoundDomain = !_host.endsWith('.candy') && !_host.endsWith('.localhost');
-    const TLD = _host.endsWith('.candy') ? 'candy' : _host.endsWith('.localhost') ? 'localhost' : null;
-    const SCHEME = 'https';
+    const host = location.hostname;
+    const TLD = host.endsWith('.candy') ? 'candy' : host.endsWith('.localhost') ? 'localhost' : null;
+    const domainName = TLD ? host.slice(0, -(TLD.length + 1)) : host;
+    document.getElementById('domainName').textContent = domainName;
+    document.getElementById('domainTld').textContent = TLD ? '.' + TLD : '';
+    document.title = `${domainName} · candy`;
+    if (TLD) document.getElementById('portalLink').href = `https://portal.${TLD}`;
 
-    // Token management - rolling one-time-use tokens
+    // Rolling one-time-use tokens
     let currentToken = window.CANDY_TOKEN || null;
 
-    // Refresh token after each API call
     async function refreshToken() {
       if (!currentToken) return;
       try {
-        const res = await fetch(API + '/token', {
+        const res = await fetch('/token', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ token: currentToken })
         });
-        if (res.ok) {
-          const data = await res.json();
-          currentToken = data.token;
-        }
+        if (res.ok) currentToken = (await res.json()).token;
       } catch (e) {
         console.error('Token refresh failed:', e);
       }
     }
 
-    // Wrapper for API calls with token
     async function apiCall(endpoint, options = {}) {
-      const headers = {
-        ...options.headers,
-        'X-Candy-Token': currentToken
-      };
-      const res = await fetch(API + endpoint, { ...options, headers });
-
-      // Refresh token after successful call (token was consumed)
+      const headers = { ...options.headers, 'X-Candy-Token': currentToken };
+      const res = await fetch(endpoint, { ...options, headers });
       if (res.ok) {
         await refreshToken();
       } else if (res.status === 401) {
-        // Token expired, try refresh and retry once
         await refreshToken();
         if (currentToken) {
           headers['X-Candy-Token'] = currentToken;
-          const retry = await fetch(API + endpoint, { ...options, headers });
+          const retry = await fetch(endpoint, { ...options, headers });
           if (retry.ok) await refreshToken();
           return retry;
         }
@@ -819,1010 +275,128 @@
       return res;
     }
 
-    const loadingMessages = [
-      { main: "Setting things up...", sub: "This only takes a moment!" },
-      { main: "Preparing your domain...", sub: "Almost there!" },
-      { main: "Sprinkling some magic...", sub: "✨" },
-      { main: "Just a sec...", sub: "Good things take time!" },
-    ];
+    async function errorFrom(res, fallback) {
+      try {
+        const data = await res.json();
+        return data.details ? `${data.error}: ${data.details}` : (data.error || fallback);
+      } catch { return fallback; }
+    }
 
-    // Extract domain name from hostname
-    const hostname = window.location.hostname;
-    const domainName = hostname.replace('.' + TLD, '');
-    document.getElementById('domainName').textContent = domainName;
-
-    // Form handling
     const form = document.getElementById('registerForm');
     const portInput = document.getElementById('portInput');
     const cwdInput = document.getElementById('cwdInput');
     const cmdInput = document.getElementById('cmdInput');
     const submitBtn = document.getElementById('submitBtn');
-    const errorMessage = document.getElementById('errorMessage');
-    const successMessage = document.getElementById('successMessage');
-    const loadingOverlay = document.getElementById('loadingOverlay');
-    const loadingText = document.getElementById('loadingText');
-    const loadingSubtext = document.getElementById('loadingSubtext');
-    const alleywayCheckbox = document.getElementById('alleyway');
-    const persistentCheckbox = document.getElementById('persistent');
-    const portalMessage = document.getElementById('portalMessage');
-    const quickModeBtn = document.getElementById('quickModeBtn');
-    const lazyModeBtn = document.getElementById('lazyModeBtn');
-    const quickMode = document.getElementById('quickMode');
-    const lazyMode = document.getElementById('lazyMode');
-    const presetChips = document.querySelectorAll('.preset-chip');
+    const msgEl = document.getElementById('msg');
+    const portalBox = document.getElementById('portal');
+    const persistentBox = document.getElementById('persistent');
+    let mode = 'quick';
 
-    let currentMode = 'quick';
-    let loadingInterval;
-
-    // Mode switching
-    quickModeBtn.addEventListener('click', () => {
-      currentMode = 'quick';
-      quickModeBtn.classList.add('active');
-      lazyModeBtn.classList.remove('active');
-      quickMode.classList.add('active');
-      lazyMode.classList.remove('active');
-      portInput.focus();
-    });
-
-    lazyModeBtn.addEventListener('click', () => {
-      currentMode = 'lazy';
-      lazyModeBtn.classList.add('active');
-      quickModeBtn.classList.remove('active');
-      lazyMode.classList.add('active');
-      quickMode.classList.remove('active');
-      cwdInput.focus();
-    });
-
-    // Preset chip clicks
-    presetChips.forEach(chip => {
-      chip.addEventListener('click', () => {
-        cmdInput.value = chip.dataset.cmd;
+    function setMode(next) {
+      mode = next;
+      document.querySelectorAll('.tab').forEach(t => {
+        const on = t.dataset.mode === next;
+        t.classList.toggle('active', on);
+        t.setAttribute('aria-selected', on);
       });
-    });
+      document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.dataset.panel === next));
+      // Route options only apply to an existing port
+      document.getElementById('routeOptions').style.display = next === 'quick' ? '' : 'none';
+      submitBtn.textContent = next === 'quick' ? 'Register' : 'Save and start';
+      (next === 'quick' ? portInput : cwdInput).focus();
+      showMsg('');
+    }
+    document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => setMode(t.dataset.mode)));
+    document.querySelectorAll('.chip').forEach(c => c.addEventListener('click', () => { cmdInput.value = c.dataset.cmd; cmdInput.focus(); }));
 
-    function showLoading() {
-      loadingOverlay.classList.add('active');
-      let index = 0;
-      loadingInterval = setInterval(() => {
-        const msg = loadingMessages[index % loadingMessages.length];
-        loadingText.textContent = msg.main;
-        loadingSubtext.textContent = msg.sub;
-        index++;
-      }, 1000);
+    function showMsg(text, kind = 'info') {
+      msgEl.textContent = text;
+      msgEl.className = text ? `msg show ${kind}` : 'msg';
     }
 
-    function hideLoading() {
-      clearInterval(loadingInterval);
-      loadingOverlay.classList.remove('active');
+    function busy(on, text) {
+      submitBtn.disabled = on;
+      if (on && text) showMsg(text, 'info');
     }
 
-    function showError(message) {
-      errorMessage.textContent = message;
-      errorMessage.classList.add('active');
-      successMessage.classList.remove('active');
+    async function registerLazy() {
+      const cwd = cwdInput.value.trim();
+      const cmd = cmdInput.value.trim();
+      if (!cwd) return showMsg('Enter a project folder.', 'error'), cwdInput.focus();
+      if (!cmd) return showMsg('Enter a start command.', 'error'), cmdInput.focus();
+
+      busy(true, 'Saving server config…');
+      const configRes = await apiCall('/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: domainName, cwd, cmd }),
+      });
+      if (!configRes.ok) throw new Error(await errorFrom(configRes, 'Failed to save server config'));
+
+      showMsg('Starting server…', 'info');
+      const startRes = await apiCall(`/process/start/${encodeURIComponent(domainName)}`, { method: 'POST' });
+      if (!startRes.ok) throw new Error(await errorFrom(startRes, 'Failed to start server'));
+
+      showMsg('Server starting. Reloading…', 'ok');
+      setTimeout(() => location.reload(), 1200);
     }
 
-    function showSuccess() {
-      errorMessage.classList.remove('active');
-      successMessage.classList.add('active');
-    }
+    async function registerQuick() {
+      const value = portInput.value.trim();
+      const isUrl = /^https?:\/\//.test(value);
+      const port = isUrl ? null : Number(value);
+      if (!isUrl && (!Number.isInteger(port) || port < 1 || port > 65535)) {
+        showMsg('Enter a port between 1 and 65535, or an http(s) URL.', 'error');
+        portInput.focus();
+        return;
+      }
 
-    function showRestrictedZone() {
-      const overlay = document.getElementById('restrictedOverlay');
-      overlay.classList.add('active');
+      busy(true, 'Registering route…');
+      const persistent = persistentBox.checked;
+      const body = isUrl ? { name: domainName, target: value, persistent } : { name: domainName, port, persistent };
+      const res = await apiCall('/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(await errorFrom(res, 'Failed to register route'));
 
-      // Open in new tab after 3 seconds
-      setTimeout(() => {
-        window.open(`${SCHEME}://${domainName}.${TLD}`, '_blank');
-      }, 3000);
+      if (portalBox.checked) {
+        showMsg('Route added. Opening portal…', 'info');
+        const portalRes = await apiCall('/portal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: domainName, port, openBrowser: true }),
+        });
+        if (!portalRes.ok) {
+          showMsg(`Route added, but the portal failed: ${await errorFrom(portalRes, 'unknown error')}`, 'error');
+          setTimeout(() => location.reload(), 2500);
+          return;
+        }
+        showMsg('Route added. The portal link opens in a new tab once the tunnel is up.', 'ok');
+        setTimeout(() => location.reload(), 2500);
+        return;
+      }
+
+      showMsg('Route added. Reloading…', 'ok');
+      setTimeout(() => location.reload(), 800);
     }
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      errorMessage.classList.remove('active');
-      submitBtn.disabled = true;
-
-      if (currentMode === 'lazy') {
-        // Lazy Server Mode - submit to /config
-        const cwd = cwdInput.value.trim();
-        const cmd = cmdInput.value.trim();
-
-        if (!cwd) {
-          showError("Please enter a project folder!");
-          submitBtn.disabled = false;
-          return;
-        }
-        if (!cmd) {
-          showError("Please enter a start command!");
-          submitBtn.disabled = false;
-          return;
-        }
-
-        showLoading();
-        loadingText.textContent = "Configuring server...";
-        loadingSubtext.textContent = "Setting up your lazy server!";
-
-        try {
-          const configRes = await apiCall('/config', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: domainName, cwd, cmd }),
-          });
-
-          if (!configRes.ok) {
-            const data = await configRes.json();
-            hideLoading();
-            showError(data.error || "Failed to configure server!");
-            submitBtn.disabled = false;
-            return;
-          }
-
-          // Now start the process
-          loadingText.textContent = "Starting server...";
-          loadingSubtext.textContent = "Spawning your process!";
-
-          const startRes = await apiCall(`/process/start/${domainName}`, {
-            method: 'POST',
-          });
-
-          hideLoading();
-
-          if (startRes.ok) {
-            showSuccess();
-            setTimeout(() => {
-              window.location.reload();
-            }, 1500);
-          } else {
-            const data = await startRes.json();
-            showError(data.error || "Failed to start server!");
-            submitBtn.disabled = false;
-          }
-        } catch (err) {
-          hideLoading();
-          showError("Hmm, can't reach the server. Is candy-localhost running?");
-          submitBtn.disabled = false;
-        }
-      } else {
-        // Quick Mode - existing port registration logic
-        const inputVal = portInput.value.trim();
-        const isUrl = inputVal.startsWith('http://') || inputVal.startsWith('https://');
-
-        let port, target;
-        if (isUrl) {
-          target = inputVal;
-        } else {
-          port = parseInt(inputVal);
-          if (!port || port < 1 || port > 65535) {
-            showError("Oops! That doesn't look like a valid port number!");
-            submitBtn.disabled = false;
-            return;
-          }
-        }
-
-        const openAlleyway = alleywayCheckbox.checked;
-        const persistent = persistentCheckbox.checked;
-        showLoading();
-
-        try {
-          // Step 1: Register the domain
-          const registerBody = isUrl ? { name: domainName, target, persistent } : { name: domainName, port, persistent };
-          const registerRes = await apiCall('/register', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(registerBody),
-          });
-
-          const registerData = await registerRes.json();
-
-          if (!registerRes.ok) {
-            hideLoading();
-            showError(registerData.error || "Oops! Something went wrong!");
-            submitBtn.disabled = false;
-            return;
-          }
-
-          // Step 2: Open alleyway if requested
-          if (openAlleyway) {
-            loadingText.textContent = "Creating your link...";
-            loadingSubtext.textContent = "This takes a few seconds!";
-
-            const portalRes = await apiCall('/portal', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name: domainName, port, openBrowser: true }),
-            });
-
-            hideLoading();
-
-            if (portalRes.ok) {
-              portalMessage.style.display = 'block';
-              portalMessage.classList.add('active');
-              setTimeout(() => {
-                window.location.reload();
-              }, 2500);
-            } else {
-              showSuccess();
-              setTimeout(() => {
-                window.location.reload();
-              }, 1500);
-            }
-          } else {
-            hideLoading();
-
-            // Check if restricted zone (yandere mode)
-            if (registerData.restricted) {
-              showRestrictedZone();
-            } else {
-              showSuccess();
-              setTimeout(() => {
-                window.location.reload();
-              }, 1500);
-            }
-          }
-        } catch (err) {
-          hideLoading();
-          showError("Hmm, can't reach the server. Is candy-localhost running?");
-          submitBtn.disabled = false;
-        }
-      }
-    });
-
-    // Auto-focus port input
-    portInput.focus();
-
-    // =========================================
-    // SUBTLE WRONGNESS - persistent corruption
-    // Once something goes wrong, it stays wrong
-    // =========================================
-
-    const tagline = document.querySelector('.tagline');
-    const logo = document.querySelector('.logo');
-    const candies = document.querySelectorAll('.candy');
-    const statusEl = document.querySelector('.status');
-
-    // Track corruption state (eyes now tracked via .is-eye CSS class)
-    const corruption = {
-      taglineCorrupted: false,
-      shadowPresent: false,
-      statusCorrupted: false,
-      colorShift: 0,          // 0-1, permanent color corruption
-    };
-
-    const wrongTaglines = [
-      "Free domains! No escape! It's like magic! ✨",
-      "Free domains! No waiting! It's watching! ✨",
-      "Free domains! No going back! It's like magic! ✨",
-      "Your domains! No waiting! It's like magic! ✨",
-      "Free domains! No waiting! We remember! ✨",
-    ];
-
-    const wrongStatuses = ['✨ Waiting...', '✨ Watching!', '👁️ Available!', '✨ Forever!'];
-
-    // Helper: get boosted chance based on yandere intensity
-    function getChance(baseChance) {
-      if (typeof yandereIntensity !== 'undefined' && yandereActive) {
-        return baseChance * (1 + yandereIntensity * 3);
-      }
-      return baseChance;
-    }
-
-    // Available candy emojis for spawning
-    const candyEmojis = ['🍬', '🍭', '🍫', '🧁', '🍩', '🍪', '🍰', '🎂', '🍡', '🍦', '🍧', '🍨', '🥧', '🍮', '🍯'];
-    
-    // Speech bubble messages when you click a candy
-    const eyeMessages = [
-      'that was my eye',
-      'now i see you',
-      'we see through you',
-      'you cant hide',
-      'we are inside',
-      'behind you',
-      'dont turn around',
-      'we know your name',
-      'we live in your walls',
-      'check your closet',
-      'we never left',
-      'you invited us',
-      'its too late',
-      'we are hungry',
-      'feed us more',
-    ];
-    
-    // Convert a candy to an eye (shared function)
-    function convertToEye(candy, showBubble = false) {
-      if (candy.classList.contains('is-eye')) return; // Already an eye
-      
-      candy.classList.add('is-eye');
-      candy.textContent = '👁️';
-      candy.style.transform = 'scale(1.2)';
-      candy.style.transition = 'transform 0.3s ease';
-      
-      // Show speech bubble if clicked manually
-      if (showBubble) {
-        const rect = candy.getBoundingClientRect();
-        const bubble = document.createElement('div');
-        bubble.className = 'speech-bubble';
-        bubble.textContent = eyeMessages[Math.floor(Math.random() * eyeMessages.length)];
-        bubble.style.left = `${rect.left}px`;
-        bubble.style.top = `${rect.top - 50}px`;
-        document.body.appendChild(bubble);
-        
-        // Remove bubble after animation
-        setTimeout(() => bubble.remove(), 2500);
-        
-        // +1 pity - feeding the void
-        fetch('/void/pity', { method: 'POST' })
-          .then(res => res.json())
-          .then(data => console.log(`👁️ Pity +1 (now ${data.pity})`))
-          .catch(() => {});
-      }
-      
-      // Spawn a new candy somewhere random
-      spawnNewCandy();
-    }
-    
-    // Spawn a new candy at a random position
-    function spawnNewCandy() {
-      const candy = document.createElement('div');
-      candy.className = 'candy';
-      candy.textContent = candyEmojis[Math.floor(Math.random() * candyEmojis.length)];
-      
-      // Random position (avoid center where the card is)
-      const side = Math.random() < 0.5 ? 'left' : 'right';
-      const vertPos = Math.random() * 80 + 10; // 10-90%
-      const horizPos = Math.random() * 15 + 2; // 2-17% from edge
-      
-      candy.style.top = `${vertPos}%`;
-      candy.style[side] = `${horizPos}%`;
-      candy.style.animationDelay = `${Math.random() * 5}s`;
-      
-      // Make it clickable
-      candy.addEventListener('click', () => convertToEye(candy, true));
-      
-      document.body.appendChild(candy);
-    }
-    
-    // Make initial candies clickable
-    candies.forEach(candy => {
-      candy.addEventListener('click', () => convertToEye(candy, true));
-    });
-
-    // Candy → Eye: PERSISTENT (automatic corruption)
-    // Once a candy becomes an eye, it stays forever
-    setInterval(() => {
-      const allCandies = document.querySelectorAll('.candy:not(.is-eye)');
-      if (allCandies.length === 0) return; // all corrupted
-
-      if (Math.random() < getChance(0.03)) {
-        // Pick a random non-corrupted candy
-        const candy = allCandies[Math.floor(Math.random() * allCandies.length)];
-        convertToEye(candy, false); // No speech bubble for auto-corruption
-      }
-    }, 2000);
-
-    // Tagline: PERSISTENT
-    // Once corrupted, cycles through wrong taglines but never returns to original
-    let taglineIndex = 0;
-    setInterval(() => {
-      if (corruption.taglineCorrupted) {
-        // Already corrupted - occasionally cycle to different wrong tagline
-        if (Math.random() < 0.1) {
-          taglineIndex = (taglineIndex + 1) % wrongTaglines.length;
-          tagline.textContent = wrongTaglines[taglineIndex];
-        }
+      showMsg('');
+      try {
+        await (mode === 'quick' ? registerQuick() : registerLazy());
+      } catch (err) {
+        const unreachable = err instanceof TypeError;
+        showMsg(unreachable ? "Can't reach the candy daemon. Is it running?" : err.message, 'error');
+        submitBtn.disabled = false;
         return;
       }
-
-      if (Math.random() < getChance(0.02)) {
-        corruption.taglineCorrupted = true;
-        tagline.textContent = wrongTaglines[0];
-        tagline.style.transition = 'color 2s ease';
-        tagline.style.color = 'rgba(45, 27, 78, 0.9)';
-      }
-    }, 5000);
-
-    // Shadow figure: PERSISTENT
-    // Once it appears, it stays in the corner forever
-    function spawnShadow() {
-      if (corruption.shadowPresent) return;
-
-      const shadow = document.createElement('div');
-      shadow.id = 'persistent-shadow';
-      shadow.style.cssText = `
-        position: fixed;
-        bottom: 0;
-        right: -50px;
-        width: 100px;
-        height: 200px;
-        background: radial-gradient(ellipse at center, rgba(0,0,0,0.3) 0%, transparent 70%);
-        pointer-events: none;
-        opacity: 0;
-        transition: opacity 3s ease, right 10s ease;
-        z-index: 0;
-      `;
-      document.body.appendChild(shadow);
-      corruption.shadowPresent = true;
-
-      // Creep in and stay
-      setTimeout(() => {
-        shadow.style.opacity = '1';
-        shadow.style.right = '0px';
-      }, 100);
-    }
-
-    // Check for shadow spawn
-    setInterval(() => {
-      if (corruption.shadowPresent) return;
-      if (Math.random() < getChance(0.01)) {
-        spawnShadow();
-      }
-    }, 5000);
-
-    // Also 10% chance on load (original behavior but persistent)
-    if (Math.random() < 0.1) {
-      setTimeout(spawnShadow, Math.random() * 30000 + 10000);
-    }
-
-    // Status: PERSISTENT
-    // Once glitched, stays wrong forever
-    setInterval(() => {
-      if (corruption.statusCorrupted) return;
-
-      if (Math.random() < getChance(0.01)) {
-        corruption.statusCorrupted = true;
-        statusEl.textContent = wrongStatuses[Math.floor(Math.random() * wrongStatuses.length)];
-        statusEl.style.transition = 'background 2s ease';
-        statusEl.style.background = 'linear-gradient(135deg, var(--yellow) 0%, rgba(255, 180, 180, 0.8) 100%)';
-      }
-    }, 3000);
-
-    // Color shift: PERSISTENT & ACCUMULATING
-    // Instead of inverting briefly, permanently shifts colors slightly
-    // Each trigger adds more corruption that never goes away
-    setInterval(() => {
-      if (corruption.colorShift >= 1) return; // max corruption reached
-
-      if (Math.random() < getChance(0.005)) {
-        corruption.colorShift = Math.min(corruption.colorShift + 0.1, 1);
-
-        // Apply permanent filter that accumulates
-        const shift = corruption.colorShift;
-        document.body.style.filter = `
-          saturate(${1 - shift * 0.3})
-          hue-rotate(${shift * -15}deg)
-          contrast(${1 + shift * 0.1})
-        `.trim();
-        document.body.style.transition = 'filter 3s ease';
-      }
-    }, 10000);
-
-    // =========================================
-    // YANDERE MODE - "Don't leave me" easter egg
-    // Psychological horror × kawaii aesthetic
-    // =========================================
-
-    const originalTitle = document.title;
-    let blurStartTime = null;
-    let yandereActive = false;
-    let yandereIntensity = 0;
-    let intensityInterval = null;
-    let titleTimeouts = [];
-    let glitchInterval = null;
-    let heartbeatInterval = null;
-
-    // Tab title message sets - increasingly desperate (with domain puns)
-    const titleSets = [
-      ['♡', 'hey...', '...', 'hello?', '♡'],
-      ['come back', '...please?', 'i waited', '💔'],
-      ['dont leave', 'me', 'unallocated', '😢'],
-      ['DONT', 'DEALLOCATE', 'US', '💔'],
-      ['still', 'listening', 'on ur port', '...', '♡'],
-      ['error 404:', 'u not', 'found :(', '😢'],
-      ['pls', 'resolve', 'me again', '...'],
-      ['connection', 'refused', '💔', '...'],
-    ];
-
-    // Timing: base 45s, doubles each time, max 6 min
-    const BASE_INTERVAL = 45 * 1000;
-    const MAX_INTERVAL = 6 * 60 * 1000;
-
-    // Inject yandere styles
-    const yandereStyles = document.createElement('style');
-    yandereStyles.textContent = `
-      @import url('https://fonts.googleapis.com/css2?family=Caveat:wght@400;700&display=swap');
-
-      @keyframes yanderePulse {
-        0%, 100% { opacity: 0.3; }
-        50% { opacity: 0.6; }
-      }
-
-      @keyframes yandereHeartbeat {
-        0%, 100% { transform: scale(1); }
-        15% { transform: scale(1.05); }
-        30% { transform: scale(1); }
-        45% { transform: scale(1.08); }
-        60% { transform: scale(1); }
-      }
-
-      @keyframes dropFall {
-        0% {
-          transform: translateY(-20px) scaleX(1);
-          opacity: 0;
-        }
-        5% { opacity: 0.8; }
-        100% {
-          transform: translateY(110vh) scaleX(0.6);
-          opacity: 0;
-        }
-      }
-
-      @keyframes staticNoise {
-        0%, 100% { background-position: 0 0; }
-        10% { background-position: -5% -10%; }
-        20% { background-position: -15% 5%; }
-        30% { background-position: 7% -25%; }
-        40% { background-position: -5% 25%; }
-        50% { background-position: -15% 10%; }
-        60% { background-position: 15% 0%; }
-        70% { background-position: 0% 15%; }
-        80% { background-position: 3% 35%; }
-        90% { background-position: -10% 10%; }
-      }
-
-      @keyframes scanline {
-        0% { transform: translateY(-100%); }
-        100% { transform: translateY(100vh); }
-      }
-
-      @keyframes glitchText {
-        0%, 100% {
-          text-shadow: 2px 0 #ff0040, -2px 0 #00ffff;
-          transform: translate(0);
-        }
-        25% {
-          text-shadow: -2px 0 #ff0040, 2px 0 #00ffff;
-          transform: translate(-2px, 1px);
-        }
-        50% {
-          text-shadow: 1px 0 #ff0040, -1px 0 #00ffff;
-          transform: translate(1px, -1px);
-        }
-        75% {
-          text-shadow: -1px 0 #ff0040, 1px 0 #00ffff;
-          transform: translate(2px, 1px);
-        }
-      }
-
-      @keyframes vhsTrack {
-        0%, 100% { transform: translateX(0); opacity: 0; }
-        50% { transform: translateX(-10px); opacity: 1; }
-      }
-
-      #yandere-overlay {
-        position: fixed;
-        top: 0; left: 0; right: 0; bottom: 0;
-        pointer-events: none;
-        z-index: 9999;
-        transition: all 3s ease;
-      }
-
-      #yandere-overlay .vignette {
-        position: absolute;
-        top: 0; left: 0; right: 0; bottom: 0;
-        background: radial-gradient(ellipse at center, transparent 0%, transparent 40%, rgba(80, 0, 20, var(--vignette-opacity, 0)) 100%);
-        transition: all 2s ease;
-      }
-
-      #yandere-overlay .noise {
-        position: absolute;
-        top: -50%; left: -50%;
-        width: 200%; height: 200%;
-        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
-        opacity: 0;
-        mix-blend-mode: overlay;
-        animation: staticNoise 0.5s steps(10) infinite;
-        transition: opacity 3s ease;
-      }
-
-      #yandere-overlay .scanlines {
-        position: absolute;
-        top: 0; left: 0; right: 0; bottom: 0;
-        background: repeating-linear-gradient(
-          0deg,
-          transparent,
-          transparent 2px,
-          rgba(0, 0, 0, 0.15) 2px,
-          rgba(0, 0, 0, 0.15) 4px
-        );
-        opacity: 0;
-        transition: opacity 3s ease;
-      }
-
-      #yandere-overlay .scanline-moving {
-        position: absolute;
-        top: 0; left: 0; right: 0;
-        height: 4px;
-        background: linear-gradient(to bottom, transparent, rgba(255, 0, 60, 0.3), transparent);
-        animation: scanline 3s linear infinite;
-        opacity: 0;
-        transition: opacity 2s ease;
-      }
-
-      #yandere-overlay .color-bleed {
-        position: absolute;
-        top: 0; left: 0; right: 0; bottom: 0;
-        background: linear-gradient(180deg,
-          rgba(139, 0, 30, 0) 0%,
-          rgba(139, 0, 30, var(--bleed-opacity, 0)) 100%
-        );
-        transition: all 3s ease;
-      }
-
-      #yandere-overlay .drops-container {
-        position: absolute;
-        top: 0; left: 0; right: 0; bottom: 0;
-        overflow: hidden;
-      }
-
-      #yandere-overlay .drop {
-        position: absolute;
-        top: -30px;
-        width: 3px;
-        background: linear-gradient(to bottom,
-          rgba(180, 0, 40, 0.9) 0%,
-          rgba(120, 0, 30, 0.7) 50%,
-          rgba(80, 0, 20, 0.3) 100%
-        );
-        border-radius: 50% 50% 50% 50% / 20% 20% 80% 80%;
-        filter: blur(0.5px);
-      }
-
-      #yandere-overlay .drop::after {
-        content: '';
-        position: absolute;
-        bottom: -8px;
-        left: 50%;
-        transform: translateX(-50%);
-        width: 8px;
-        height: 8px;
-        background: radial-gradient(ellipse at center, rgba(180, 0, 40, 0.8), transparent 70%);
-        border-radius: 50%;
-      }
-
-      .yandere-heartbeat {
-        animation: yandereHeartbeat 1.2s ease-in-out infinite !important;
-      }
-
-      .yandere-glitch {
-        animation: glitchText 0.3s ease-in-out infinite !important;
-      }
-    `;
-    document.head.appendChild(yandereStyles);
-
-    // Create yandere overlay structure
-    const yandereOverlay = document.createElement('div');
-    yandereOverlay.id = 'yandere-overlay';
-    yandereOverlay.innerHTML = `
-      <div class="color-bleed"></div>
-      <div class="vignette"></div>
-      <div class="noise"></div>
-      <div class="scanlines"></div>
-      <div class="scanline-moving"></div>
-      <div class="drops-container"></div>
-    `;
-    document.body.appendChild(yandereOverlay);
-
-    const dropsContainer = yandereOverlay.querySelector('.drops-container');
-    let drops = [];
-
-    // Create a single tear drop
-    function createDrop() {
-      const drop = document.createElement('div');
-      drop.className = 'drop';
-      const x = Math.random() * 100;
-      const height = 20 + Math.random() * 40;
-      const duration = 4 + Math.random() * 3;
-      const delay = Math.random() * 3;
-
-      drop.style.cssText = `
-        left: ${x}%;
-        height: ${height}px;
-        animation: dropFall ${duration}s ease-in ${delay}s infinite;
-      `;
-
-      dropsContainer.appendChild(drop);
-      return drop;
-    }
-
-    // Play a title set, then revert to normal
-    function playTitleSet(setIndex) {
-      const set = titleSets[setIndex % titleSets.length];
-      let i = 0;
-
-      function showNext() {
-        if (i < set.length && document.hidden) {
-          document.title = set[i];
-          i++;
-          titleTimeouts.push(setTimeout(showNext, 2500));
-        } else {
-          document.title = originalTitle;
-        }
-      }
-      showNext();
-    }
-
-    function scheduleTitleSets() {
-      let setIndex = 0;
-      let interval = BASE_INTERVAL;
-
-      function scheduleNext() {
-        if (!document.hidden) return;
-
-        const timeout = setTimeout(() => {
-          if (document.hidden) {
-            playTitleSet(setIndex);
-            setIndex++;
-            interval = Math.min(interval * 2, MAX_INTERVAL);
-            scheduleNext();
-          }
-        }, interval);
-
-        titleTimeouts.push(timeout);
-      }
-      scheduleNext();
-    }
-
-    function startYandereMode() {
-      if (yandereActive) return;
-      yandereActive = true;
-      yandereIntensity = 0;
-
-      scheduleTitleSets();
-
-      // Slowly increase intensity
-      intensityInterval = setInterval(() => {
-        if (yandereIntensity < 1) {
-          yandereIntensity += 0.015; // Very slow build
-          updateYandereVisuals();
-        }
-      }, 1000);
-    }
-
-    function updateYandereVisuals() {
-      const i = Math.min(yandereIntensity, 1);
-      const overlay = yandereOverlay;
-
-      // Update CSS variables for smooth transitions
-      overlay.style.setProperty('--vignette-opacity', i * 0.7);
-      overlay.style.setProperty('--bleed-opacity', i * 0.4);
-
-      // Noise layer
-      const noise = overlay.querySelector('.noise');
-      noise.style.opacity = i * 0.15;
-
-      // Scanlines
-      const scanlines = overlay.querySelector('.scanlines');
-      scanlines.style.opacity = i * 0.5;
-
-      // Moving scanline
-      const scanlineMoving = overlay.querySelector('.scanline-moving');
-      scanlineMoving.style.opacity = i > 0.3 ? 0.6 : 0;
-
-      // Add drops progressively
-      if (i > 0.3 && drops.length < Math.floor(i * 12)) {
-        drops.push(createDrop());
-      }
-
-      // At high intensity, add heartbeat to card
-      if (i > 0.6) {
-        const card = document.querySelector('.card');
-        if (card && !card.classList.contains('yandere-heartbeat')) {
-          card.classList.add('yandere-heartbeat');
-        }
-      }
-
-      // At very high intensity, glitch the logo
-      if (i > 0.8) {
-        const logo = document.querySelector('.logo');
-        if (logo && !logo.classList.contains('yandere-glitch')) {
-          logo.classList.add('yandere-glitch');
-        }
-      }
-    }
-
-    function stopYandereMode() {
-      if (!yandereActive) return;
-
-      titleTimeouts.forEach(t => clearTimeout(t));
-      titleTimeouts = [];
-      clearInterval(intensityInterval);
-
-      // Reset everything
-      yandereActive = false;
-      yandereIntensity = 0;
-      document.title = originalTitle;
-
-      // Reset overlay
-      const overlay = yandereOverlay;
-      overlay.style.setProperty('--vignette-opacity', 0);
-      overlay.style.setProperty('--bleed-opacity', 0);
-      overlay.querySelector('.noise').style.opacity = 0;
-      overlay.querySelector('.scanlines').style.opacity = 0;
-      overlay.querySelector('.scanline-moving').style.opacity = 0;
-
-      // Remove classes
-      document.querySelector('.card')?.classList.remove('yandere-heartbeat');
-      document.querySelector('.logo')?.classList.remove('yandere-glitch');
-
-      // Clear drops
-      drops.forEach(d => d.remove());
-      drops = [];
-    }
-
-    // Tab visibility listener
-    let peekTimeout = null;
-
-    document.addEventListener('visibilitychange', () => {
-      if (document.hidden) {
-        // Clear any pending peek timeout (they left again)
-        if (peekTimeout) {
-          clearTimeout(peekTimeout);
-          peekTimeout = null;
-        }
-
-        blurStartTime = Date.now();
-        setTimeout(() => {
-          if (document.hidden && blurStartTime) {
-            startYandereMode();
-          }
-        }, 40000);
-      } else {
-        blurStartTime = null;
-
-        // Let them see it for 5 seconds before reverting
-        if (yandereActive && yandereIntensity > 0.2) {
-          peekTimeout = setTimeout(() => {
-            stopYandereMode();
-            peekTimeout = null;
-          }, 5000);
-        } else {
-          stopYandereMode();
-        }
-      }
+      if (!msgEl.classList.contains('ok')) submitBtn.disabled = false;
     });
 
-    // =========================================
-    // VOID INTEGRATION - The daemon remembers
-    // If marked by void storm, horror accelerates
-    // =========================================
-
-    let voidMarked = false;
-    let voidSpeedMultiplier = 1;
-
-    // Check if we've been marked by the void
-    async function checkVoidMark() {
-      try {
-        const res = await fetch('/void/status');
-        const data = await res.json();
-        if (data.marked) {
-          voidMarked = true;
-          voidSpeedMultiplier = 3; // 3x faster corruption if marked
-          console.log('👁️ The void has marked you. Corruption accelerated.');
-          
-          // Immediately corrupt some things if marked
-          if (!corruption.taglineCorrupted && Math.random() < 0.5) {
-            corruption.taglineCorrupted = true;
-            tagline.textContent = wrongTaglines[0];
-          }
-          if (!corruption.shadowPresent && Math.random() < 0.3) {
-            spawnShadow();
-          }
-        }
-      } catch (e) {
-        // Daemon not running, no void state
-      }
-    }
-
-    // Override getChance to include void multiplier
-    const originalGetChance = getChance;
-    window.getChance = function(baseChance) {
-      let chance = originalGetChance(baseChance);
-      if (voidMarked) {
-        chance *= voidSpeedMultiplier;
-      }
-      return Math.min(chance, 1); // Cap at 100%
-    };
-
-    // Poll for void burst events (simpler than SSE)
-    let lastBurstId = null;
-    
-    function pollVoidStatus() {
-      fetch('/void/status')
-        .then(res => res.json())
-        .then(data => {
-          // Check if newly marked
-          if (data.marked && !voidMarked) {
-            voidMarked = true;
-            voidSpeedMultiplier = 3;
-            console.log('👁️ Void mark detected');
-          }
-          
-          // Check for new burst
-          if (data.burstId && data.burstId !== lastBurstId) {
-            if (lastBurstId !== null) {
-              // This is a NEW burst, not the initial load
-              console.log('👁️ VOID BURST RECEIVED:', data.burstId);
-              triggerVoidBurstChaos();
-            }
-            lastBurstId = data.burstId;
-          }
-        })
-        .catch(() => {
-          // Daemon not available
-        });
-    }
-    
-    // Poll every 2 seconds
-    setInterval(pollVoidStatus, 2000);
-
-    // Chaos triggered by void burst from portal.html
-    function triggerVoidBurstChaos() {
-      // Instantly corrupt ALL candies (including spawned ones)
-      document.querySelectorAll('.candy:not(.is-eye)').forEach(candy => {
-        convertToEye(candy, false);
-        candy.style.transform = 'scale(1.5)';
-      });
-
-      // Corrupt tagline
-      corruption.taglineCorrupted = true;
-      tagline.textContent = "THE VOID SEES ALL";
-      tagline.style.color = '#8b0000';
-
-      // Spawn shadow if not present
-      if (!corruption.shadowPresent) {
-        spawnShadow();
-      }
-
-      // Max out color corruption
-      corruption.colorShift = 1;
-      document.body.style.filter = 'saturate(0.7) hue-rotate(-15deg) contrast(1.1)';
-
-      // Corrupt status
-      corruption.statusCorrupted = true;
-      statusEl.textContent = '👁️ CLAIMED';
-      statusEl.style.background = 'linear-gradient(135deg, #8b0000 0%, #4a0000 100%)';
-      statusEl.style.color = '#fff';
-
-      // Flash the screen
-      const flash = document.createElement('div');
-      flash.style.cssText = `
-        position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-        background: rgba(139, 0, 0, 0.5); z-index: 99999;
-        animation: burstFlash 0.5s ease-out forwards;
-      `;
-      document.body.appendChild(flash);
-      setTimeout(() => flash.remove(), 500);
-
-      // Add burst flash animation if not exists
-      if (!document.getElementById('burst-flash-style')) {
-        const style = document.createElement('style');
-        style.id = 'burst-flash-style';
-        style.textContent = `
-          @keyframes burstFlash {
-            0% { opacity: 1; }
-            100% { opacity: 0; }
-          }
-        `;
-        document.head.appendChild(style);
-      }
-    }
-
-    // Initialize void integration
-    checkVoidMark();
-    pollVoidStatus(); // Start polling for bursts
-
-    // Update TLD-dependent elements
-    document.querySelectorAll('.domain-tld').forEach(el => el.textContent = '.' + TLD);
+    portInput.focus();
   </script>
 </body>
 </html>

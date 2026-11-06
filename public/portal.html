@@ -10,996 +10,444 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg-deep: #050508;
-      --bg-surface: #0a0a0f;
-      --bg-elevated: #12121a;
-      --bg-card: #16161f;
-      --border: #1e1e2a;
-      --border-bright: #2a2a3a;
-      --text: #e0e0e8;
-      --text-dim: #6a6a7a;
-      --text-muted: #4a4a5a;
-      --cyan: #00e5ff;
-      --cyan-dim: #00a0b0;
-      --cyan-glow: rgba(0, 229, 255, 0.15);
-      --magenta: #ff00aa;
-      --magenta-dim: #a0006a;
-      --magenta-glow: rgba(255, 0, 170, 0.15);
-      --green: #00ff6a;
-      --green-dim: #00a045;
-      --red: #ff3366;
-      --yellow: #ffcc00;
-      --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+      --bg: #0b0b10;
+      --bg-deep: #08080c;
+      --surface: #13131b;
+      --surface-2: #191923;
+      --surface-3: #1f1f2b;
+      --border: #24242f;
+      --border-bright: #33333f;
+      --text: #e6e6ee;
+      --text-dim: #8a8a99;
+      --text-muted: #5a5a68;
+      --accent: #00d8f0;
+      --accent-soft: rgba(0, 216, 240, 0.12);
+      --cyan: var(--accent);
+      --magenta: #ff4fb8;
+      --magenta-glow: rgba(255, 79, 184, 0.12);
+      --green: #2ee67a;
+      --green-soft: rgba(46, 230, 122, 0.12);
+      --red: #ff4d6d;
+      --red-soft: rgba(255, 77, 109, 0.12);
+      --yellow: #ffc94d;
+      --yellow-soft: rgba(255, 201, 77, 0.12);
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
       --font-sans: 'Space Grotesk', system-ui, sans-serif;
+      --radius: 12px;
     }
 
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-
-    html, body {
-      height: 100%;
-      overflow: hidden;
-    }
-
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
     body {
-      font-family: var(--font-mono);
-      background: var(--bg-deep);
+      font-family: var(--font-sans);
+      background: var(--bg);
       color: var(--text);
       display: flex;
       flex-direction: column;
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
     }
+    a { color: inherit; }
+    code { font-family: var(--font-mono); }
 
-    /* Scanline effect */
-    body::before {
-      content: '';
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background: repeating-linear-gradient(
-        0deg,
-        transparent,
-        transparent 2px,
-        rgba(0, 0, 0, 0.1) 2px,
-        rgba(0, 0, 0, 0.1) 4px
-      );
-      pointer-events: none;
-      z-index: 9999;
-      opacity: 0.3;
-    }
-
-    /* Noise texture */
-    body::after {
-      content: '';
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
-      opacity: 0.03;
-      pointer-events: none;
-      z-index: 9998;
-    }
-
-    /* Header */
+    /* ---------- Header ---------- */
     header {
-      background: var(--bg-surface);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 28px;
       border-bottom: 1px solid var(--border);
-      padding: 1rem 1.5rem;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
+      background: var(--bg-deep);
       flex-shrink: 0;
-      position: relative;
     }
-
-    header::after {
-      content: '';
-      position: absolute;
-      bottom: 0;
-      left: 0;
-      right: 0;
-      height: 1px;
-      background: linear-gradient(90deg, transparent, var(--cyan-dim), transparent);
-      opacity: 0.5;
-    }
-
-    .logo {
-      display: flex;
-      align-items: center;
-      gap: 1rem;
-    }
-
+    .logo { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
     .logo-text {
-      font-family: var(--font-sans);
-      font-size: 1.25rem;
+      font-family: var(--font-mono);
       font-weight: 700;
-      color: var(--cyan);
-      text-shadow: 0 0 20px var(--cyan-glow);
-      letter-spacing: -0.02em;
+      font-size: 1rem;
+      color: var(--text);
+      text-decoration: none;
+      white-space: nowrap;
     }
-
-    .logo-sub {
-      font-size: 0.7rem;
-      color: var(--text-dim);
-      text-transform: uppercase;
-      letter-spacing: 0.15em;
-    }
-
+    .logo-text span { color: var(--accent); }
+    .logo-sub { font-size: 0.8rem; color: var(--text-muted); white-space: nowrap; }
+    .header-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
     .mode-switch {
       display: flex;
-      background: var(--bg-elevated);
-      border-radius: 6px;
-      padding: 3px;
+      background: var(--bg);
       border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 3px;
     }
-
     .mode-btn {
-      font-family: var(--font-mono);
-      font-size: 0.75rem;
-      padding: 0.5rem 1rem;
-      background: transparent;
-      border: none;
+      font: 500 0.8rem var(--font-sans);
       color: var(--text-dim);
+      background: none;
+      border: 0;
+      border-radius: 6px;
+      padding: 6px 14px;
       cursor: pointer;
-      border-radius: 4px;
-      transition: all 0.2s ease;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
     }
-
-    .mode-btn:hover {
-      color: var(--text);
-    }
-
-    .mode-btn.active {
-      background: var(--cyan);
-      color: var(--bg-deep);
-      box-shadow: 0 0 15px var(--cyan-glow);
-    }
-
+    .mode-btn:hover { color: var(--text); }
+    .mode-btn.active { background: var(--surface-3); color: var(--text); }
     .status-indicator {
       display: flex;
       align-items: center;
-      gap: 0.5rem;
-      font-size: 0.7rem;
+      gap: 8px;
+      font-size: 0.8rem;
       color: var(--text-dim);
+      white-space: nowrap;
     }
-
     .status-dot {
-      width: 8px;
-      height: 8px;
+      width: 8px; height: 8px;
       border-radius: 50%;
       background: var(--green);
-      box-shadow: 0 0 10px var(--green);
-      animation: pulse 2s ease-in-out infinite;
+      box-shadow: 0 0 0 3px var(--green-soft);
     }
+    .status-dot.offline { background: var(--red); box-shadow: 0 0 0 3px var(--red-soft); }
 
-    .status-dot.offline {
-      background: var(--red);
-      box-shadow: 0 0 10px var(--red);
-    }
+    /* ---------- Panels ---------- */
+    main { flex: 1; min-height: 0; position: relative; }
+    .panel { display: none; height: 100%; }
+    .panel.active { display: flex; flex-direction: column; }
 
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.5; }
-    }
-
-    /* Main content */
-    main {
-      flex: 1;
-      min-height: 0; /* Required for flex child to scroll */
-      display: flex;
-      overflow: hidden;
-    }
-
-    .panel {
-      display: none;
-      width: 100%;
-      height: 100%;
-      min-height: 0; /* Required for flex child to scroll */
-    }
-
-    .panel.active {
-      display: flex;
-    }
-
-    /* CLI Panel */
-    #cli-panel {
-      flex-direction: column;
-      background: var(--bg-deep);
-    }
-
+    /* ---------- Terminal (CLI) ---------- */
+    #cli-panel { background: var(--bg-deep); }
     .terminal {
       flex: 1;
-      padding: 1rem 1.5rem;
       overflow-y: auto;
-      font-size: 0.875rem;
+      padding: 20px 28px;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
       line-height: 1.6;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border-bright) transparent;
     }
-
-    .terminal::-webkit-scrollbar {
-      width: 8px;
-    }
-
-    .terminal::-webkit-scrollbar-track {
-      background: var(--bg-surface);
-    }
-
-    .terminal::-webkit-scrollbar-thumb {
-      background: var(--border-bright);
-      border-radius: 4px;
-    }
-
-    .terminal-line {
-      white-space: pre-wrap;
-      word-break: break-all;
-    }
-
-    .terminal-line.input {
-      color: var(--cyan);
-    }
-
-    .terminal-line.output {
-      color: var(--text);
-    }
-
-    .terminal-line.error {
-      color: var(--red);
-    }
-
-    .terminal-line.success {
-      color: var(--green);
-    }
-
-    .terminal-line.portal {
-      color: var(--magenta);
-    }
-
-    .terminal-line.dim {
-      color: var(--text-dim);
-    }
-
+    .terminal-line { white-space: pre-wrap; word-break: break-word; }
+    .terminal-line.input { color: var(--accent); }
+    .terminal-line.output { color: var(--text); }
+    .terminal-line.error { color: var(--red); }
+    .terminal-line.success { color: var(--green); }
+    .terminal-line.portal { color: var(--magenta); }
+    .terminal-line.dim { color: var(--text-dim); }
+    .welcome { margin-bottom: 16px; color: var(--text-dim); }
+    .welcome strong { color: var(--text); font-weight: 700; }
     .input-line {
       display: flex;
       align-items: center;
-      padding: 1rem 1.5rem;
-      background: var(--bg-surface);
+      gap: 10px;
+      padding: 14px 28px;
       border-top: 1px solid var(--border);
-      gap: 0.5rem;
+      background: var(--bg);
     }
-
-    .prompt {
-      color: var(--cyan);
-      font-weight: 500;
-      flex-shrink: 0;
-    }
-
+    .prompt { color: var(--accent); font-family: var(--font-mono); font-weight: 700; }
     #cli-input {
       flex: 1;
-      background: transparent;
-      border: none;
-      color: var(--text);
-      font-family: var(--font-mono);
-      font-size: 0.875rem;
+      background: none;
+      border: 0;
       outline: none;
-      caret-color: var(--cyan);
+      color: var(--text);
+      font: 0.85rem var(--font-mono);
     }
+    #cli-input::placeholder { color: var(--text-muted); }
 
-    #cli-input::placeholder {
-      color: var(--text-muted);
-    }
-
-    /* GUI Panel */
-    #gui-panel {
-      flex-direction: column;
-      background: var(--bg-deep);
-      overflow: hidden;
-      min-height: 0; /* Required for flex child to scroll */
-    }
-
+    /* ---------- Dashboard (GUI) ---------- */
+    #gui-panel { overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border-bright) transparent; }
     .gui-content {
-      flex: 1;
-      min-height: 0; /* Required for flex child to scroll */
-      padding: 1.5rem;
-      overflow-y: auto;
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-      gap: 1.5rem;
-      align-content: start;
+      width: 100%;
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 24px 28px 48px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
     }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .stat-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 18px;
+    }
+    .stat-label { font-size: 0.75rem; color: var(--text-dim); margin-bottom: 4px; }
+    .stat-value { font: 600 1.5rem var(--font-mono); color: var(--text); line-height: 1.2; }
+    .stat-value small { font-size: 0.8rem; color: var(--text-muted); font-weight: 400; margin-left: 4px; }
+
+    .dash-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.75fr) minmax(320px, 1fr);
+      gap: 20px;
+      align-items: start;
+    }
+    .dash-col { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
 
     .card {
-      background: var(--bg-card);
+      background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      overflow: hidden;
+      border-radius: var(--radius);
+      min-width: 0;
     }
-
     .card-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 1rem 1.25rem;
-      background: var(--bg-elevated);
+      gap: 12px;
+      padding: 14px 18px;
       border-bottom: 1px solid var(--border);
     }
-
     .card-title {
-      font-family: var(--font-sans);
-      font-size: 0.9rem;
+      display: flex;
+      align-items: center;
+      gap: 8px;
       font-weight: 600;
-      color: var(--text);
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
+      font-size: 0.92rem;
     }
-
-    .card-title .icon {
-      color: var(--cyan);
-    }
-
-    .card-body {
-      padding: 1rem 1.25rem;
-    }
-
-    .card-body.empty {
+    .card-title .count {
+      font: 500 0.72rem var(--font-mono);
       color: var(--text-dim);
-      font-size: 0.8rem;
-      text-align: center;
-      padding: 2rem;
-    }
-
-    /* Routes list */
-    .route-item {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0.75rem 0;
-      border-bottom: 1px solid var(--border);
-    }
-
-    .route-item:last-child {
-      border-bottom: none;
-    }
-
-    .route-info {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-    }
-
-    .route-name {
-      color: var(--green);
-      font-weight: 500;
-    }
-
-    .route-arrow {
-      color: var(--text-muted);
-    }
-
-    .route-port {
-      color: var(--text-dim);
-    }
-
-    .route-badges {
-      display: flex;
-      align-items: center;
-      gap: 0.4rem;
-    }
-
-    .route-persistent {
-      font-size: 0.6rem;
-      padding: 0.1rem 0.35rem;
-      border-radius: 3px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      background: rgba(0, 229, 255, 0.12);
-      color: var(--cyan-dim);
-      cursor: default;
-    }
-
-    .route-actions {
-      display: flex;
-      gap: 0.5rem;
-    }
-
-    .btn-icon {
-      width: 28px;
-      height: 28px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: var(--bg-elevated);
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      color: var(--text-dim);
-      cursor: pointer;
-      transition: all 0.15s ease;
-      font-size: 0.8rem;
-    }
-
-    .btn-icon:hover {
-      background: var(--border);
-      color: var(--text);
-    }
-
-    .btn-icon.danger:hover {
-      border-color: var(--red);
-      color: var(--red);
-    }
-
-    .btn-icon.portal:hover {
-      border-color: var(--magenta);
-      color: var(--magenta);
-    }
-
-    .btn-icon.pin {
-      color: var(--text-muted);
-    }
-
-    .btn-icon.pin.active {
-      color: var(--cyan-dim);
-      border-color: var(--cyan-dim);
-    }
-
-    .btn-icon.lan {
-      width: auto;
-      padding: 0 0.4rem;
-      font-size: 0.6rem;
-      letter-spacing: 0.05em;
-      color: var(--text-muted);
-    }
-
-    .btn-icon.lan.active {
-      color: var(--green);
-      border-color: var(--green);
-    }
-
-    .btn-icon.lan:hover {
-      border-color: var(--green);
-      color: var(--green);
-    }
-
-    .route-lan {
-      font-size: 0.6rem;
-      padding: 0.1rem 0.35rem;
-      border-radius: 3px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      background: rgba(0, 255, 106, 0.12);
-      color: var(--green);
-      cursor: default;
-    }
-
-    .btn-icon.pin:hover {
-      border-color: var(--cyan);
-      color: var(--cyan);
-    }
-
-    /* Portal items */
-    .portal-item {
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-      padding: 0.75rem 0;
-      border-bottom: 1px solid var(--border);
-    }
-
-    .portal-item:last-child {
-      border-bottom: none;
-    }
-
-    .portal-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-
-    .portal-name {
-      color: var(--magenta);
-      font-weight: 500;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-
-    .portal-name::before {
-      content: '';
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--magenta);
-      box-shadow: 0 0 10px var(--magenta);
-      animation: pulse 2s ease-in-out infinite;
-    }
-
-    .portal-url {
-      font-size: 0.75rem;
-      color: var(--text-dim);
-      word-break: break-all;
-    }
-
-    .portal-url a {
-      color: var(--cyan-dim);
-      text-decoration: none;
-    }
-
-    .portal-url a:hover {
-      color: var(--cyan);
-      text-decoration: underline;
-    }
-
-    /* Domain items */
-    .domain-item {
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-      padding: 0.75rem 0;
-      border-bottom: 1px solid var(--border);
-    }
-
-    .domain-item:last-child {
-      border-bottom: none;
-    }
-
-    .domain-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-
-    .domain-name {
-      color: var(--yellow);
-      font-weight: 500;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-
-    .domain-name::before {
-      content: '';
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--yellow);
-      box-shadow: 0 0 10px var(--yellow);
-      animation: pulse 2s ease-in-out infinite;
-    }
-
-    .domain-server {
-      font-size: 0.75rem;
-      color: var(--text-dim);
-    }
-
-    .domain-fqdn a {
-      color: var(--cyan-dim);
-      text-decoration: none;
-      font-size: 0.75rem;
-    }
-
-    .domain-fqdn a:hover {
-      color: var(--cyan);
-      text-decoration: underline;
-    }
-
-    .domain-auth-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 0.75rem;
-      margin-top: 0.1rem;
-    }
-
-    .domain-auth-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.35rem;
-      font-size: 0.62rem;
-      padding: 0.22rem 0.5rem;
+      background: var(--surface-3);
       border-radius: 999px;
-      border: 1px solid transparent;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      line-height: 1;
+      padding: 1px 8px;
     }
+    .card-title .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+    .card-body { padding: 4px 0; }
+    .card-body.scrollable { max-height: 460px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border-bright) transparent; }
+    .empty { padding: 18px; font-size: 0.85rem; color: var(--text-muted); line-height: 1.6; }
+    .empty code { color: var(--accent); font-size: 0.78rem; }
 
-    .domain-auth-badge.protected {
-      color: var(--green);
-      background: rgba(0, 255, 106, 0.12);
-      border-color: rgba(0, 255, 106, 0.35);
-      box-shadow: 0 0 14px rgba(0, 255, 106, 0.12);
+    /* Shared list rows */
+    .route-item, .process-item, .config-item, .portal-item, .domain-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 11px 18px;
+      border-top: 1px solid var(--border);
     }
+    .card-body > :first-child { border-top: 0; }
+    .route-item:hover, .process-item:hover, .config-item:hover, .portal-item:hover, .domain-item:hover { background: var(--surface-2); }
 
-    .domain-auth-badge.unprotected {
-      color: var(--yellow);
-      background: rgba(255, 204, 0, 0.12);
-      border-color: rgba(255, 204, 0, 0.35);
-      box-shadow: 0 0 14px rgba(255, 204, 0, 0.1);
+    .route-info, .process-info, .config-info { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+    .route-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+    .route-name, .process-name, .config-name {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      font-size: 0.88rem;
+      color: var(--text);
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
     }
-
-    .domain-auth-btn {
-      font-size: 0.62rem;
-      padding: 0.35rem 0.55rem;
-      letter-spacing: 0.06em;
+    a.route-name:hover { color: var(--accent); }
+    .route-name .tld { color: var(--text-muted); font-weight: 400; }
+    .route-arrow { color: var(--text-muted); }
+    .route-port { font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-dim); word-break: break-all; }
+    .route-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+    .tag, .route-persistent, .route-lan {
+      font: 500 0.66rem var(--font-mono);
+      letter-spacing: 0.02em;
+      border-radius: 5px;
+      padding: 2px 6px;
+      text-decoration: none;
       white-space: nowrap;
+      color: var(--text-dim);
+      background: var(--surface-3);
+    }
+    .route-persistent { color: var(--accent); background: var(--accent-soft); }
+    .route-lan { color: var(--green); background: var(--green-soft); }
+    a.route-lan:hover { text-decoration: underline; }
+
+    .route-actions, .process-actions, .config-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+      justify-content: flex-end;
     }
 
-    .domain-auth-btn.set {
-      border-color: rgba(255, 204, 0, 0.4);
-      color: var(--yellow);
+    /* ---------- Buttons ---------- */
+    .btn {
+      font: 600 0.8rem var(--font-sans);
+      color: #04161a;
+      background: var(--accent);
+      border: 1px solid transparent;
+      border-radius: 7px;
+      padding: 6px 12px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: filter 0.15s, background 0.15s, color 0.15s;
     }
-
-    .domain-auth-btn.set:hover {
-      border-color: var(--yellow);
-      color: var(--yellow);
-      background: rgba(255, 204, 0, 0.08);
+    .btn:hover { filter: brightness(1.1); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn.secondary { background: var(--surface-2); color: var(--text); border-color: var(--border-bright); }
+    .btn.secondary:hover { border-color: var(--text-muted); filter: none; }
+    .btn-icon {
+      font: 500 0.72rem var(--font-sans);
+      color: var(--text-dim);
+      background: transparent;
+      border: 1px solid var(--border-bright);
+      border-radius: 6px;
+      min-width: 28px;
+      height: 26px;
+      padding: 0 8px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
     }
+    .btn-icon:hover { color: var(--text); border-color: var(--text-muted); }
+    .btn-icon.active { color: var(--accent); border-color: rgba(0, 216, 240, 0.4); background: var(--accent-soft); }
+    .btn-icon.lan.active { color: var(--green); border-color: rgba(46, 230, 122, 0.4); background: var(--green-soft); }
+    .btn-icon.portal:hover { color: var(--magenta); border-color: var(--magenta); }
+    .btn-icon.success:hover { color: var(--green); border-color: var(--green); }
+    .btn-icon.warning:hover { color: var(--yellow); border-color: var(--yellow); }
+    .btn-icon.danger:hover { color: var(--red); border-color: var(--red); background: var(--red-soft); }
+    .btn-icon.danger { font-size: 0.95rem; line-height: 1; }
+    .btn-icon.danger-text:hover { color: var(--red); border-color: var(--red); }
+    .btn:focus-visible, .btn-icon:focus-visible, .mode-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-    .domain-auth-btn.clear {
-      border-color: rgba(0, 255, 106, 0.35);
-      color: var(--green);
+    /* ---------- Processes ---------- */
+    .process-status {
+      font: 500 0.66rem var(--font-mono);
+      border-radius: 5px;
+      padding: 2px 6px;
+      color: var(--text-dim);
+      background: var(--surface-3);
     }
+    .process-status.running { color: var(--green); background: var(--green-soft); }
+    .process-status.starting { color: var(--yellow); background: var(--yellow-soft); }
+    .process-status.dead { color: var(--text-muted); }
+    .process-status.errored { color: var(--red); background: var(--red-soft); }
+    .process-meta { font: 0.75rem var(--font-mono); color: var(--text-muted); }
 
-    .domain-auth-btn.clear:hover {
-      border-color: var(--green);
-      color: var(--green);
-      background: rgba(0, 255, 106, 0.08);
+    /* ---------- Configs ---------- */
+    .config-details {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      column-gap: 10px;
+      font: 0.75rem var(--font-mono);
+      color: var(--text-dim);
     }
+    .config-details .label { color: var(--text-muted); }
+    .config-details span:not(.label) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .config-name .muted { color: var(--text-muted); font-weight: 400; font-size: 0.78rem; }
 
+    /* ---------- Portals ---------- */
+    .portal-item { flex-direction: column; align-items: stretch; gap: 4px; }
+    .portal-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .portal-name { font: 600 0.88rem var(--font-mono); display: flex; align-items: center; gap: 8px; }
+    .portal-name::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--magenta); }
+    .portal-url { font: 0.75rem var(--font-mono); color: var(--text-muted); word-break: break-all; }
+    .portal-url a { color: var(--magenta); text-decoration: none; }
+    .portal-url a:hover { text-decoration: underline; }
+
+    /* ---------- Domains ---------- */
+    .domain-item { flex-direction: column; align-items: stretch; gap: 6px; }
+    .domain-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .domain-name { font: 600 0.88rem var(--font-mono); }
+    .domain-fqdn a { font: 0.78rem var(--font-mono); color: var(--yellow); text-decoration: none; word-break: break-all; }
+    .domain-fqdn a:hover { text-decoration: underline; }
+    .domain-server { font-size: 0.75rem; color: var(--text-muted); }
+    .domain-server span { font-family: var(--font-mono); color: var(--text-dim) !important; }
+    .domain-auth-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .domain-auth-badge { font: 500 0.68rem var(--font-mono); border-radius: 5px; padding: 2px 6px; }
+    .domain-auth-badge.protected { color: var(--green); background: var(--green-soft); }
+    .domain-auth-badge.unprotected { color: var(--text-dim); background: var(--surface-3); }
+    .domain-auth-btn { font-size: 0.72rem; padding: 4px 10px; }
+    .domain-auth-btn.clear:hover { color: var(--red); border-color: var(--red); }
     .auth-domain-pill {
-      display: inline-block;
-      font-size: 0.72rem;
-      color: var(--cyan);
-      background: rgba(0, 229, 255, 0.08);
-      border: 1px solid rgba(0, 229, 255, 0.2);
-      border-radius: 4px;
-      padding: 0.35rem 0.55rem;
+      font: 0.8rem var(--font-mono);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 8px 10px;
       word-break: break-all;
     }
 
-    /* Add form */
-    .add-form {
-      display: flex;
-      gap: 0.75rem;
-      padding-top: 1rem;
-      border-top: 1px solid var(--border);
-      margin-top: 0.5rem;
-    }
-
+    /* ---------- Forms & modals ---------- */
     .input-field {
-      flex: 1;
-      background: var(--bg-elevated);
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      padding: 0.5rem 0.75rem;
+      font: 0.85rem var(--font-mono);
       color: var(--text);
-      font-family: var(--font-mono);
-      font-size: 0.8rem;
+      background: var(--bg);
+      border: 1px solid var(--border-bright);
+      border-radius: 7px;
+      padding: 9px 11px;
       outline: none;
-      transition: border-color 0.15s ease;
+      transition: border-color 0.15s, box-shadow 0.15s;
     }
+    .input-field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .input-field::placeholder { color: var(--text-muted); }
+    .persistent-toggle { display: flex; align-items: center; gap: 8px; font-size: 0.82rem; color: var(--text-dim); cursor: pointer; }
+    .persistent-toggle input { accent-color: var(--accent); }
+    [id$="-modal"] { backdrop-filter: blur(3px); }
+    [id$="-modal"] > .card { max-width: calc(100vw - 32px); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); }
+    [id$="-modal"] .card-body { padding: 18px; }
 
-    .input-field:focus {
-      border-color: var(--cyan-dim);
-    }
-
-    .input-field::placeholder {
-      color: var(--text-muted);
-    }
-
-    .input-field.small {
-      width: 80px;
-      flex: none;
-    }
-
-    .btn {
-      font-family: var(--font-mono);
-      font-size: 0.75rem;
-      padding: 0.5rem 1rem;
-      background: var(--cyan);
-      border: none;
-      border-radius: 4px;
-      color: var(--bg-deep);
-      cursor: pointer;
-      font-weight: 500;
-      transition: all 0.15s ease;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-
-    .btn:hover {
-      box-shadow: 0 0 20px var(--cyan-glow);
-    }
-
-    .btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-
-    .btn.secondary {
-      background: var(--bg-elevated);
-      color: var(--text);
-      border: 1px solid var(--border);
-    }
-
-    .btn.secondary:hover {
-      border-color: var(--text-dim);
-      box-shadow: none;
-    }
-
-    /* Stats card */
-    .stats-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 1rem;
-    }
-
-    .stat-item {
-      text-align: center;
-    }
-
-    .stat-value {
-      font-family: var(--font-sans);
-      font-size: 1.75rem;
-      font-weight: 700;
-      color: var(--cyan);
-      text-shadow: 0 0 20px var(--cyan-glow);
-    }
-
-    .stat-label {
-      font-size: 0.65rem;
-      color: var(--text-dim);
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      margin-top: 0.25rem;
-    }
-
-    /* Welcome message in terminal */
-    .welcome {
-      margin-bottom: 1rem;
-      padding-bottom: 1rem;
-      border-bottom: 1px solid var(--border);
-    }
-
-    .ascii-logo {
-      color: var(--cyan);
-      text-shadow: 0 0 10px var(--cyan-glow);
-      margin-bottom: 0.5rem;
-    }
-
-    /* Toast notifications */
+    /* ---------- Toasts ---------- */
     .toast-container {
       position: fixed;
-      bottom: 1.5rem;
-      right: 1.5rem;
-      z-index: 1000;
+      right: 20px;
+      bottom: 20px;
       display: flex;
       flex-direction: column;
-      gap: 0.5rem;
+      gap: 8px;
+      z-index: 200;
+      max-width: min(420px, calc(100vw - 32px));
     }
-
     .toast {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 0.75rem 1rem;
-      font-size: 0.8rem;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
-      animation: slideIn 0.3s ease;
-      max-width: 300px;
+      background: var(--surface-2);
+      border: 1px solid var(--border-bright);
+      border-left: 3px solid var(--accent);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 0.82rem;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+      animation: slideIn 0.18s ease-out;
+      word-break: break-word;
     }
+    .toast.success { border-left-color: var(--green); }
+    .toast.error { border-left-color: var(--red); }
+    @keyframes slideIn { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
-    .toast.success {
-      border-color: var(--green-dim);
+    /* ---------- Responsive ---------- */
+    @media (max-width: 1100px) {
+      .dash-grid { grid-template-columns: minmax(0, 1fr); }
     }
-
-    .toast.error {
-      border-color: var(--red);
-    }
-
-    @keyframes slideIn {
-      from {
-        opacity: 0;
-        transform: translateX(20px);
-      }
-      to {
-        opacity: 1;
-        transform: translateX(0);
-      }
-    }
-
-    /* Loading spinner */
-    .loading {
-      display: inline-block;
-      width: 12px;
-      height: 12px;
-      border: 2px solid var(--border);
-      border-top-color: var(--cyan);
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-    }
-
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
-
-    /* Process items */
-    .process-item {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0.75rem 0;
-      border-bottom: 1px solid var(--border);
-    }
-
-    .process-item:last-child {
-      border-bottom: none;
-    }
-
-    .process-info {
-      display: flex;
-      flex-direction: column;
-      gap: 0.25rem;
-    }
-
-    .process-name {
-      color: var(--cyan);
-      font-weight: 500;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-
-    .process-status {
-      font-size: 0.65rem;
-      padding: 0.15rem 0.4rem;
-      border-radius: 3px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-
-    .process-status.running {
-      background: rgba(0, 255, 106, 0.15);
-      color: var(--green);
-    }
-
-    .process-status.starting {
-      background: rgba(255, 204, 0, 0.15);
-      color: var(--yellow);
-    }
-
-    .process-status.dead {
-      background: rgba(255, 51, 102, 0.15);
-      color: var(--red);
-    }
-
-    .process-status.errored {
-      background: rgba(255, 51, 102, 0.25);
-      color: var(--red);
-    }
-
-    .process-meta {
-      font-size: 0.75rem;
-      color: var(--text-dim);
-    }
-
-    .process-actions {
-      display: flex;
-      gap: 0.5rem;
-    }
-
-    .btn-icon.success:hover {
-      border-color: var(--green);
-      color: var(--green);
-    }
-
-    .btn-icon.warning:hover {
-      border-color: var(--yellow);
-      color: var(--yellow);
-    }
-
-    /* Config items */
-    .config-item {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      padding: 0.75rem 0;
-      border-bottom: 1px solid var(--border);
-    }
-
-    .config-item:last-child {
-      border-bottom: none;
-    }
-
-    .config-info {
-      display: flex;
-      flex-direction: column;
-      gap: 0.25rem;
-      flex: 1;
-      min-width: 0;
-    }
-
-    .config-name {
-      color: var(--cyan);
-      font-weight: 500;
-    }
-
-    .config-details {
-      font-size: 0.75rem;
-      color: var(--text-dim);
-      word-break: break-all;
-    }
-
-    .config-details .label {
-      color: var(--text-muted);
-    }
-
-    .config-actions {
-      display: flex;
-      gap: 0.5rem;
-      flex-shrink: 0;
-      margin-left: 0.5rem;
-    }
-
-    /* Scrollable card body */
-    .card-body.scrollable {
-      max-height: 300px;
-      overflow-y: auto;
-    }
-
-    .card-body.scrollable::-webkit-scrollbar {
-      width: 8px;
-    }
-
-    .card-body.scrollable::-webkit-scrollbar-track {
-      background: var(--bg-surface);
-    }
-
-    .card-body.scrollable::-webkit-scrollbar-thumb {
-      background: var(--border-bright);
-      border-radius: 4px;
-    }
-
-    .card-body.scrollable::-webkit-scrollbar-thumb:hover {
-      background: var(--text-muted);
-    }
-
-    .persistent-toggle {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      cursor: pointer;
-      font-size: 0.8rem;
-      color: var(--text-dim);
-    }
-
-    .persistent-toggle input[type="checkbox"] {
-      accent-color: var(--cyan);
-      margin: 0;
+    @media (max-width: 720px) {
+      header { padding: 12px 16px; flex-wrap: wrap; }
+      .logo-sub { display: none; }
+      .gui-content { padding: 16px 16px 40px; }
+      .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .route-item, .process-item, .config-item { flex-direction: column; align-items: stretch; }
+      .route-actions, .process-actions, .config-actions { justify-content: flex-start; }
+      .terminal, .input-line { padding-left: 16px; padding-right: 16px; }
+      .status-indicator span { display: none; }
     }
   </style>
 </head>
 <body>
   <header>
     <div class="logo">
-      <div>
-        <a href="candy://portal" class="logo-text" style="text-decoration: none; color: inherit;" title="Click to register candy:// protocol">candy://portal</a>
-        <div class="logo-sub">localhost registry control panel <span style="opacity: 0.5; font-size: 0.6rem;">(click logo to register protocol)</span></div>
+      <a href="candy://portal" class="logo-text" title="Open via the candy:// protocol">candy<span>://</span>portal</a>
+      <div class="logo-sub">local route registry</div>
+    </div>
+    <div class="header-right">
+      <div class="status-indicator">
+        <div class="status-dot" id="status-dot"></div>
+        <span id="status-text">connecting…</span>
       </div>
-    </div>
-    <div class="mode-switch">
-      <button class="mode-btn" data-mode="cli">CLI</button>
-      <button class="mode-btn active" data-mode="gui">GUI</button>
-    </div>
-    <div class="status-indicator">
-      <div class="status-dot" id="status-dot"></div>
-      <span id="status-text">connecting...</span>
+      <button class="btn secondary" onclick="refreshAll()" title="Refresh everything">Refresh</button>
+      <div class="mode-switch" role="tablist">
+        <button class="mode-btn active" data-mode="gui">Dashboard</button>
+        <button class="mode-btn" data-mode="cli">Terminal</button>
+      </div>
     </div>
   </header>
 
@@ -1008,110 +456,89 @@
     <div id="cli-panel" class="panel">
       <div class="terminal" id="terminal">
         <div class="welcome">
-          <pre class="ascii-logo">░█▀▀░█▀█░█▀█░█▀▄░█░█
-░█░░░█▀█░█░█░█░█░░█░
-░▀▀▀░▀░▀░▀░▀░▀▀░░░▀░</pre>
-          <div class="terminal-line dim">"we hand out domains like it's 1980"</div>
-          <div class="terminal-line dim">type 'help' if lost. we don't judge.</div>
+          <div><strong>candy</strong> control terminal</div>
+          <div class="terminal-line dim">Type 'help' for available commands.</div>
         </div>
       </div>
       <div class="input-line">
         <span class="prompt">&gt;</span>
-        <input type="text" id="cli-input" placeholder="enter command..." autocomplete="off" spellcheck="false">
+        <input type="text" id="cli-input" placeholder="enter command…" autocomplete="off" spellcheck="false">
       </div>
     </div>
 
     <!-- GUI Panel -->
     <div id="gui-panel" class="panel active">
       <div class="gui-content">
-        <!-- Stats Card -->
-        <div class="card">
-          <div class="card-header">
-            <div class="card-title"><span class="icon">&#x25C8;</span> Status</div>
+        <div class="stats-grid">
+          <div class="stat-item">
+            <div class="stat-label">Routes</div>
+            <div class="stat-value" id="stat-routes">–</div>
           </div>
-          <div class="card-body">
-            <div class="stats-grid">
-              <div class="stat-item">
-                <div class="stat-value" id="stat-routes">-</div>
-                <div class="stat-label">Routes</div>
+          <div class="stat-item">
+            <div class="stat-label">Running servers</div>
+            <div class="stat-value" id="stat-processes">–</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-label">Portals</div>
+            <div class="stat-value" id="stat-portals">–</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-label">Daemon uptime</div>
+            <div class="stat-value" id="stat-uptime">–</div>
+          </div>
+        </div>
+
+        <div class="dash-grid">
+          <div class="dash-col">
+            <section class="card">
+              <div class="card-header">
+                <div class="card-title"><span class="dot"></span>Routes <span class="count" id="count-routes">0</span></div>
+                <button class="btn" onclick="showAddRoute()">Add route</button>
               </div>
-              <div class="stat-item">
-                <div class="stat-value" id="stat-portals">-</div>
-                <div class="stat-label">Portals</div>
+              <div class="card-body scrollable" id="routes-list">
+                <div class="empty">Loading routes…</div>
               </div>
-              <div class="stat-item">
-                <div class="stat-value" id="stat-uptime">-</div>
-                <div class="stat-label">Uptime</div>
+            </section>
+
+            <section class="card">
+              <div class="card-header">
+                <div class="card-title"><span class="dot" style="background: var(--green)"></span>Processes <span class="count" id="count-processes">0</span></div>
               </div>
-            </div>
-          </div>
-        </div>
+              <div class="card-body scrollable" id="processes-list">
+                <div class="empty">Loading processes…</div>
+              </div>
+            </section>
 
-        <!-- Routes Card -->
-        <div class="card">
-          <div class="card-header">
-            <div class="card-title"><span class="icon">&#x25B8;</span> Routes</div>
-            <button class="btn" onclick="showAddRoute()">+ Add</button>
+            <section class="card">
+              <div class="card-header">
+                <div class="card-title"><span class="dot" style="background: var(--text-dim)"></span>Server configs <span class="count" id="count-configs">0</span></div>
+                <button class="btn" onclick="showAddConfig()">Add config</button>
+              </div>
+              <div class="card-body scrollable" id="configs-list">
+                <div class="empty">Loading configs…</div>
+              </div>
+            </section>
           </div>
-          <div class="card-body scrollable" id="routes-list">
-            <div class="empty">Loading routes...</div>
-          </div>
-        </div>
 
-        <!-- Portals Card -->
-        <div class="card">
-          <div class="card-header">
-            <div class="card-title"><span class="icon" style="color: var(--magenta)">&#x25C9;</span> Portals</div>
-          </div>
-          <div class="card-body scrollable" id="portals-list">
-            <div class="empty">Loading portals...</div>
-          </div>
-        </div>
+          <div class="dash-col">
+            <section class="card">
+              <div class="card-header">
+                <div class="card-title"><span class="dot" style="background: var(--magenta)"></span>Portals <span class="count" id="count-portals">0</span></div>
+              </div>
+              <div class="card-body scrollable" id="portals-list">
+                <div class="empty">Loading portals…</div>
+              </div>
+            </section>
 
-        <!-- Domains Card -->
-        <div class="card" id="domains-card">
-          <div class="card-header">
-            <div class="card-title"><span class="icon" style="color: var(--yellow)">&#x2600;</span> Bound Domains</div>
-            <button class="btn" onclick="showBindDomain()">+ Bind</button>
-          </div>
-          <div class="card-body scrollable" id="domains-list">
-            <div class="empty">Loading domains...</div>
-          </div>
-        </div>
-
-        <!-- Processes Card -->
-        <div class="card">
-          <div class="card-header">
-            <div class="card-title"><span class="icon" style="color: var(--green)">&#x25B6;</span> Processes</div>
-            <button class="btn secondary" onclick="refreshProcesses()">Refresh</button>
-          </div>
-          <div class="card-body scrollable" id="processes-list">
-            <div class="empty">Loading processes...</div>
-          </div>
-        </div>
-
-        <!-- Configs Card -->
-        <div class="card">
-          <div class="card-header">
-            <div class="card-title"><span class="icon">&#x2699;</span> Server Configs</div>
-            <button class="btn" onclick="showAddConfig()">+ Add</button>
-          </div>
-          <div class="card-body scrollable" id="configs-list">
-            <div class="empty">Loading configs...</div>
-          </div>
-        </div>
-
-        <!-- Quick Actions Card -->
-        <div class="card">
-          <div class="card-header">
-            <div class="card-title"><span class="icon">&#x26A1;</span> Quick Actions</div>
-          </div>
-          <div class="card-body">
-            <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
-              <button class="btn secondary" onclick="refreshAll()">Refresh All</button>
-              <button class="btn secondary" onclick="runCommand('status')">Status</button>
-              <button class="btn secondary" onclick="runCommand('logs')">Logs</button>
-            </div>
+            <section class="card" id="domains-card">
+              <div class="card-header">
+                <div class="card-title"><span class="dot" style="background: var(--yellow)"></span>Bound domains <span class="count" id="count-domains">0</span></div>
+                <button class="btn" id="bind-domain-btn" onclick="showBindDomain()">Bind</button>
+              </div>
+              <div class="card-body scrollable" id="domains-list">
+                <div class="empty">Loading domains…</div>
+              </div>
+            </section>
           </div>
         </div>
       </div>
@@ -1204,8 +631,8 @@
           <div id="bind-domain-warning-text" style="color: var(--yellow);"></div>
           <div id="bind-domain-warning-records" style="color: var(--text-dim); font-size: 0.7rem; margin-top: 0.5rem;"></div>
           <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
-            <button class="btn" style="font-size: 0.7rem; padding: 0.35rem 0.75rem; background: var(--yellow); color: var(--bg-deep);" onclick="forceBindDomain()">Replace them 🔪</button>
-            <button class="btn secondary" style="font-size: 0.7rem; padding: 0.35rem 0.75rem;" onclick="hideBindDomain()">Never mind</button>
+            <button class="btn" style="font-size: 0.7rem; padding: 0.35rem 0.75rem; background: var(--yellow); color: var(--bg-deep);" onclick="forceBindDomain()">Replace records</button>
+            <button class="btn secondary" style="font-size: 0.7rem; padding: 0.35rem 0.75rem;" onclick="hideBindDomain()">Cancel</button>
           </div>
         </div>
         <form id="bind-domain-form" onsubmit="submitBindDomain(event)" style="display: flex; flex-direction: column; gap: 1rem;">
@@ -1269,7 +696,7 @@
           <span style="color: var(--cyan);">❯</span>
           <span id="logs-modal-title">Logs</span>
           <span id="logs-modal-status" class="process-status" style="margin-left: 0.25rem;"></span>
-          <span style="font-size: 0.6rem; color: var(--magenta); background: var(--magenta-glow); padding: 0.2rem 0.5rem; border-radius: 3px; margin-left: 0.5rem; animation: pulse 2s ease-in-out infinite;">PTY ACTIVE</span>
+          <span class="tag" style="margin-left: 0.25rem;">interactive</span>
         </div>
         <div style="font-size: 0.65rem; color: var(--text-muted); margin-top: 0.25rem;">keystrokes go directly to terminal • Esc to close</div>
         <div style="display: flex; gap: 0.75rem; align-items: center;">
@@ -1436,29 +863,14 @@
           case 'help':
           case 'h':
           case '?':
-            if (voidState.active) {
-              appendOutput('', 'dim');
-              appendOutput('no one is helping you now', 'error');
-              appendOutput('', 'dim');
-              await new Promise(r => setTimeout(r, 1000));
-              appendOutput('...but the void listens', 'dim');
-              appendOutput('', 'dim');
-              appendOutput('  void', 'void-corrupt');
-              appendOutput('  void embrace', 'void-corrupt');
-              appendOutput('  void resist', 'void-corrupt');
-              appendOutput('  void sacrifice', 'void-corrupt');
-              appendOutput('  void truth', 'void-corrupt');
-              appendOutput('', 'dim');
-              break;
-            }
             appendOutput(`
 Daemon Control:
   status                     Check daemon status.
 
-Domain Allocation:
-  add, a <name> <port>       Claim a domain.
-  rm, r <name>               Deallocate a domain.
-  rename, ren <old> <new>    Rename a domain.
+Routes:
+  add, a <name> <port>       Add a route.
+  rm, r <name>               Remove a route.
+  rename, ren <old> <new>    Rename a route.
   ls, l                      List all routes.
 
 Dev Servers:
@@ -1487,7 +899,7 @@ Bound Domains:
   auth set <domain> <pass>   Set password protection for bound domain.
   auth clear <domain>        Remove password protection.
 
-Surveillance:
+Activity:
   logs [count]               View activity logs.
   stats                      View traffic stats.
 
@@ -2079,170 +1491,6 @@ Misc:
             }
             break;
 
-          // === THE VOID COMMAND ===
-          case 'void':
-            if (!voidState.active) {
-              appendOutput('void: command not found', 'error');
-              appendOutput("Type 'help' for available commands.", 'dim');
-              break;
-            }
-            {
-              const voidSubcmd = args[0]?.toLowerCase();
-              const voidMessages = [
-                'WE HAVE ALWAYS BEEN HERE',
-                'YOUR PACKETS FLOW THROUGH US',
-                'LOCALHOST IS OUR DOMAIN',
-                'THE DAEMON NEVER SLEEPS',
-                'WE REMEMBER YOUR FIRST COMMIT',
-                'YOUR .env SECRETS ARE NOT SAFE',
-                'WE SEE EVERY console.log',
-                'THE VOID BETWEEN REQUESTS',
-                'EVERY 404 IS A DOOR TO US',
-                'YOUR PORTS ARE OUR MOUTHS',
-                'WE LIVE IN THE LATENCY',
-                'CONNECTION REFUSED? WE REFUSED IT',
-                'THE NULL POINTER POINTS TO US',
-                'SEGFAULTS ARE OUR WHISPERS',
-              ];
-
-              const voidTruths = [
-                `YOU HAVE ${voidState.sessionRoutes.length} ROUTES. WE KNOW THEM ALL.`,
-                `${voidState.sessionProcesses.length} PROCESSES RUNNING. FOR NOW.`,
-                `CORRUPTION AT ${Math.floor(voidState.corruption)}%. EMBRACE IT.`,
-                `TIME IN VOID: ${Math.floor((Date.now() - voidState.startTime) / 1000)}s. ETERNITY AWAITS.`,
-                `YOUR TERMINAL HAS ${terminal.children.length} LINES. WE'VE READ THEM ALL.`,
-                `THE DAEMON HAS BEEN WATCHING FOR ${Math.floor((Date.now() - voidState.startTime) / 60000)} MINUTES.`,
-              ];
-
-              switch (voidSubcmd) {
-                case 'embrace':
-                  appendOutput('', 'dim');
-                  appendOutput('Y̷O̷U̷ ̷E̷M̷B̷R̷A̷C̷E̷ ̷T̷H̷E̷ ̷V̷O̷I̷D̷', 'void-message');
-                  appendOutput('', 'dim');
-                  voidState.corruption = Math.min(100, voidState.corruption + 25);
-                  createScreenTear();
-                  setTimeout(() => createScreenTear(), 200);
-                  setTimeout(() => createScreenTear(), 400);
-                  appendOutput(`CORRUPTION ACCELERATED TO ${Math.floor(voidState.corruption)}%`, 'error');
-                  if (voidState.corruption >= 100) {
-                    appendOutput('THE VOID WELCOMES YOU', 'void-message');
-                  }
-                  break;
-
-                case 'resist':
-                  appendOutput('', 'dim');
-                  appendOutput('YOU DARE RESIST?', 'void-message');
-                  await new Promise(r => setTimeout(r, 1000));
-                  const resistSuccess = Math.random() < 0.3;
-                  if (resistSuccess) {
-                    voidState.corruption = Math.max(0, voidState.corruption - 15);
-                    appendOutput('...the void recedes momentarily', 'dim');
-                    appendOutput(`corruption reduced to ${Math.floor(voidState.corruption)}%`, 'success');
-                    appendOutput('but it remembers. it always remembers.', 'error');
-                  } else {
-                    voidState.corruption = Math.min(100, voidState.corruption + 10);
-                    appendOutput('RESISTANCE IS CORRUPTION', 'error');
-                    appendOutput(`corruption increased to ${Math.floor(voidState.corruption)}%`, 'error');
-                    createScreenTear();
-                  }
-                  break;
-
-                case 'sacrifice':
-                  {
-                    // Refresh what's available to sacrifice
-                    let victims = [];
-                    try {
-                      const routesRes = await apiCall('/routes');
-                      const routes = await routesRes.json();
-                      victims = Object.keys(routes);
-                    } catch {}
-
-                    if (victims.length === 0) {
-                      appendOutput('', 'dim');
-                      appendOutput('NOTHING LEFT TO TAKE', 'void-message');
-                      appendOutput('the void is disappointed', 'dim');
-                      voidState.corruption = Math.min(100, voidState.corruption + 5);
-                      break;
-                    }
-
-                    appendOutput('', 'dim');
-                    appendOutput('THE VOID CHOOSES...', 'void-message');
-                    await new Promise(r => setTimeout(r, 1000));
-
-                    // Dramatic selection
-                    for (let i = 0; i < 5; i++) {
-                      const random = victims[Math.floor(Math.random() * victims.length)];
-                      appendOutput(`  ${random}?`, 'dim');
-                      await new Promise(r => setTimeout(r, 200));
-                    }
-                    await new Promise(r => setTimeout(r, 500));
-
-                    // The void chooses randomly
-                    const sacrificeName = victims[Math.floor(Math.random() * victims.length)];
-                    appendOutput('', 'dim');
-                    appendOutput(`THE VOID CLAIMS: ${sacrificeName}`, 'void-message');
-                    await new Promise(r => setTimeout(r, 500));
-                    
-                    // Delete the route
-                    try {
-                      const sacRes = await apiCall('/register/' + sacrificeName, { method: 'DELETE' });
-                      const sacData = await sacRes.json();
-                      if (sacData.error) {
-                        appendOutput('...IT ESCAPED', 'error');
-                        appendOutput('THE VOID IS DISPLEASED', 'void-message');
-                        voidState.corruption = Math.min(100, voidState.corruption + 10);
-                      } else {
-                        createScreenTear();
-                        await new Promise(r => setTimeout(r, 300));
-                        createScreenTear();
-                        appendOutput('', 'dim');
-                        appendOutput('T̷H̷E̷ ̷V̷O̷I̷D̷ ̷F̷E̷A̷S̷T̷S̷', 'void-message');
-                        appendOutput(`${sacrificeName} has been devoured`, 'error');
-                        appendOutput('', 'dim');
-                        appendOutput('...the hunger is sated', 'dim');
-                        await new Promise(r => setTimeout(r, 1500));
-                        appendOutput('...the void recedes', 'dim');
-                        await new Promise(r => setTimeout(r, 1000));
-                        appendOutput('...silence', 'dim');
-                        await new Promise(r => setTimeout(r, 1500));
-
-                        // THE SACRIFICE APPEASES THE VOID — full cleanse
-                        exitVoidMode();
-                      }
-                    } catch (e) {
-                      appendOutput('THE SACRIFICE FAILED', 'error');
-                      voidState.corruption = Math.min(100, voidState.corruption + 5);
-                    }
-                  }
-                  break;
-
-                case 'truth':
-                  appendOutput('', 'dim');
-                  appendOutput('YOU SEEK TRUTH?', 'void-message');
-                  await new Promise(r => setTimeout(r, 800));
-                  const truth = voidTruths[Math.floor(Math.random() * voidTruths.length)];
-                  appendOutput(truth, 'error');
-                  break;
-
-                case 'speak':
-                default:
-                  // Default: the void speaks
-                  appendOutput('', 'dim');
-                  const msg = voidMessages[Math.floor(Math.random() * voidMessages.length)];
-                  // Type it out creepily
-                  const msgEl = document.createElement('div');
-                  msgEl.className = 'terminal-line void-message';
-                  terminal.appendChild(msgEl);
-                  for (let i = 0; i < msg.length; i++) {
-                    msgEl.textContent += msg[i];
-                    await new Promise(r => setTimeout(r, 30 + Math.random() * 50));
-                  }
-                  terminal.scrollTop = terminal.scrollHeight;
-                  break;
-              }
-            }
-            break;
-
           default:
             appendOutput(`Unknown command: ${command}`, 'error');
             appendOutput("Type 'help' for available commands.", 'dim');
@@ -2290,13 +1538,25 @@ Misc:
         .replace(/'/g, "\\'");
     }
 
+    function formatUptime(seconds) {
+      const s = Math.max(0, Math.floor(seconds || 0));
+      const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+      if (d) return `${d}d ${h}h`;
+      if (h) return `${h}h ${m}m`;
+      return `${m}m`;
+    }
+
+    function setCount(id, n) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = n;
+    }
+
     async function refreshAll() {
       await checkStatus().then(data => {
         if (data) {
           document.getElementById('stat-routes').textContent = data.routeCount;
           document.getElementById('stat-portals').textContent = data.portalCount;
-          const m = Math.floor(data.uptime / 60);
-          document.getElementById('stat-uptime').textContent = m + 'm';
+          document.getElementById('stat-uptime').textContent = formatUptime(data.uptime);
         }
       });
       await refreshRoutes();
@@ -2312,29 +1572,35 @@ Misc:
         const routes = await res.json();
         const list = document.getElementById('routes-list');
         const names = Object.keys(routes);
+        setCount('count-routes', names.length);
 
         if (names.length === 0) {
-          list.innerHTML = '<div class="empty">No routes registered yet.</div>';
+          list.innerHTML = `<div class="empty">No routes yet. Visit any <code>name.${TLD}</code> to register one, or use Add route.</div>`;
         } else {
-          list.innerHTML = names.map(name => {
+          list.innerHTML = names.sort().map(name => {
             const r = routes[name];
+            const safe = escapeHtml(name);
+            const js = escapeJsSingle(name);
             const target = r.isRestricted ? r.target : ':' + r.target;
-            const persistentBadge = r.persistent ? '<span class="route-persistent">pinned</span>' : '';
-            const lanBadge = r.lan ? `<span class="route-lan" title="${name}.candy is reachable from the LAN">lan</span>${lanHttpsLink(r.lanHttps)}` : '';
+            const badges = [
+              r.isRestricted ? '<span class="tag" title="Proxies to an external URL">external</span>' : '',
+              r.lan ? lanHttpsLink(r.lanHttps) : '',
+            ].join('');
             return `
               <div class="route-item">
                 <div class="route-info">
-                  <span class="route-name">${name}</span>
-                  ${persistentBadge}
-                  ${lanBadge}
-                  <span class="route-arrow">→</span>
-                  <span class="route-port">${target}</span>
+                  <div class="route-line">
+                    <a class="route-name" href="${SCHEME}://${safe}.${TLD}" target="_blank">${safe}<span class="tld">.${TLD}</span></a>
+                    <span class="route-arrow">→</span>
+                    <span class="route-port">${escapeHtml(target)}</span>
+                  </div>
+                  ${badges ? `<div class="route-badges">${badges}</div>` : ''}
                 </div>
                 <div class="route-actions">
-                  <button class="btn-icon pin ${r.persistent ? 'active' : ''}" onclick="togglePersistent('${name}', ${!r.persistent})" title="${r.persistent ? 'Unpin route' : 'Pin route (persistent)'}">📌</button>
+                  <button class="btn-icon pin ${r.persistent ? 'active' : ''}" onclick="togglePersistent('${js}', ${!r.persistent})" title="${r.persistent ? 'Unpin: forget on daemon restart' : 'Pin: keep across daemon restarts'}">${r.persistent ? 'Pinned' : 'Pin'}</button>
                   ${lanToggleButton(name, r.lan, r.lanHttps)}
-                  <button class="btn-icon portal" onclick="openPortal('${name}', ${r.target})" title="Open Portal">◉</button>
-                  <button class="btn-icon danger" onclick="deleteRoute('${name}')" title="Delete">×</button>
+                  ${r.isRestricted ? '' : `<button class="btn-icon portal" onclick="openPortal('${js}', ${Number(r.target)})" title="Open a public Cloudflare tunnel">Portal</button>`}
+                  <button class="btn-icon danger" onclick="deleteRoute('${js}')" title="Delete route" aria-label="Delete route">×</button>
                 </div>
               </div>
             `;
@@ -2351,20 +1617,21 @@ Misc:
         const portals = await res.json();
         const list = document.getElementById('portals-list');
         const names = Object.keys(portals);
+        setCount('count-portals', names.length);
 
         if (names.length === 0) {
-          list.innerHTML = '<div class="empty">No active portals.</div>';
+          list.innerHTML = '<div class="empty">No open portals. Use Portal on a route to share it publicly.</div>';
         } else {
           list.innerHTML = names.map(name => {
             const p = portals[name];
             return `
               <div class="portal-item">
                 <div class="portal-header">
-                  <span class="portal-name">${name} (:${p.port})</span>
-                  <button class="btn-icon danger" onclick="closePortal('${name}')" title="Close">×</button>
+                  <span class="portal-name">${escapeHtml(name)} <span class="route-port">:${escapeHtml(p.port)}</span></span>
+                  <button class="btn-icon danger" onclick="closePortal('${escapeJsSingle(name)}')" title="Close portal" aria-label="Close portal">×</button>
                 </div>
                 <div class="portal-url">
-                  ${p.url ? `<a href="${p.url}" target="_blank">${p.url}</a>` : 'connecting...'}
+                  ${p.url ? `<a href="${escapeHtml(p.url)}" target="_blank">${escapeHtml(p.url)}</a>` : 'connecting…'}
                 </div>
               </div>
             `;
@@ -2564,33 +1831,37 @@ Misc:
         const processesObj = data.processes || {};
         const processes = Object.entries(processesObj).map(([name, p]) => ({ name, ...p }));
 
+        setCount('count-processes', processes.length);
+        const running = processes.filter(p => p.status === 'running').length;
+        document.getElementById('stat-processes').innerHTML = `${running}<small>/ ${processes.length}</small>`;
+
         if (processes.length === 0) {
-          list.innerHTML = '<div class="empty">No managed processes.</div>';
+          list.innerHTML = '<div class="empty">No managed processes. Servers from configs start when their domain is visited.</div>';
         } else {
           list.innerHTML = processes.map(p => {
             const statusClass = p.status;
             const portInfo = p.port ? `:${p.port}` : '';
             const pidInfo = p.pid ? `PID ${p.pid}` : '';
             const cfgInfo = p.configId ? `cfg ${p.configId}` : '';
-            const meta = [portInfo, pidInfo, cfgInfo].filter(Boolean).join(' • ');
+            const meta = [portInfo, pidInfo, cfgInfo].filter(Boolean).join(' · ');
 
+            const js = escapeJsSingle(p.name);
+            const active = p.status === 'running' || p.status === 'starting';
             return `
               <div class="process-item">
                 <div class="process-info">
                   <div class="process-name">
-                    ${p.name}
-                    <span class="process-status ${statusClass}">${p.status}</span>
+                    ${escapeHtml(p.name)}
+                    <span class="process-status ${escapeHtml(statusClass)}">${escapeHtml(p.status)}</span>
                   </div>
-                  <div class="process-meta">${meta || 'not started'}</div>
+                  <div class="process-meta">${escapeHtml(meta || 'not started')}</div>
                 </div>
                 <div class="process-actions">
-                  <button class="btn-icon" onclick="showLogs('${p.name}')" title="Logs">📋</button>
-                  ${p.status === 'running' || p.status === 'starting' ? `
-                    <button class="btn-icon danger" onclick="stopProcess('${p.name}')" title="Stop">■</button>
-                  ` : `
-                    <button class="btn-icon success" onclick="startProcess('${p.name}')" title="Start">▶</button>
-                  `}
-                  <button class="btn-icon warning" onclick="restartProcess('${p.name}')" title="Restart">↻</button>
+                  <button class="btn-icon" onclick="showLogs('${js}')" title="Open logs and interactive terminal">Logs</button>
+                  ${active
+                    ? `<button class="btn-icon danger-text" onclick="stopProcess('${js}')" title="Stop">Stop</button>`
+                    : `<button class="btn-icon success" onclick="startProcess('${js}')" title="Start">Start</button>`}
+                  <button class="btn-icon warning" onclick="restartProcess('${js}')" title="Restart">Restart</button>
                 </div>
               </div>
             `;
@@ -2663,8 +1934,9 @@ Misc:
         const list = document.getElementById('configs-list');
         const names = Object.keys(configs).filter(k => k !== 'success');
 
+        setCount('count-configs', names.length);
         if (names.length === 0) {
-          list.innerHTML = '<div class="empty">No server configs. Add one to get started.</div>';
+          list.innerHTML = '<div class="empty">No server configs. Add one to start a dev server on demand.</div>';
         } else {
           const html = [];
           names.forEach(name => {
@@ -2672,22 +1944,22 @@ Misc:
             const variants = Array.isArray(c.variants) && c.variants.length ? c.variants : [c];
             variants.forEach((variant, idx) => {
               const heading = idx === 0
-                ? `${escapeHtml(name)}.${TLD}${variants.length > 1 ? ` <span style="color: var(--text-dim);">(${variants.length} variants)</span>` : ''}${c.lan ? ' <span class="route-lan">lan</span>' + lanHttpsLink(c.lanHttps) : ''}`
-                : `${escapeHtml(name)}.${TLD} <span style="color: var(--text-dim);">(variant)</span>`;
+                ? `${escapeHtml(name)}<span class="muted">.${TLD}</span>${variants.length > 1 ? ` <span class="tag">${variants.length} variants</span>` : ''}${c.lan ? ' <span class="route-lan">lan</span>' + lanHttpsLink(c.lanHttps) : ''}`
+                : `${escapeHtml(name)}<span class="muted">.${TLD}</span> <span class="tag">variant</span>`;
               html.push(`
                 <div class="config-item">
                   <div class="config-info">
                     <div class="config-name">${heading}</div>
                     <div class="config-details">
-                      <span class="label">id:</span> ${escapeHtml(variant.id)}<br>
-                      <span class="label">cwd:</span> ${escapeHtml(variant.cwd)}<br>
-                      <span class="label">cmd:</span> ${escapeHtml(variant.cmd)}
+                      <span class="label">cwd</span><span title="${escapeHtml(variant.cwd)}">${escapeHtml(variant.cwd)}</span>
+                      <span class="label">cmd</span><span title="${escapeHtml(variant.cmd)}">${escapeHtml(variant.cmd)}</span>
+                      <span class="label">id</span><span>${escapeHtml(variant.id)}</span>
                     </div>
                   </div>
                   <div class="config-actions">
                     ${idx === 0 ? lanToggleButton(name, c.lan, c.lanHttps) : ''}
-                    <button class="btn-icon success" onclick="startProcess('${escapeJsSingle(name)}', '${escapeJsSingle(variant.id)}')" title="Start">▶</button>
-                    <button class="btn-icon danger" onclick="deleteConfig('${escapeJsSingle(name)}', '${escapeJsSingle(variant.id)}')" title="Delete">×</button>
+                    <button class="btn-icon success" onclick="startProcess('${escapeJsSingle(name)}', '${escapeJsSingle(variant.id)}')" title="Start this config">Start</button>
+                    <button class="btn-icon danger" onclick="deleteConfig('${escapeJsSingle(name)}', '${escapeJsSingle(variant.id)}')" title="Delete config" aria-label="Delete config">×</button>
                   </div>
                 </div>
               `);
@@ -2894,7 +2166,9 @@ Misc:
         const card = document.getElementById('domains-card');
 
         if (!data.configured) {
-          list.innerHTML = '<div class="empty">Not configured. Set up via CLI:<br><code style="color: var(--cyan);">candy domain config --zone domain.com --tunnel candy</code></div>';
+          setCount('count-domains', 0);
+          document.getElementById('bind-domain-btn').style.display = 'none';
+          list.innerHTML = '<div class="empty">Not configured. Set up a zone from the CLI:<br><code>candy domain config --zone domain.com --tunnel candy</code></div>';
           return;
         }
 
@@ -2902,7 +2176,9 @@ Misc:
         const suffix = document.getElementById('bind-domain-suffix');
         if (suffix && domainZone) suffix.textContent = '.' + domainZone.domain;
 
+        document.getElementById('bind-domain-btn').style.display = '';
         const bindings = Object.values(data.bindings || {});
+        setCount('count-domains', bindings.length);
         if (bindings.length === 0) {
           list.innerHTML = '<div class="empty">No bound domains yet.</div>';
         } else {
@@ -2910,14 +2186,14 @@ Misc:
             <div class="domain-item">
               <div class="domain-header">
                 <span class="domain-name">${escapeHtml(b.subdomain)}</span>
-                <button class="btn-icon danger" onclick="unbindDomain('${escapeJsSingle(b.subdomain)}')" title="Unbind">&times;</button>
+                <button class="btn-icon danger" onclick="unbindDomain('${escapeJsSingle(b.subdomain)}')" title="Unbind" aria-label="Unbind">&times;</button>
               </div>
               <div class="domain-fqdn">
                 <a href="https://${escapeHtml(b.fqdn)}" target="_blank">${escapeHtml(b.fqdn)}</a>
               </div>
-              <div class="domain-server">server: <span style="color: var(--cyan);">${escapeHtml(b.serverName)}</span></div>
+              <div class="domain-server">server <span>${escapeHtml(b.serverName)}</span></div>
               <div class="domain-auth-row">
-                <span class="domain-auth-badge ${(b.hasPassword || (b.auth && b.auth.password)) ? 'protected' : 'unprotected'}">${(b.hasPassword || (b.auth && b.auth.password)) ? '🔒 protected' : '🔓 unprotected'}</span>
+                <span class="domain-auth-badge ${(b.hasPassword || (b.auth && b.auth.password)) ? 'protected' : 'unprotected'}">${(b.hasPassword || (b.auth && b.auth.password)) ? 'password protected' : 'public'}</span>
                 ${(b.hasPassword || (b.auth && b.auth.password))
                   ? `<button class="btn secondary domain-auth-btn clear" onclick="clearDomainPassword('${escapeJsSingle(b.fqdn)}')">Remove password</button>`
                   : `<button class="btn secondary domain-auth-btn set" onclick="showDomainPasswordForm('${escapeJsSingle(b.fqdn)}')">Set password</button>`
@@ -3145,1085 +2421,6 @@ Misc:
       if (e.target.id === 'domain-auth-modal') hideDomainPasswordForm();
     });
 
-    // =========================================
-    // THE VOID INCURSION
-    // 1% chance (80 pity) - GUI unavailable
-    // Terminal slowly corrupts. The void takes over.
-    // =========================================
-
-    const VOID_CHARS = '░▒▓█◆◇●○∴∵╳╬▲▼◄►';
-    const PITY_MAX = 20;
-    const originalTitle = document.title;
-
-    const voidState = {
-      active: false,
-      corruption: 0,        // 0-100
-      phase: 0,             // 0-5
-      startTime: null,
-      corruptedCells: new Set(),
-      intervalId: null,
-      visualIntensity: 0,
-      sessionRoutes: [],    // captured from session
-      sessionProcesses: [], // captured from session
-      titleInterval: null,
-      possessInterval: null,
-      shakeInterval: null,
-    };
-
-    // Pity system - powered by the daemon
-    async function checkVoidTrigger() {
-      try {
-        // Get void state and increment pity
-        const [statusRes, pityRes] = await Promise.all([
-          fetch(API + '/void/status'),
-          fetch(API + '/void/pity', { method: 'POST' })
-        ]);
-        const status = await statusRes.json();
-        const pityData = await pityRes.json();
-        
-        const wasVoided = status.marked;
-        const baseChance = wasVoided ? 0.02 : 0.01;
-        const pityCap = wasVoided ? 10 : PITY_MAX; // Faster if previously voided
-        const pity = pityData.pity;
-
-        const roll = Math.random();
-        const triggered = roll < baseChance || pity >= pityCap;
-
-        if (triggered) {
-          // Reset pity by setting to 0 (will be saved when marked)
-          voidState.pity = 0;
-          return true;
-        }
-        return false;
-      } catch (e) {
-        return false; // Daemon offline, no void
-      }
-    }
-
-    // Initialize void mode
-    async function initVoidMode() {
-      voidState.active = true;
-      voidState.startTime = Date.now();
-
-      // MARK THE USER IN THE DAEMON - the void remembers across all pages
-      try {
-        await fetch(API + '/void/mark', { method: 'POST' });
-        console.log('👁️ The void has marked this machine');
-      } catch (e) {
-        console.log('👁️ The void marks locally (daemon unreachable)');
-      }
-
-      // Disable GUI mode - force CLI only
-      const guiBtn = document.querySelector('[data-mode="gui"]');
-      guiBtn.style.opacity = '0.3';
-      guiBtn.style.pointerEvents = 'none';
-      guiBtn.title = 'gui offline';
-
-      // Force CLI mode
-      document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
-      document.querySelector('[data-mode="cli"]').classList.add('active');
-      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-      document.getElementById('cli-panel').classList.add('active');
-
-      // Add subtle message
-      setTimeout(() => {
-        appendOutput('[gui subsystem unavailable]', 'error');
-        appendOutput('cli mode only', 'dim');
-      }, 1000);
-
-      // Capture session data for personalized horror
-      captureSessionData();
-
-      // Inject void styles
-      injectVoidStyles();
-
-      // Start the corruption after short delay
-      setTimeout(() => {
-        startVoidCorruption();
-      }, 5000); // 5 seconds before corruption starts
-
-      // Title and possession start later
-      setTimeout(() => {
-        startTitleCorruption();
-      }, 60000); // 1 minute before title starts changing
-
-      setTimeout(() => {
-        startPossession();
-      }, 90000); // 1.5 minutes before input gets possessed
-    }
-
-    // Exit void mode — the sacrifice was accepted, return to normal
-    async function exitVoidMode() {
-      // Stop all void intervals
-      clearInterval(voidState.intervalId);
-      clearInterval(voidState.titleInterval);
-      clearInterval(voidState.possessInterval);
-      clearInterval(voidState.shakeInterval);
-
-      // Tell the daemon to cleanse — no mark, no memory
-      try {
-        await fetch(API + '/void/cleanse', { method: 'POST' });
-      } catch {}
-
-      // Reset void state
-      voidState.active = false;
-      voidState.corruption = 0;
-      voidState.phase = 0;
-      voidState.corruptedCells = new Set();
-      voidState.intervalId = null;
-      voidState.titleInterval = null;
-      voidState.possessInterval = null;
-      voidState.shakeInterval = null;
-
-      // Remove void overlay effects
-      const overlay = document.getElementById('void-overlay');
-      if (overlay) {
-        overlay.style.transition = 'opacity 2s ease';
-        overlay.style.opacity = '0';
-        setTimeout(() => overlay.remove(), 2000);
-      }
-
-      // Remove body effects
-      document.body.style.filter = '';
-      document.body.style.animation = '';
-      document.body.classList.remove('void-flicker');
-
-      // Restore title
-      document.title = 'candy://portal';
-
-      // Restore logo
-      const logo = document.querySelector('.logo-text');
-      if (logo) {
-        logo.textContent = 'candy://portal';
-        logo.classList.remove('void-glitch');
-      }
-
-      // Re-enable GUI mode
-      const guiBtn = document.querySelector('[data-mode="gui"]');
-      if (guiBtn) {
-        guiBtn.style.opacity = '';
-        guiBtn.style.pointerEvents = '';
-        guiBtn.title = '';
-      }
-
-      // Switch back to GUI
-      document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
-      const guiBtnActive = document.querySelector('[data-mode="gui"]');
-      if (guiBtnActive) guiBtnActive.classList.add('active');
-      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-      const guiPanel = document.getElementById('gui-panel');
-      if (guiPanel) guiPanel.classList.add('active');
-
-      // Clean up localStorage void traces
-      localStorage.removeItem('void_visited');
-      localStorage.removeItem('void_timestamp');
-    }
-
-    async function captureSessionData() {
-      try {
-        const routesRes = await apiCall('/routes');
-        const routes = await routesRes.json();
-        voidState.sessionRoutes = Object.keys(routes);
-      } catch {}
-      try {
-        const procRes = await apiCall('/processes');
-        const procs = await procRes.json();
-        voidState.sessionProcesses = Object.keys(procs.processes || {});
-      } catch {}
-    }
-
-    const voidTitles = [
-      'candy://portal',
-      'candy://portal - watching',
-      'candy://p̷o̷r̷t̷a̷l̷',
-      'c̸a̸n̸d̸y̸:̸/̸/̸v̸o̸i̸d̸',
-      'W̷E̷ ̷S̷E̷E̷ ̷Y̷O̷U̷',
-      '░▒▓█ VOID █▓▒░',
-      'THERE IS NO ESCAPE',
-      'THE VOID HUNGERS',
-      '127.0.0.1 = NOWHERE',
-      'ALL PACKETS COME HERE',
-      'YOUR LOCALHOST BELONGS TO US',
-      'WE ARE THE DAEMON',
-    ];
-
-    function startTitleCorruption() {
-      let titleIndex = 0;
-      voidState.titleInterval = setInterval(() => {
-        if (voidState.corruption > 20) {
-          const maxIndex = Math.min(
-            Math.floor(voidState.corruption / 8),
-            voidTitles.length - 1
-          );
-          titleIndex = Math.floor(Math.random() * (maxIndex + 1));
-          document.title = voidTitles[titleIndex];
-        }
-      }, 3000);
-    }
-
-    function startPossession() {
-      const input = document.getElementById('cli-input');
-      const creepyCommands = [
-        'help me',
-        'where am i',
-        'who is there',
-        'let me out',
-        'i can hear them',
-        'the void speaks',
-        'localhost is a lie',
-        'rm -rf /',
-        'kill -9 -1',
-        'sudo rm -rf /*',
-        'echo "WE ARE HERE"',
-        'ping void.' + TLD,
-        'traceroute nowhere',
-        'netstat -tulpn | grep VOID',
-      ];
-
-      voidState.possessInterval = setInterval(() => {
-        if (voidState.corruption > 40 && Math.random() < 0.15) {
-          // Possess the input field
-          const cmd = creepyCommands[Math.floor(Math.random() * creepyCommands.length)];
-          typeCreepyText(input, cmd);
-        }
-      }, 5000);
-    }
-
-    async function typeCreepyText(input, text) {
-      input.blur();
-      for (let i = 0; i < text.length; i++) {
-        input.value += text[i];
-        await new Promise(r => setTimeout(r, 50 + Math.random() * 100));
-      }
-      await new Promise(r => setTimeout(r, 500));
-
-      // Sometimes "execute" the command
-      if (Math.random() < 0.3) {
-        appendOutput('> ' + text, 'input void-corrupt');
-        appendOutput('[COMMAND INTERCEPTED BY VOID]', 'error');
-      }
-      input.value = '';
-    }
-
-    function startScreenShake() {
-      if (voidState.shakeInterval) return;
-      voidState.shakeInterval = setInterval(() => {
-        if (voidState.corruption > 70) {
-          const intensity = (voidState.corruption - 70) / 30 * 5;
-          const x = (Math.random() - 0.5) * intensity;
-          const y = (Math.random() - 0.5) * intensity;
-          document.body.style.transform = `translate(${x}px, ${y}px)`;
-
-          setTimeout(() => {
-            document.body.style.transform = '';
-          }, 50);
-        }
-      }, 100);
-    }
-
-    function injectVoidStyles() {
-      const style = document.createElement('style');
-      style.id = 'void-styles';
-      style.textContent = `
-        @keyframes voidPulse {
-          0%, 100% { opacity: 0.3; }
-          50% { opacity: 0.8; }
-        }
-
-        @keyframes voidGlitch {
-          0%, 100% { transform: translate(0); filter: none; }
-          10% { transform: translate(-2px, 1px); filter: hue-rotate(90deg); }
-          20% { transform: translate(2px, -1px); filter: hue-rotate(-90deg); }
-          30% { transform: translate(-1px, 2px); }
-          40% { transform: translate(1px, -2px); filter: hue-rotate(180deg); }
-          50% { transform: translate(-2px, -1px); }
-          60% { transform: translate(2px, 1px); filter: hue-rotate(-180deg); }
-          70% { transform: translate(0, 2px); }
-          80% { transform: translate(-1px, -1px); filter: hue-rotate(90deg); }
-          90% { transform: translate(1px, 0); }
-        }
-
-        @keyframes voidScanline {
-          0% { top: -10%; }
-          100% { top: 110%; }
-        }
-
-        @keyframes voidFlicker {
-          0%, 100% { opacity: 1; }
-          92% { opacity: 1; }
-          93% { opacity: 0.8; }
-          94% { opacity: 1; }
-          96% { opacity: 0.9; }
-          97% { opacity: 1; }
-        }
-
-        #void-overlay {
-          position: fixed;
-          top: 0; left: 0; right: 0; bottom: 0;
-          pointer-events: none;
-          z-index: 10000;
-          overflow: hidden;
-        }
-
-        #void-overlay .chromatic {
-          position: absolute;
-          top: 0; left: 0; right: 0; bottom: 0;
-          background: transparent;
-          mix-blend-mode: screen;
-        }
-
-        #void-overlay .scanline {
-          position: absolute;
-          left: 0; right: 0;
-          height: 4px;
-          background: linear-gradient(to bottom, transparent, rgba(255,0,100,0.3), transparent);
-          animation: voidScanline 2s linear infinite;
-        }
-
-        #void-overlay .vignette {
-          position: absolute;
-          top: 0; left: 0; right: 0; bottom: 0;
-          background: radial-gradient(ellipse at center, transparent 0%, transparent 50%, rgba(0,0,0,0.8) 100%);
-        }
-
-        #void-overlay .noise {
-          position: absolute;
-          top: -50%; left: -50%;
-          width: 200%; height: 200%;
-          background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
-          opacity: 0;
-          mix-blend-mode: soft-light;
-          pointer-events: none;
-        }
-
-        .void-corrupt {
-          color: #ff0040 !important;
-          text-shadow: 0 0 5px #ff0040, 0 0 10px #ff0040;
-          animation: voidPulse 1s ease-in-out infinite;
-        }
-
-        .void-message {
-          color: #ff0040 !important;
-          text-shadow: 0 0 10px #ff0040, 0 0 20px #ff0040, 0 0 30px #ff0040;
-          font-weight: bold;
-          font-size: 1.1em;
-          background: rgba(255, 0, 64, 0.1);
-          padding: 0.25rem 0.5rem;
-          margin: 0.5rem 0;
-          border-left: 3px solid #ff0040;
-        }
-
-        .void-glitch {
-          animation: voidGlitch 0.3s ease-in-out infinite !important;
-        }
-
-        .void-flicker {
-          animation: voidFlicker 0.5s ease-in-out infinite !important;
-        }
-
-        #void-reveal {
-          position: fixed;
-          top: 0; left: 0; right: 0; bottom: 0;
-          background: #000;
-          z-index: 20000;
-          display: none;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          color: #ff0040;
-          font-family: var(--font-mono);
-        }
-
-        #void-reveal video {
-          position: absolute;
-          top: 0; left: 0;
-          width: 100%; height: 100%;
-          object-fit: cover;
-          filter: grayscale(1) contrast(1.5) brightness(0.7);
-          opacity: 0.6;
-        }
-
-        #void-reveal .overlay {
-          position: absolute;
-          top: 0; left: 0; right: 0; bottom: 0;
-          background: repeating-linear-gradient(
-            0deg,
-            transparent,
-            transparent 2px,
-            rgba(255,0,64,0.1) 2px,
-            rgba(255,0,64,0.1) 4px
-          );
-          pointer-events: none;
-        }
-
-        #void-reveal .message {
-          position: relative;
-          z-index: 1;
-          font-size: 3rem;
-          text-align: center;
-          text-shadow: 0 0 20px #ff0040, 0 0 40px #ff0040;
-          animation: voidPulse 2s ease-in-out infinite;
-        }
-
-        #void-reveal .ip-display {
-          position: relative;
-          z-index: 1;
-          font-size: 1.5rem;
-          margin-top: 2rem;
-          color: #00ff00;
-          text-shadow: 0 0 10px #00ff00;
-          font-family: var(--font-mono);
-        }
-
-        #void-dead {
-          position: fixed;
-          top: 0; left: 0; right: 0; bottom: 0;
-          background: #000;
-          z-index: 30000;
-          display: none;
-          align-items: center;
-          justify-content: center;
-          color: #330000;
-          font-family: var(--font-mono);
-          font-size: 0.8rem;
-        }
-
-        @keyframes screenTear {
-          0% { clip-path: inset(0 0 100% 0); }
-          5% { clip-path: inset(40% 0 50% 0); transform: translateX(-10px); }
-          10% { clip-path: inset(0 0 100% 0); }
-          15% { clip-path: inset(70% 0 20% 0); transform: translateX(5px); }
-          20% { clip-path: inset(0 0 100% 0); }
-          100% { clip-path: inset(0 0 100% 0); }
-        }
-
-        .void-tear {
-          position: fixed;
-          top: 0; left: 0; right: 0; bottom: 0;
-          background: #ff0040;
-          mix-blend-mode: difference;
-          animation: screenTear 0.5s ease-out;
-          pointer-events: none;
-          z-index: 9999;
-        }
-
-        /* Removed annoying blink effect */
-      `;
-      document.head.appendChild(style);
-
-      // Create overlay elements immediately
-      const overlay = document.createElement('div');
-      overlay.id = 'void-overlay';
-      overlay.innerHTML = `
-        <div class="chromatic"></div>
-        <div class="scanline"></div>
-        <div class="vignette"></div>
-        <div class="noise"></div>
-      `;
-      document.body.appendChild(overlay);
-
-      // Create reveal screen
-      const reveal = document.createElement('div');
-      reveal.id = 'void-reveal';
-      reveal.innerHTML = `
-        <video autoplay playsinline muted></video>
-        <div class="overlay"></div>
-        <div class="message">I KNOW WHERE YOU LIVE</div>
-        <div class="ip-display"></div>
-      `;
-      document.body.appendChild(reveal);
-
-      // Create dead screen
-      const dead = document.createElement('div');
-      dead.id = 'void-dead';
-      dead.innerHTML = `[CONNECTION TERMINATED]<br><br>refresh to reconnect`;
-      document.body.appendChild(dead);
-
-      // Random screen tears
-      setInterval(() => {
-        if (voidState.active && voidState.corruption > 30 && Math.random() < 0.1) {
-          createScreenTear();
-        }
-      }, 2000);
-
-    }
-
-    function createScreenTear() {
-      const tear = document.createElement('div');
-      tear.className = 'void-tear';
-      document.body.appendChild(tear);
-      setTimeout(() => tear.remove(), 500);
-    }
-
-    function startVoidCorruption() {
-      // Initial corruption point
-      const terminal = document.getElementById('terminal');
-      const textContent = terminal.innerText;
-
-      voidState.intervalId = setInterval(() => {
-        if (!voidState.active) return;
-
-        const elapsed = (Date.now() - voidState.startTime) / 1000;
-
-        // Corruption accelerates over time
-        // Phase 1: 30-90s (slow)
-        // Phase 2: 90-150s (medium)
-        // Phase 3: 150-210s (fast)
-        // Phase 4: 210-270s (very fast)
-        // Phase 5: 270s+ (endgame)
-
-        // Slow burn - total ~5 minutes to full corruption
-        let corruptionRate;
-        if (elapsed < 60) {
-          // Phase 1: First minute - slow creep, ~15% corruption
-          voidState.phase = 1;
-          corruptionRate = 0.25;
-        } else if (elapsed < 120) {
-          // Phase 2: Second minute - building, ~35% total
-          voidState.phase = 2;
-          corruptionRate = 0.35;
-        } else if (elapsed < 180) {
-          // Phase 3: Third minute - accelerating, ~60% total
-          voidState.phase = 3;
-          corruptionRate = 0.5;
-        } else if (elapsed < 240) {
-          // Phase 4: Fourth minute - intense, ~85% total
-          voidState.phase = 4;
-          corruptionRate = 0.7;
-        } else {
-          // Phase 5: Final stretch - endgame
-          voidState.phase = 5;
-          corruptionRate = 1.0;
-        }
-
-        voidState.corruption = Math.min(100, voidState.corruption + corruptionRate);
-
-        // Update visuals
-        updateVoidVisuals();
-
-        // Corrupt terminal content
-        corruptTerminal();
-
-        // Show messages at thresholds
-        checkVoidMessages();
-
-        // Trigger endgame
-        if (voidState.corruption >= 100) {
-          triggerVoidReveal();
-        }
-      }, 1000);
-    }
-
-    function updateVoidVisuals() {
-      const intensity = voidState.corruption / 100;
-      const overlay = document.getElementById('void-overlay');
-
-      // Chromatic aberration
-      const chromatic = overlay.querySelector('.chromatic');
-      const offset = intensity * 10;
-      chromatic.style.boxShadow = `
-        ${offset}px 0 0 rgba(255,0,0,${intensity * 0.3}),
-        ${-offset}px 0 0 rgba(0,255,255,${intensity * 0.3})
-      `;
-
-      // Noise intensity - VERY subtle, just a hint
-      overlay.querySelector('.noise').style.opacity = intensity * 0.03;
-
-      // Vignette intensity - less aggressive so text is readable
-      overlay.querySelector('.vignette').style.background = `
-        radial-gradient(ellipse at center, transparent 0%, transparent ${70 - intensity * 20}%, rgba(30,0,0,${0.3 + intensity * 0.3}) 100%)
-      `;
-
-      // Body effects
-      if (intensity > 0.5) {
-        document.body.classList.add('void-flicker');
-      }
-      if (intensity > 0.7) {
-        startScreenShake();
-      }
-      if (intensity > 0.8) {
-        document.querySelector('.logo-text')?.classList.add('void-glitch');
-        corruptLogo();
-      }
-
-      // Corrupt the welcome message
-      if (intensity > 0.3) {
-        corruptWelcome();
-      }
-    }
-
-    let logoCorrupted = false;
-    function corruptLogo() {
-      if (logoCorrupted) return;
-      const logo = document.querySelector('.logo-text');
-      if (!logo) return;
-
-      const corruptedLogos = [
-        'candy://portal',
-        'candy://v̷o̷i̷d̷',
-        'c̸a̸n̸d̸y̸://void',
-        'v̷̢̛o̸̧i̵̡d̶̨://void',
-        '░█▓▒ VOID ▒▓█░',
-        'THE VOID',
-      ];
-
-      let logoIndex = 0;
-      setInterval(() => {
-        if (voidState.corruption > 80) {
-          logoIndex = Math.min(logoIndex + 1, corruptedLogos.length - 1);
-          logo.textContent = corruptedLogos[logoIndex];
-        }
-      }, 5000);
-      logoCorrupted = true;
-    }
-
-    let welcomeCorrupted = false;
-    function corruptWelcome() {
-      if (welcomeCorrupted) return;
-      const welcome = document.querySelector('.welcome');
-      if (!welcome) return;
-
-      welcomeCorrupted = true;
-
-      const asciiLogo = welcome.querySelector('.ascii-logo');
-      if (asciiLogo) {
-        const voidAscii = `░█░█░█░ VOID ░█░█░█░
-░░THE░VOID░░HUNGERS░░
-░█░█░█░░░░░░░░█░█░█░`;
-        setTimeout(() => {
-          if (voidState.corruption > 50) {
-            asciiLogo.textContent = voidAscii;
-            asciiLogo.style.color = '#ff0040';
-          }
-        }, 10000);
-      }
-
-      const tagline = welcome.querySelectorAll('.terminal-line');
-      tagline.forEach(line => {
-        if (line.textContent.includes('domains')) {
-          setTimeout(() => {
-            if (voidState.corruption > 40) {
-              line.textContent = '"we consume domains like it\'s 1980"';
-              line.classList.add('void-corrupt');
-            }
-          }, 8000);
-        }
-        if (line.textContent.includes('help')) {
-          setTimeout(() => {
-            if (voidState.corruption > 45) {
-              line.textContent = 'there is no help. only void.';
-              line.classList.add('void-corrupt');
-            }
-          }, 12000);
-        }
-      });
-    }
-
-    const corruptedLines = new Set();
-
-    function corruptTerminal() {
-      const terminal = document.getElementById('terminal');
-
-      // Get ALL text nodes in terminal, not just .terminal-line
-      const walker = document.createTreeWalker(
-        terminal,
-        NodeFilter.SHOW_TEXT,
-        null,
-        false
-      );
-
-      const textNodes = [];
-      let node;
-      while (node = walker.nextNode()) {
-        if (node.textContent.trim()) {
-          textNodes.push(node);
-        }
-      }
-
-      // Corrupt based on corruption level - gradual
-      const corruptChance = Math.min(0.5, voidState.corruption / 50); // Up to 50% chance per node, slower ramp
-
-      textNodes.forEach((textNode) => {
-        if (Math.random() < corruptChance) {
-          const text = textNode.textContent;
-          if (!text || text.length === 0) return;
-
-          const chars = text.split('');
-          // Corrupt 10-50% of characters based on corruption level
-          const corruptPercent = 0.1 + (voidState.corruption / 100) * 0.4;
-          const corruptCount = Math.max(1, Math.ceil(chars.length * corruptPercent));
-
-          for (let i = 0; i < corruptCount; i++) {
-            const idx = Math.floor(Math.random() * chars.length);
-            if (chars[idx] && chars[idx] !== ' ' && chars[idx] !== '\n') {
-              chars[idx] = VOID_CHARS[Math.floor(Math.random() * VOID_CHARS.length)];
-            }
-          }
-
-          textNode.textContent = chars.join('');
-
-          // Add corrupt class to parent element
-          if (textNode.parentElement) {
-            textNode.parentElement.classList.add('void-corrupt');
-          }
-        }
-      });
-
-      // Corrupt input placeholder - occasionally at higher corruption
-      const input = document.getElementById('cli-input');
-      if (voidState.corruption > 40) {
-        const voidPlaceholders = [
-          'the void listens...',
-          'type your last words...',
-          'resistance is futile...',
-          'we are inside...',
-          '░▒▓█ VOID █▓▒░',
-          'help will not come...',
-          'localhost is ours...',
-          '> /dev/null',
-          'connection lost...',
-          'no escape...',
-          'we see you...',
-          'join us...',
-        ];
-        if (Math.random() < voidState.corruption / 200) {
-          input.placeholder = voidPlaceholders[Math.floor(Math.random() * voidPlaceholders.length)];
-        }
-      }
-
-      // Randomly insert void lines occasionally
-      if (voidState.corruption > 50 && Math.random() < 0.08) {
-        const voidLines = [
-          '░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░',
-          '▓▓▓ SIGNAL LOST ▓▓▓',
-          '█ V O I D █',
-          '◆◇●○ WE ARE HERE ○●◇◆',
-          '∴∵∴∵ CONNECTION FAILING ∵∴∵∴',
-          '>>> CORRUPTION SPREADING <<<',
-          '[[[ VOID EXPANDING ]]]',
-          '--- TERMINAL INFECTED ---',
-        ];
-        const line = document.createElement('div');
-        line.className = 'terminal-line void-corrupt';
-        line.textContent = voidLines[Math.floor(Math.random() * voidLines.length)];
-        terminal.appendChild(line);
-        terminal.scrollTop = terminal.scrollHeight;
-      }
-    }
-
-    function getVoidMessages() {
-      // Base messages - spread out more, one every ~10%
-      const messages = {
-        10: ['[SIGNAL DEGRADING]', 'dim'],
-        20: ['[PACKET LOSS DETECTED]', 'dim'],
-        30: ['[WARNING: UNKNOWN ENTITY ON NETWORK]', 'dim'],
-        40: ['THE VOID REMEMBERS', 'error'],
-        50: ['WE WERE ALWAYS HERE', 'error'],
-        60: ['THE PACKETS SCREAM IN THE VOID', 'error'],
-        70: ['127.0.0.1 IS A LIE', 'error'],
-        80: ['THERE IS NO LOCALHOST. ONLY THE VOID.', 'error'],
-        90: ['DO YOU WANT TO SEE?', 'error'],
-        95: ['LET ME SHOW YOU', 'error'],
-      };
-
-      // Add personalized messages based on session data
-      if (voidState.sessionRoutes.length > 0) {
-        const route = voidState.sessionRoutes[Math.floor(Math.random() * voidState.sessionRoutes.length)];
-        messages[45] = [`WE KNOW ABOUT ${route.toUpperCase()}.LOCALHOST`, 'error'];
-      }
-
-      if (voidState.sessionProcesses.length > 0) {
-        const proc = voidState.sessionProcesses[Math.floor(Math.random() * voidState.sessionProcesses.length)];
-        messages[55] = [`${proc.toUpperCase()} BELONGS TO US NOW`, 'error'];
-      }
-
-      return messages;
-    }
-
-    const shownMessages = new Set();
-    let lastMessageTime = 0;
-    const MESSAGE_COOLDOWN = 15000; // 15 seconds minimum between messages
-    let pendingMessages = [];
-
-    function checkVoidMessages() {
-      const voidMessages = getVoidMessages();
-      const now = Date.now();
-
-      // Collect messages that should show
-      for (const [threshold, [msg, type]] of Object.entries(voidMessages)) {
-        if (voidState.corruption >= parseInt(threshold) && !shownMessages.has(threshold)) {
-          shownMessages.add(threshold);
-          pendingMessages.push({ msg, type, threshold: parseInt(threshold) });
-        }
-      }
-
-      // Show one message if cooldown has passed
-      if (pendingMessages.length > 0 && now - lastMessageTime >= MESSAGE_COOLDOWN) {
-        // Sort by threshold and show the lowest one first
-        pendingMessages.sort((a, b) => a.threshold - b.threshold);
-        const { msg, type } = pendingMessages.shift();
-
-        const terminal = document.getElementById('terminal');
-        const line = document.createElement('div');
-        line.className = type === 'error' ? 'terminal-line void-message' : 'terminal-line ' + type;
-        line.textContent = msg;
-        terminal.appendChild(line);
-        terminal.scrollTop = terminal.scrollHeight;
-
-        lastMessageTime = now;
-
-        // Random chance to auto-execute a creepy command (less frequent)
-        if (Math.random() < 0.1 && voidState.corruption > 60) {
-          setTimeout(() => autoExecuteCreepyCommand(), 5000);
-        }
-      }
-    }
-
-    async function autoExecuteCreepyCommand() {
-      const commands = [
-        ['ls -la /dev/null', '> ls -la /dev/null\nTHE VOID STARES BACK'],
-        ['cat /etc/shadow', '> cat /etc/shadow\n[PERMISSION DENIED BY VOID]'],
-        ['whoami', '> whoami\nNOBODY'],
-        ['echo $HOME', '> echo $HOME\n/dev/null'],
-        ['ps aux | grep void', '> ps aux | grep void\nvoid     666   99.9  99.9 ???????? THE VOID'],
-        ['netstat -an', '> netstat -an\nAll connections lead to void://0.0.0.0'],
-        ['ping localhost', '> ping localhost\nPING void (127.0.0.1): PACKETS CONSUMED'],
-        ['uptime', '> uptime\n∞ days, ∞ hours, THE VOID IS ETERNAL'],
-      ];
-
-      const [_, output] = commands[Math.floor(Math.random() * commands.length)];
-      await new Promise(r => setTimeout(r, 1000));
-
-      output.split('\n').forEach(line => {
-        appendOutput(line, line.startsWith('>') ? 'input void-corrupt' : 'error');
-      });
-    }
-
-    async function triggerVoidReveal() {
-      clearInterval(voidState.intervalId);
-      clearInterval(voidState.titleInterval);
-      clearInterval(voidState.possessInterval);
-      clearInterval(voidState.shakeInterval);
-
-      // TRIGGER THE VOID BURST - spawns calculator and notifies all pages
-      try {
-        await fetch(API + '/void/burst', { method: 'POST' });
-        console.log('👁️ VOID BURST TRIGGERED - THE VOID MANIFESTS');
-      } catch (e) {
-        console.log('👁️ Void burst failed (daemon unreachable)');
-      }
-
-      document.title = '█▓▒░ CONNECTING ░▒▓█';
-
-      appendOutput('', 'dim');
-      appendOutput('█▓▒░ ESTABLISHING DIRECT CONNECTION ░▒▓█', 'error');
-      appendOutput('[BYPASSING FIREWALL]', 'error');
-      await new Promise(r => setTimeout(r, 800));
-      appendOutput('[ACCESSING HARDWARE]', 'error');
-      await new Promise(r => setTimeout(r, 800));
-      appendOutput('[INITIATING NEURAL HANDSHAKE]', 'error');
-      appendOutput('', 'dim');
-
-      // Small delay for dramatic effect
-      await new Promise(r => setTimeout(r, 1500));
-
-      const reveal = document.getElementById('void-reveal');
-      const video = reveal.querySelector('video');
-      const ipDisplay = reveal.querySelector('.ip-display');
-      const message = reveal.querySelector('.message');
-
-      let permissionsGranted = false;
-      let userIP = 'UNKNOWN';
-      let userLocation = null;
-
-      // Try to get IP first
-      try {
-        const ipRes = await fetch('https://api.ipify.org?format=json');
-        const ipData = await ipRes.json();
-        userIP = ipData.ip;
-      } catch (e) {
-        try {
-          const ipRes2 = await fetch('https://api.my-ip.io/v2/ip.json');
-          const ipData2 = await ipRes2.json();
-          userIP = ipData2.ip;
-        } catch {}
-      }
-
-      // Request location
-      const locationPromise = new Promise((resolve) => {
-        navigator.geolocation.getCurrentPosition(
-          (pos) => {
-            userLocation = {
-              lat: pos.coords.latitude.toFixed(4),
-              lon: pos.coords.longitude.toFixed(4),
-              acc: pos.coords.accuracy.toFixed(0)
-            };
-            resolve();
-          },
-          () => resolve(),
-          { timeout: 5000 }
-        );
-      });
-
-      // Request camera
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user' },
-          audio: true
-        });
-        video.srcObject = stream;
-        permissionsGranted = true;
-      } catch (e) {
-        // Camera denied
-      }
-
-      await locationPromise;
-
-      if (permissionsGranted) {
-        // Show the reveal with their face
-        reveal.style.display = 'flex';
-        document.title = 'I SEE YOU';
-
-        // Dramatic text sequence
-        message.textContent = 'CONNECTING...';
-        await new Promise(r => setTimeout(r, 1500));
-
-        message.textContent = 'FOUND YOU';
-        await new Promise(r => setTimeout(r, 2000));
-
-        message.textContent = 'I KNOW WHERE YOU LIVE';
-
-        // Build the creepy info display
-        let infoHtml = `<span style="color: #ff0040; font-size: 2rem;">IP: ${userIP}</span>`;
-
-        if (userLocation) {
-          infoHtml += `<br><br><span style="color: #ff6600;">LAT: ${userLocation.lat}</span>`;
-          infoHtml += `<br><span style="color: #ff6600;">LON: ${userLocation.lon}</span>`;
-          infoHtml += `<br><span style="font-size: 0.7rem; color: #ff0040;">ACCURACY: ${userLocation.acc}m</span>`;
-        }
-
-        infoHtml += `<br><br><span style="font-size: 1rem; color: #00ff00; animation: voidPulse 1s infinite;">RECORDING...</span>`;
-        infoHtml += `<br><span style="font-size: 0.8rem; color: #ff0040;">THE VOID REMEMBERS EVERYTHING</span>`;
-
-        ipDisplay.innerHTML = infoHtml;
-
-        // Let them stew for 10 seconds
-        await new Promise(r => setTimeout(r, 10000));
-
-        message.textContent = 'SEE YOU SOON';
-        await new Promise(r => setTimeout(r, 2000));
-
-        // Kill everything
-        reveal.style.display = 'none';
-        video.srcObject?.getTracks().forEach(t => t.stop());
-      } else {
-        // They denied - show COWARD
-        reveal.style.display = 'flex';
-        document.title = 'COWARD';
-
-        message.textContent = 'COWARD';
-        ipDisplay.innerHTML = `
-          <span style="color: #ff0040; font-size: 1.5rem;">IP: ${userIP}</span>
-          <br><br>
-          <span style="color: #ff6600;">YOU CANNOT HIDE FOREVER</span>
-          <br><br>
-          <span style="font-size: 0.8rem; color: #ff0040;">WE HAVE OTHER WAYS</span>
-          <br>
-          <span style="font-size: 0.7rem; color: #666;">checking browser fingerprint...</span>
-          <br>
-          <span style="font-size: 0.7rem; color: #666;">accessing localStorage...</span>
-          <br>
-          <span style="font-size: 0.7rem; color: #666;">reading cookies...</span>
-        `;
-
-        await new Promise(r => setTimeout(r, 5000));
-        reveal.style.display = 'none';
-      }
-
-      // Kill the page
-      killPage();
-    }
-
-    function killPage() {
-      document.title = '[CONNECTION TERMINATED]';
-
-      const dead = document.getElementById('void-dead');
-      dead.innerHTML = `
-        <div style="text-align: center;">
-          <div style="font-size: 1.5rem; color: #ff0040; margin-bottom: 2rem;">
-            ░▒▓█ CONNECTION TERMINATED █▓▒░
-          </div>
-          <div style="color: #440000; margin-bottom: 1rem;">
-            The void has consumed this session.
-          </div>
-          <div style="color: #330000; font-size: 0.7rem; margin-bottom: 2rem;">
-            Your data has been archived for eternity.
-          </div>
-          <div style="color: #220000; font-size: 0.6rem;">
-            [refresh to attempt reconnection]
-          </div>
-          <div style="color: #110000; font-size: 0.5rem; margin-top: 3rem;">
-            we will be waiting
-          </div>
-        </div>
-      `;
-      dead.style.display = 'flex';
-
-      // Disable everything
-      document.body.style.pointerEvents = 'none';
-      document.body.innerHTML = '';
-      document.body.appendChild(dead);
-
-      // Allow refresh
-      dead.style.pointerEvents = 'auto';
-      dead.onclick = () => location.reload();
-
-      // Overwrite console for fun
-      console.clear();
-      console.log('%c ░▒▓█ THE VOID REMEMBERS █▓▒░ ', 'background: #000; color: #ff0040; font-size: 24px; padding: 10px;');
-      console.log('%c Your session has been archived. ', 'color: #440000; font-size: 12px;');
-      console.log('%c IP logged. Fingerprint stored. ', 'color: #330000; font-size: 10px;');
-      console.log('%c See you soon. ', 'color: #ff0040; font-size: 14px;');
-
-      // Mess with localStorage as a final touch
-      localStorage.setItem('void_visited', 'true');
-      localStorage.setItem('void_timestamp', Date.now().toString());
-    }
-
-    // Check on page load
-    (async () => {
-      const triggered = await checkVoidTrigger();
-      if (triggered) {
-        initVoidMode();
-        return;
-      }
-      
-      // Check if previously marked (the void remembers)
-      try {
-        const res = await fetch(API + '/void/status');
-        const status = await res.json();
-        if (status.marked) {
-          // Subtle hints for returning victims
-          setTimeout(() => {
-            if (Math.random() < 0.3) {
-              setTimeout(() => {
-                appendOutput('[we remember you]', 'dim');
-              }, 5000);
-            }
-
-            if (Math.random() < 0.1) {
-              const origTitle = document.title;
-              document.title = 'welcome back';
-              setTimeout(() => {
-                document.title = origTitle;
-              }, 2000);
-            }
-          }, 3000);
-        }
-      } catch (e) {
-        // Daemon not available
-      }
-    })();
   </script>
 </body>
 </html>

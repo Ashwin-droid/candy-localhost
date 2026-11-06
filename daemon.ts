@@ -21,145 +21,19 @@ import {
   type TailscaleNodeIdentity,
 } from "./tailnet"
 
-// Random message picker
-const pick = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)]
-
-// Playful messages (kept for legacy API responses)
+// User-facing API messages
 const msg = {
-  added: [
-    "Approved. Next!",
-    "Rubber stamped. No paperwork required.",
-    "Allocated. Accountability is for the 2000s.",
-    "Added to the registry. The auditors won't notice.",
-    "IANA would be proud.",
-    "slay.",
-    "say less.",
-    "done. no cap.",
-  ],
-  removed: [
-    "Reclaimed. Like it never happened.",
-    "Gone. We'll shred the paperwork.",
-    "Deallocated. Off the books.",
-    "ghosted.",
-    "it's giving... deleted.",
-  ],
-  portCollision: [
-    "That port's already spoken for. Even we have some standards.",
-    "Someone beat you to it. Should've asked in 1983.",
-    "Already claimed. First come, first served - the IANA way.",
-    "That port's taken. It's complicated.",
-    "port's in a relationship already.",
-    "that port has mass. it's taken.",
-  ],
-  portalOpening: [
-    "Opening an unregistered tunnel... the ITU can't reach us here.",
-    "Bypassing international regulations...",
-    "The UN has no jurisdiction in localhost.",
-    "Digging a tunnel through the bureaucracy...",
-    "no thoughts just tunnels...",
-  ],
-  portalSuccess: [
-    "You didn't get this from us.",
-    "Connection established. Off the record, of course.",
-    "Tunnel's open. What you do with it is your business.",
-    "and i oop- it's live.",
-    "lowkey connected. highkey untraceable.",
-  ],
-  portalCollision: [
-    "Already got a tunnel there. We're generous, not wasteful.",
-    "That port's already got a backroom deal.",
-    "bestie that tunnel exists already.",
-  ],
-  portalClosed: [
-    "Tunnel sealed. Plausible deniability restored.",
-    "Connection severed. We were never here.",
-    "tunnel said: i'm out.",
-  ],
-  batchOpening: [
-    "Bulk deal approved. Volume discount.",
-    "Opening multiple back channels...",
-    "Quantity over quality. The IANA special.",
-    "understood the assignment.",
-  ],
-  notFound: [
-    "Never heard of 'em.",
-    "Not in our records. Try another registry.",
-    "That name doesn't ring a bell.",
-    "who? idk her.",
-    "404 in the streets, 404 in the sheets.",
-  ],
-  notANumber: [
-    "That's not a number and you know it.",
-    "We need a port number, not poetry.",
-    "bestie that's not a port.",
-  ],
-  detach: [
-    "Shredding the paperwork...",
-    "Leaving the back door open...",
-    "brb (not really).",
-    "going dark. tunnels stay lit.",
-  ],
-  exit: [
-    "Closing up shop. Evidence destroyed.",
-    "Later. This meeting never happened.",
-    "Peace out. The registry forgets nothing.",
-    "Gone. Like a /8 block in 1983.",
-    "Exiting. Tell IANA we said hi.",
-  ],
-  noRoutes: [
-    "Nothing on the books to tunnel.",
-    "Registry's empty. Add some routes first.",
-    "can't tunnel nothing bestie.",
-  ],
-  launder: [
-    "Papers updated. New identity, who dis?",
-    "Clean as a whistle. Never heard of the old name.",
-    "Laundered. The auditors will never know.",
-    "New name just dropped. Past is past.",
-    "Identity scrubbed. Witness protection activated.",
-    "it's giving... rebrand.",
-  ],
-  silence: [
-    "Silenced. They won't be talking anymore.",
-    "Shhhh... it's done.",
-    "They knew too much.",
-    "Problem solved. Permanently.",
-    "Gone. Like they never existed.",
-  ],
-  summon: [
-    "The ritual is complete. It has arrived.",
-    "From the void, a domain emerges.",
-    "You called. It answered.",
-    "Summoned from the depths of localhost.",
-  ],
-  rift: [
-    "Reality torn. The rift is open.",
-    "A hole in the fabric of the network.",
-    "The void peers back at you.",
-    "Careful. Some tunnels go both ways.",
-  ],
-  seal: [
-    "The rift is sealed. For now.",
-    "Banished back to the void.",
-    "The connection withers and dies.",
-    "Sealed. Whatever was on the other side stays there.",
-  ],
-  witness: [
-    "New identity assigned. Old one? Never heard of it.",
-    "Relocated. Don't look back.",
-    "The past is dead. Long live the new name.",
-  ],
-  vanish: [
-    "Vanishing... tell no one.",
-    "Going dark. Forget this address.",
-    "We were never here.",
-    "*poof*",
-  ],
-  evidence: [
-    "Compiling the dossier...",
-    "Everything we have on file:",
-    "The evidence locker contains:",
-  ],
+  removed: "Route removed",
+  portCollision: "Port already in use by another route",
+  portalSuccess: "Portal open",
+  portalCollision: "A portal is already open for this route",
+  portalClosed: "Portal closed",
+  batchOpening: "Opening portals",
+  notFound: "Not found",
+  notANumber: "Port must be a number",
+  noRoutes: "No routes registered",
+  launder: "Route renamed",
+  exit: "Shutting down",
 }
 
 // ============================================================================
@@ -586,8 +460,17 @@ const renderBoundDomainLogin = async (
   userAgent: string,
 ): Promise<Response> => {
   try {
-    const rawHtml = await Bun.file(import.meta.dir + "/public/login.html").text()
     const { blocked, retryAfter } = await checkAuthBlocked(ip, userAgent)
+    if (blocked && retryAfter > 0) {
+      const blockedHtml = (await Bun.file(import.meta.dir + "/public/blocked.html").text())
+        .replace('__DOMAIN__', binding.fqdn)
+        .replace('__RETRY_AFTER__', String(retryAfter))
+      return new Response(blockedHtml, {
+        status: 429,
+        headers: { "Content-Type": "text/html; charset=utf-8", "Retry-After": String(retryAfter) }
+      })
+    }
+    const rawHtml = await Bun.file(import.meta.dir + "/public/login.html").text()
     const html = rawHtml
       .replace('__DOMAIN__', binding.fqdn)
       .replace('__SUBDOMAIN__', binding.subdomain)
@@ -823,33 +706,6 @@ const resolveLocalCandyActionDomain = (name: string, hostLabel?: string | null):
   const requested = hostLabel ? `${name}.${hostLabel}` : name
   return resolveLocalCandyRouteName(requested, getAllLocalRouteNames(), getLocalCandyHostLabel())
 }
-
-// ============================================================================
-// THE VOID - Eldritch Horror State Management
-// ============================================================================
-
-interface VoidState {
-  marked: boolean           // Has the user been touched by the void?
-  markedAt: number | null   // When did the void first claim them?
-  burstCount: number        // How many times has the void burst forth?
-  lastBurst: number | null  // When did the void last manifest?
-  burstPending: boolean     // Is a burst event waiting to be consumed?
-  burstId: string | null    // Unique ID for current burst (for coordination)
-  pity: number              // Pity counter - increases chance of void storm
-}
-
-let voidState: VoidState = {
-  marked: false,
-  markedAt: null,
-  burstCount: 0,
-  lastBurst: null,
-  burstPending: false,
-  burstId: null,
-  pity: -20, // Negative pity - need 20 visits/clicks before void starts building
-}
-
-// SSE connections waiting for void events
-const voidListeners = new Set<ReadableStreamDefaultController<Uint8Array>>()
 
 // Rolling token chains - per-client (session) amnesiac arrays
 // Token format: sessionId:tokenValue
@@ -1384,10 +1240,6 @@ const getCurrentToken = (sessionId: string): string | null => {
   return session.chain[session.chain.length - 1]
 }
 
-// The void tracking
-let pageViews = 0
-let darkShownThisCycle = false
-
 // Activity log (in-memory for API responses)
 const activityLog: { time: Date, action: string, details: string }[] = []
 const log = (action: string, details: string) => {
@@ -1423,7 +1275,7 @@ const initLogs = async () => {
 }
 
 // Actor types for audit logging
-type Actor = 'AI' | 'Page' | 'Portal' | 'System' | 'Network' | 'Void'
+type Actor = 'AI' | 'Page' | 'Portal' | 'System' | 'Network'
 
 // Write to audit log with actor tracking
 const auditLog = async (action: string, details: string, actor: Actor = 'System') => {
@@ -1606,136 +1458,6 @@ const removeServerConfig = async (name: string, actor: Actor = 'Portal', configI
   await saveServerConfigs()
   auditLog('CONFIG_REMOVE', configId ? `${name}:${configId}` : name, actor)
   if (await forgetLanPublishedIfGone(name)) await syncCaddy()
-}
-
-// ============================================================================
-// Void State Management - The Daemon Remembers
-// ============================================================================
-
-const loadVoidState = async () => {
-  // The void is memory only - it forgets when the daemon sleeps
-  // All state resets on daemon restart
-  console.log(`\x1b[35m👁️ The void awakens...\x1b[0m`)
-}
-
-// saveVoidState removed - void is memory only, forgets when daemon sleeps
-
-// Mark the user - they have been touched by the void (memory only - resets on daemon restart)
-const markByVoid = async () => {
-  voidState.marked = true
-  voidState.markedAt = voidState.markedAt || Date.now()
-  voidState.pity = -20 // Reset pity when void storm triggers
-  // Not saved to disk - the void forgets when daemon sleeps
-  auditLog('VOID_MARK', 'The void has marked this machine', 'Void')
-  console.log(`\x1b[35m👁️ THE VOID HAS MARKED THIS MACHINE\x1b[0m`)
-}
-
-// Trigger a void burst - chaos across all pages
-const triggerVoidBurst = async () => {
-  voidState.burstCount++
-  voidState.lastBurst = Date.now()
-  voidState.burstPending = true
-  voidState.burstId = `burst_${Date.now()}_${Math.random().toString(36).slice(2)}`
-  voidState.pity = -20 // Reset pity on burst
-  // burstCount saved for fun stats, but mark/pity are memory only
-  
-  auditLog('VOID_BURST', `Burst #${voidState.burstCount} - ${voidState.burstId}`, 'Void')
-  console.log(`\x1b[35;1m👁️ VOID BURST #${voidState.burstCount} - THE VOID MANIFESTS\x1b[0m`)
-  
-  // Notify all SSE listeners
-  const encoder = new TextEncoder()
-  const eventData = encoder.encode(`event: burst\ndata: ${JSON.stringify({
-    burstId: voidState.burstId,
-    burstCount: voidState.burstCount,
-    timestamp: voidState.lastBurst,
-  })}\n\n`)
-  
-  for (const controller of voidListeners) {
-    try {
-      controller.enqueue(eventData)
-    } catch {
-      voidListeners.delete(controller)
-    }
-  }
-  
-  // THE VOID MANIFESTS IN THE REAL WORLD
-  // Spawn a calculator because the void wants to do math
-  spawnVoidManifestation()
-}
-
-// The void manifests as a calculator (or other GUI chaos)
-const spawnVoidManifestation = async () => {
-  // GUI apps need display access - systemd services don't have this by default
-  const guiEnv = {
-    ...process.env,
-    DISPLAY: ':1',
-    WAYLAND_DISPLAY: 'wayland-0',
-    XDG_RUNTIME_DIR: `/run/user/1000`,
-  }
-
-  // Try various calculators depending on what's installed
-  const calculators = [
-    'gnome-calculator',
-    'kcalc', 
-    'xcalc',
-    'galculator',
-    'mate-calc',
-    'qalculate-gtk',
-  ]
-  
-  // Also try some other fun ones
-  const funManifestations = [
-    'xeyes',           // Classic X11 eyes that follow cursor
-    'oneko',           // Cat that chases cursor
-    'xsnow',           // Snow on your screen
-  ]
-  
-  // Try calculators first (the void wants to count its victims)
-  for (const calc of calculators) {
-    try {
-      const proc = spawn([calc], {
-        stdout: 'ignore',
-        stderr: 'ignore',
-        stdin: 'ignore',
-        env: guiEnv,
-      })
-      if (proc.pid) {
-        console.log(`\x1b[35m👁️ The void manifests as: ${calc} (PID ${proc.pid})\x1b[0m`)
-        auditLog('VOID_MANIFEST', `Spawned ${calc} (PID ${proc.pid})`, 'Void')
-        return
-      }
-    } catch {
-      // Try next one
-    }
-  }
-  
-  // If no calculator, try fun manifestations
-  for (const fun of funManifestations) {
-    try {
-      const proc = spawn([fun], {
-        stdout: 'ignore', 
-        stderr: 'ignore',
-        stdin: 'ignore',
-        env: guiEnv,
-      })
-      if (proc.pid) {
-        console.log(`\x1b[35m👁️ The void manifests as: ${fun} (PID ${proc.pid})\x1b[0m`)
-        auditLog('VOID_MANIFEST', `Spawned ${fun} (PID ${proc.pid})`, 'Void')
-        return
-      }
-    } catch {
-      // The void will find another way
-    }
-  }
-  
-  // Last resort: try to send a desktop notification
-  try {
-    await $`DISPLAY=:1 WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 notify-send -u critical "THE VOID" "I SEE YOU" -i dialog-warning`.quiet().nothrow()
-    console.log(`\x1b[35m👁️ The void manifests as a notification\x1b[0m`)
-    auditLog('VOID_MANIFEST', 'Desktop notification', 'Void')
-  } catch {
-    // The void is patient
-  }
 }
 
 // ============================================================================
@@ -2088,7 +1810,7 @@ const openPortalForName = async ({ name, port, openBrowser }: { name?: string; p
 
   const existingPortal = [...portals.entries()].find(([, p]) => p.port === port)
   if (existingPortal) {
-    const m = pick(msg.portalCollision)
+    const m = msg.portalCollision
     return { ok: false, status: 409, body: { error: m, details: `${existingPortal[0]} has :${port}` } }
   }
 
@@ -2100,11 +1822,11 @@ const openPortalForName = async ({ name, port, openBrowser }: { name?: string; p
   }
 
   if (isReserved(portalName)) {
-    return { ok: false, status: 403, body: { error: "That name is reserved. Nice try though.", details: portalName } }
+    return { ok: false, status: 403, body: { error: "That name is reserved.", details: portalName } }
   }
 
   if (portals.has(portalName)) {
-    const m = pick(msg.portalCollision)
+    const m = msg.portalCollision
     return { ok: false, status: 409, body: { error: m, details: `${portalName} already open` } }
   }
 
@@ -2154,7 +1876,7 @@ const openPortalForName = async ({ name, port, openBrowser }: { name?: string; p
     }, 30000)
   }
 
-  const m = pick(msg.portalSuccess)
+  const m = msg.portalSuccess
   log("PORTAL", `${portalName} -> ${tunnelUrl}`)
   return { ok: true, body: { name: portalName, url: tunnelUrl, port, message: m } }
 }
@@ -3017,9 +2739,6 @@ const controlServer = Bun.serve({
       if (authResponse) return authResponse
     }
 
-    // Void endpoints bypass auth (easter egg system needs to work across pages)
-    const isVoidRoute = url.pathname.startsWith("/void/")
-
     // === Network Discovery API (unauthenticated, Tailscale-protected) ===
     const isCandyApi = url.pathname.startsWith("/candy/")
     if (isCandyApi) {
@@ -3115,7 +2834,7 @@ const controlServer = Bun.serve({
     // MCP/CLI uses X-Candy-API-Key header (obtained via /mcp/auth with secret)
     const mcpApiKey = req.headers.get("X-Candy-API-Key")
     const isMCP = mcpApiKey && validateMcpApiKey(mcpApiKey)
-    if (!isWebRoute && !isMCP && !isVoidRoute && !isBoundDomain && !isCandyApi) {
+    if (!isWebRoute && !isMCP && !isBoundDomain && !isCandyApi) {
       const token = req.headers.get("X-Candy-Token")
       if (!token || !consumeToken(token)) {
         return unauthorizedResponse(corsHeaders)
@@ -3191,11 +2910,11 @@ const controlServer = Bun.serve({
       }
 
       if (isReserved(name)) {
-        return Response.json({ error: "That name is reserved. Nice try though.", details: name }, { status: 403, headers: corsHeaders })
+        return Response.json({ error: "That name is reserved.", details: name }, { status: 403, headers: corsHeaders })
       }
 
       if (!Number.isInteger(port) || port < 1 || port > 65535) {
-        return Response.json({ error: pick(msg.notANumber), details: String(port) }, { status: 400, headers: corsHeaders })
+        return Response.json({ error: msg.notANumber, details: String(port) }, { status: 400, headers: corsHeaders })
       }
 
       if (!await isPidRunning(pid)) {
@@ -3224,7 +2943,7 @@ const controlServer = Bun.serve({
         return route.target === port
       })
       if (portCollision) {
-        const m = pick(msg.portCollision)
+        const m = msg.portCollision
         return Response.json({ error: m, details: `${portCollision[0]} has :${port}` }, { status: 409, headers: corsHeaders })
       }
 
@@ -3280,7 +2999,7 @@ const controlServer = Bun.serve({
 
       // Reserved names
       if (isReserved(name)) {
-        return Response.json({ error: "That name is reserved. Nice try though.", details: name }, { status: 403, headers: corsHeaders })
+        return Response.json({ error: "That name is reserved.", details: name }, { status: 403, headers: corsHeaders })
       }
 
       const isRestricted = body.target && (body.target.startsWith("http://") || body.target.startsWith("https://"))
@@ -3289,7 +3008,7 @@ const controlServer = Bun.serve({
       if (!isRestricted) {
         const existingRoute = [...routes.entries()].find(([n, r]) => r.target === routeTarget && n !== name)
         if (existingRoute) {
-          const m = pick(msg.portCollision)
+          const m = msg.portCollision
           return Response.json({ error: m, details: `${existingRoute[0]} has :${routeTarget}` }, { status: 409, headers: corsHeaders })
         }
       }
@@ -3300,28 +3019,17 @@ const controlServer = Bun.serve({
       await syncCaddy()
       if (persistent) await savePersistentRoutes()
 
-      if (isRestricted) {
-        log("RESTRICTED", `${name}.localhost -> ${routeTarget}`)
-        return Response.json({
-          domain: `${name}.localhost`,
-          status: "registered",
-          restricted: true,
-          message: "You've entered the restricted zone."
-        }, { headers: corsHeaders })
-      } else {
-        const m = pick(msg.added)
-        log("ADD", `${name}.localhost -> :${routeTarget}`)
-        return Response.json({ domain: `${name}.localhost`, status: "registered", message: m }, { headers: corsHeaders })
-      }
+      log("ADD", `${name}.localhost -> ${isRestricted ? routeTarget : ":" + routeTarget}`)
+      return Response.json({ domain: `${name}.localhost`, status: "registered", message: "Route added" }, { headers: corsHeaders })
     }
 
     if (req.method === "DELETE" && url.pathname.startsWith("/register/")) {
       const name = url.pathname.split("/")[2]
       if (isReserved(name)) {
-        return Response.json({ error: "That name is reserved. Nice try though.", details: name }, { status: 403, headers: corsHeaders })
+        return Response.json({ error: "That name is reserved.", details: name }, { status: 403, headers: corsHeaders })
       }
       if (!routes.has(name)) {
-        return Response.json({ error: pick(msg.notFound), details: name }, { status: 404, headers: corsHeaders })
+        return Response.json({ error: msg.notFound, details: name }, { status: 404, headers: corsHeaders })
       }
 
       // Also stop the associated process if running
@@ -3337,7 +3045,7 @@ const controlServer = Bun.serve({
       await forgetLanPublishedIfGone(name)
       await syncCaddy()
       if (wasRoute?.persistent) await savePersistentRoutes()
-      const m = pick(msg.removed)
+      const m = msg.removed
       log("REMOVE", `${name}.localhost`)
       return Response.json({ status: "removed", message: m }, { headers: corsHeaders })
     }
@@ -3346,10 +3054,10 @@ const controlServer = Bun.serve({
       const { oldName, newName } = await req.json() as { oldName: string, newName: string }
 
       if (isReserved(oldName) || isReserved(newName)) {
-        return Response.json({ error: "That name is reserved. Nice try though.", details: "portal" }, { status: 403, headers: corsHeaders })
+        return Response.json({ error: "That name is reserved.", details: "portal" }, { status: 403, headers: corsHeaders })
       }
       if (!routes.has(oldName)) {
-        return Response.json({ error: pick(msg.notFound), details: oldName }, { status: 404, headers: corsHeaders })
+        return Response.json({ error: msg.notFound, details: oldName }, { status: 404, headers: corsHeaders })
       }
       if (routes.has(newName)) {
         return Response.json({ error: `New identity '${newName}' already exists.`, details: newName }, { status: 409, headers: corsHeaders })
@@ -3388,7 +3096,7 @@ const controlServer = Bun.serve({
       }
 
       await syncCaddy()
-      const m = pick(msg.launder)
+      const m = msg.launder
       log("RENAME", `${oldName} -> ${newName}`)
       return Response.json({ status: "renamed", oldName, newName, message: m }, { headers: corsHeaders })
     }
@@ -3430,10 +3138,10 @@ const controlServer = Bun.serve({
       const key = name.toLowerCase()
 
       if (!name || isReserved(name)) {
-        return Response.json({ error: "That name is reserved. Nice try though.", details: name }, { status: 403, headers: corsHeaders })
+        return Response.json({ error: "That name is reserved.", details: name }, { status: 403, headers: corsHeaders })
       }
       if (publish && !routes.has(name) && !serverConfigs.has(name)) {
-        return Response.json({ error: pick(msg.notFound), details: name }, { status: 404, headers: corsHeaders })
+        return Response.json({ error: msg.notFound, details: name }, { status: 404, headers: corsHeaders })
       }
 
       // Optional HTTPS on the tailnet hostname (https: true/false; omitted = unchanged)
@@ -3517,7 +3225,7 @@ const controlServer = Bun.serve({
           if (!portals.has(name)) batchTargets.push({ name, port: route.target as number })
         }
         if (batchTargets.length === 0) {
-          return Response.json({ error: pick(msg.noRoutes) }, { status: 400, headers: corsHeaders })
+          return Response.json({ error: msg.noRoutes }, { status: 400, headers: corsHeaders })
         }
       } else {
         for (const arg of targets) {
@@ -3541,7 +3249,7 @@ const controlServer = Bun.serve({
       }
 
       if (batchTargets.length === 0) {
-        return Response.json({ error: pick(msg.noRoutes) }, { status: 400, headers: corsHeaders })
+        return Response.json({ error: msg.noRoutes }, { status: 400, headers: corsHeaders })
       }
 
       const results = await Promise.all(batchTargets.map(async ({ name, port }) => {
@@ -3588,7 +3296,7 @@ const controlServer = Bun.serve({
 
       return Response.json({
         portals: successResults,
-        message: pick(msg.batchOpening)
+        message: msg.batchOpening
       }, { headers: corsHeaders })
     }
 
@@ -3620,7 +3328,7 @@ const controlServer = Bun.serve({
       const toClose = portals.get(name)
 
       if (!toClose) {
-        return Response.json({ error: pick(msg.notFound), details: `portal: ${name}` }, { status: 404, headers: corsHeaders })
+        return Response.json({ error: msg.notFound, details: `portal: ${name}` }, { status: 404, headers: corsHeaders })
       }
 
       if (toClose.proc) {
@@ -3631,7 +3339,7 @@ const controlServer = Bun.serve({
       portals.delete(name)
       await syncCaddy()
 
-      const m = pick(msg.portalClosed)
+      const m = msg.portalClosed
       log("CLOSE", name)
       return Response.json({ status: "closed", name, message: m }, { headers: corsHeaders })
     }
@@ -3758,7 +3466,7 @@ const controlServer = Bun.serve({
     }
 
     if (req.method === "POST" && url.pathname === "/shutdown") {
-      const m = pick(msg.exit)
+      const m = msg.exit
       setTimeout(async () => {
         await cleanup()
         process.exit(0)
@@ -3953,7 +3661,7 @@ const controlServer = Bun.serve({
     if (req.method === "POST" && url.pathname === "/config") {
       const { name, cwd, cmd } = await req.json() as { name: string, cwd: string, cmd: string }
       if (isReserved(name)) {
-        return Response.json({ error: "That name is reserved. Nice try though.", details: name }, { status: 403, headers: corsHeaders })
+        return Response.json({ error: "That name is reserved.", details: name }, { status: 403, headers: corsHeaders })
       }
       const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
       await addServerConfig(name, cwd, cmd, actor)
@@ -4161,118 +3869,6 @@ const controlServer = Bun.serve({
         zone: domainConfig.zone,
         tunnel: { id: domainConfig.tunnel.id, name: domainConfig.tunnel.name },
       }, { headers: corsHeaders })
-    }
-
-    // === THE VOID API ===
-
-    // Get void status - are they marked? is a burst pending?
-    if (req.method === "GET" && url.pathname === "/void/status") {
-      return Response.json({
-        marked: voidState.marked,
-        markedAt: voidState.markedAt,
-        burstCount: voidState.burstCount,
-        lastBurst: voidState.lastBurst,
-        burstPending: voidState.burstPending,
-        burstId: voidState.burstId,
-        pity: voidState.pity,
-      }, { headers: corsHeaders })
-    }
-
-    // Increment pity - feeds the void, increases storm chance (memory only)
-    if (req.method === "POST" && url.pathname === "/void/pity") {
-      voidState.pity++
-      return Response.json({ pity: voidState.pity }, { headers: corsHeaders })
-    }
-
-    // Mark the user - called when void storm triggers in portal.html
-    if (req.method === "POST" && url.pathname === "/void/mark") {
-      await markByVoid()
-      return Response.json({ 
-        success: true, 
-        message: "THE VOID HAS MARKED YOU",
-        markedAt: voidState.markedAt,
-      }, { headers: corsHeaders })
-    }
-
-    // Cleanse the void - sacrifice accepted, reset everything
-    if (req.method === "POST" && url.pathname === "/void/cleanse") {
-      voidState.marked = false
-      voidState.markedAt = null
-      voidState.pity = -20
-      voidState.burstPending = false
-      voidState.burstId = null
-      auditLog('VOID_CLEANSE', 'The sacrifice was accepted. The void forgets.', 'Void')
-      console.log(`\x1b[35m👁️ The void is appeased. The mark is lifted.\x1b[0m`)
-      return Response.json({
-        success: true,
-        message: "THE VOID FORGETS",
-      }, { headers: corsHeaders })
-    }
-
-    // Trigger a void burst - called when corruption hits 100%
-    if (req.method === "POST" && url.pathname === "/void/burst") {
-      await triggerVoidBurst()
-      return Response.json({
-        success: true,
-        burstId: voidState.burstId,
-        burstCount: voidState.burstCount,
-      }, { headers: corsHeaders })
-    }
-
-    // Acknowledge burst was seen (clear pending flag)
-    if (req.method === "POST" && url.pathname === "/void/burst/ack") {
-      const { burstId } = await req.json() as { burstId: string }
-      if (burstId === voidState.burstId) {
-        voidState.burstPending = false
-      }
-      return Response.json({ success: true }, { headers: corsHeaders })
-    }
-
-    // SSE endpoint for void events - pages subscribe to receive burst notifications
-    if (req.method === "GET" && url.pathname === "/void/listen") {
-      const stream = new ReadableStream({
-        async start(controller) {
-          const encoder = new TextEncoder()
-          voidListeners.add(controller)
-          
-          // Send current state immediately
-          controller.enqueue(encoder.encode(`event: state\ndata: ${JSON.stringify({
-            marked: voidState.marked,
-            burstPending: voidState.burstPending,
-            burstId: voidState.burstId,
-          })}\n\n`))
-          
-          // Heartbeat every 15s to keep connection alive (also re-sends state)
-          const heartbeat = setInterval(() => {
-            try {
-              controller.enqueue(encoder.encode(`event: heartbeat\ndata: ${JSON.stringify({
-                marked: voidState.marked,
-                burstPending: voidState.burstPending,
-                time: Date.now(),
-              })}\n\n`))
-            } catch {
-              clearInterval(heartbeat)
-              voidListeners.delete(controller)
-            }
-          }, 15000)
-          
-          // Cleanup on abort
-          req.signal.addEventListener('abort', () => {
-            clearInterval(heartbeat)
-            voidListeners.delete(controller)
-            controller.close()
-          })
-        }
-      })
-      
-      return new Response(stream, {
-        headers: {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive',
-          ...corsHeaders,
-        }
-      })
     }
 
     // === SSE Streaming Logs ===
@@ -4695,19 +4291,7 @@ const controlServer = Bun.serve({
 
         // Show candy/terminal page with mode toggle (registration screen)
         domainHits.set(domain, (domainHits.get(domain) || 0) + 1)
-        pageViews++
-        let showDark = Math.random() < 0.15
-        if (!showDark && pageViews >= 10 && !darkShownThisCycle) {
-          showDark = true
-        }
-        if (showDark) {
-          darkShownThisCycle = true
-        }
-        if (pageViews >= 10) {
-          pageViews = 0
-          darkShownThisCycle = false
-        }
-        const page = showDark ? "terminal.html" : "candy.html"
+        const page = "candy.html"
         const rawHtml = await Bun.file(import.meta.dir + "/public/" + page).text()
         const html = injectToken(rawHtml)
         return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
@@ -4741,9 +4325,6 @@ await loadAuthFailures('startup')
 await watchAuthFailures()
 await syncCloudflaredIngress()
 await restartCloudflared()
-
-// Load void state (the daemon remembers...)
-await loadVoidState()
 
 // Initialize MCP auth (write bootstrap secret to file)
 await initMcpAuth()

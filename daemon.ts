@@ -3060,7 +3060,7 @@ const controlServer = Bun.serve({
         return Response.json({ error: msg.notFound, details: oldName }, { status: 404, headers: corsHeaders })
       }
       if (routes.has(newName)) {
-        return Response.json({ error: `New identity '${newName}' already exists.`, details: newName }, { status: 409, headers: corsHeaders })
+        return Response.json({ error: `A route named '${newName}' already exists.`, details: newName }, { status: 409, headers: corsHeaders })
       }
 
       const routeData = routes.get(oldName)!

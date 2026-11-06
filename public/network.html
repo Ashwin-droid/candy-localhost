@@ -4,35 +4,81 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>candy network</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="icon" href="/favicon.svg">
   <style>
     :root {
-      --bg-deep: #050508;
-      --bg-surface: #0a0a0f;
-      --bg-elevated: #12121a;
-      --bg-card: #16161f;
-      --border: #1e1e2a;
-      --border-bright: #2a2a3a;
-      --text: #e0e0e8;
-      --text-dim: #6a6a7a;
-      --text-muted: #4a4a5a;
-      --cyan: #00e5ff;
-      --cyan-dim: #00a0b0;
-      --cyan-glow: rgba(0, 229, 255, 0.15);
-      --magenta: #ff00aa;
-      --magenta-glow: rgba(255, 0, 170, 0.15);
-      --green: #00ff6a;
-      --green-dim: #00a045;
-      --red: #ff3366;
-      --yellow: #ffcc00;
-      --font-mono: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
-      --font-sans: system-ui, sans-serif;
+      color-scheme: light;
+      --bg: #f6f6f8;
+      --surface: #ffffff;
+      --surface-2: #f8f8fa;
+      --surface-3: #efeff3;
+      --border: #e6e6eb;
+      --border-bright: #d9d9e0;
+      --text: #18181b;
+      --text-dim: #5f5f6b;
+      --text-muted: #8e8e99;
+      --accent: #d6336c;
+      --accent-hover: #c2255c;
+      --accent-soft: rgba(214, 51, 108, 0.09);
+      --accent-ink: #ffffff;
+      --violet: #8b5cf6;
+      --green: #1f9d55;
+      --green-soft: rgba(31, 157, 85, 0.1);
+      --red: #d92d3f;
+      --red-soft: rgba(217, 45, 63, 0.08);
+      --yellow: #b7791f;
+      --yellow-soft: rgba(183, 121, 31, 0.1);
+      --blue: #3b6fd8;
+      --blue-soft: rgba(59, 111, 216, 0.1);
+      --shadow: 0 1px 2px rgba(16, 16, 24, 0.04), 0 8px 24px rgba(16, 16, 24, 0.06);
+      --log-bg: #0e0e12;
+      --log-text: #e4e4ea;
+      /* legacy names used by this page's rules */
+      --bg-deep: var(--bg); --bg-surface: var(--surface); --bg-card: var(--surface); --bg-elevated: var(--surface-2);
+      --dim: var(--text-dim);
+      --cyan: var(--accent); --cyan-dim: var(--accent-hover); --cyan-glow: var(--accent-soft);
+      --magenta: var(--accent); --magenta-dim: var(--accent-hover); --magenta-glow: var(--accent-soft);
+      --green-dim: var(--green); --red-dim: var(--red); --red-glow: var(--red-soft);
+      --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --bg: #0f0f12;
+        --surface: #17171b;
+        --surface-2: #1c1c21;
+        --surface-3: #25252b;
+        --border: #26262c;
+        --border-bright: #33333a;
+        --text: #ececf1;
+        --text-dim: #a1a1ab;
+        --text-muted: #6e6e78;
+        --accent: #f06595;
+        --accent-hover: #f783ac;
+        --accent-soft: rgba(240, 101, 149, 0.12);
+        --accent-ink: #1a0b11;
+        --violet: #a78bfa;
+        --green: #3ecf7e;
+        --green-soft: rgba(62, 207, 126, 0.12);
+        --red: #ff6b7a;
+        --red-soft: rgba(255, 107, 122, 0.12);
+        --yellow: #f2b84b;
+        --yellow-soft: rgba(242, 184, 75, 0.12);
+        --blue: #74a0ff;
+        --blue-soft: rgba(116, 160, 255, 0.12);
+        --shadow: none;
+        --log-bg: #0b0b0e;
+        --log-text: #e4e4ea;
+      }
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
-      font-family: var(--font-mono);
+      font-family: var(--font-sans);
+      -webkit-font-smoothing: antialiased;
       background: var(--bg-deep);
       color: var(--text);
       min-height: 100vh;
@@ -48,16 +94,6 @@
       position: relative;
     }
 
-    header::after {
-      content: '';
-      position: absolute;
-      bottom: 0;
-      left: 0;
-      right: 0;
-      height: 1px;
-      background: linear-gradient(90deg, transparent, var(--cyan-dim), transparent);
-      opacity: 0.5;
-    }
 
     .logo {
       display: flex;
@@ -70,14 +106,12 @@
       font-size: 1.25rem;
       font-weight: 700;
       color: var(--cyan);
-      text-shadow: 0 0 20px var(--cyan-glow);
     }
 
     .logo-sub {
       font-size: 0.7rem;
       color: var(--text-dim);
-      text-transform: uppercase;
-      letter-spacing: 0.15em;
+      letter-spacing: 0;
     }
 
     .status-dot {
@@ -85,7 +119,7 @@
       height: 8px;
       border-radius: 50%;
       background: var(--green);
-      box-shadow: 0 0 8px var(--green);
+      box-shadow: var(--shadow);
       animation: pulse 2s ease-in-out infinite;
     }
 
@@ -118,8 +152,7 @@
       font-size: 0.85rem;
       font-weight: 600;
       color: var(--text);
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
+      letter-spacing: 0;
     }
 
     .section-count {
@@ -200,38 +233,37 @@
       font-size: 0.65rem;
       padding: 0.15rem 0.4rem;
       border-radius: 3px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
+      letter-spacing: 0;
     }
 
     .tag-local {
-      background: rgba(0, 255, 106, 0.1);
+      background: var(--green-soft);
       color: var(--green);
-      border: 1px solid rgba(0, 255, 106, 0.2);
+      border: 1px solid var(--green-soft);
     }
 
     .tag-remote {
-      background: rgba(255, 0, 170, 0.1);
+      background: var(--accent-soft);
       color: var(--magenta);
-      border: 1px solid rgba(255, 0, 170, 0.2);
+      border: 1px solid var(--accent-soft);
     }
 
     .tag-canonical {
-      background: rgba(0, 229, 255, 0.12);
+      background: var(--accent-soft);
       color: var(--cyan);
-      border: 1px solid rgba(0, 229, 255, 0.25);
+      border: 1px solid var(--accent-soft);
     }
 
     .tag-alias {
-      background: rgba(255, 204, 0, 0.12);
+      background: var(--yellow-soft);
       color: var(--yellow);
-      border: 1px solid rgba(255, 204, 0, 0.2);
+      border: 1px solid var(--yellow-soft);
     }
 
     .tag-shadowed {
-      background: rgba(106, 106, 122, 0.16);
+      background: var(--surface-3);
       color: var(--text-dim);
-      border: 1px solid rgba(106, 106, 122, 0.24);
+      border: 1px solid var(--surface-3);
     }
 
     .empty-state {
@@ -249,8 +281,8 @@
     }
 
     .error-banner {
-      background: rgba(255, 51, 102, 0.1);
-      border: 1px solid rgba(255, 51, 102, 0.3);
+      background: var(--red-soft);
+      border: 1px solid var(--red-soft);
       color: var(--red);
       padding: 0.75rem 1rem;
       border-radius: 6px;

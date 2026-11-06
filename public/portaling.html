@@ -5,23 +5,80 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Opening Portal...</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #0a0a0f;
-      --surface: #12121a;
-      --border: #1e1e2a;
-      --text: #e0e0e8;
-      --dim: #6a6a7a;
-      --cyan: #00e5ff;
-      --magenta: #ff00aa;
-      --green: #00ff6a;
+      color-scheme: light;
+      --bg: #f6f6f8;
+      --surface: #ffffff;
+      --surface-2: #f8f8fa;
+      --surface-3: #efeff3;
+      --border: #e6e6eb;
+      --border-bright: #d9d9e0;
+      --text: #18181b;
+      --text-dim: #5f5f6b;
+      --text-muted: #8e8e99;
+      --accent: #d6336c;
+      --accent-hover: #c2255c;
+      --accent-soft: rgba(214, 51, 108, 0.09);
+      --accent-ink: #ffffff;
+      --violet: #8b5cf6;
+      --green: #1f9d55;
+      --green-soft: rgba(31, 157, 85, 0.1);
+      --red: #d92d3f;
+      --red-soft: rgba(217, 45, 63, 0.08);
+      --yellow: #b7791f;
+      --yellow-soft: rgba(183, 121, 31, 0.1);
+      --blue: #3b6fd8;
+      --blue-soft: rgba(59, 111, 216, 0.1);
+      --shadow: 0 1px 2px rgba(16, 16, 24, 0.04), 0 8px 24px rgba(16, 16, 24, 0.06);
+      --log-bg: #0e0e12;
+      --log-text: #e4e4ea;
+      /* legacy names used by this page's rules */
+      --bg-deep: var(--bg); --bg-surface: var(--surface); --bg-card: var(--surface); --bg-elevated: var(--surface-2);
+      --dim: var(--text-dim);
+      --cyan: var(--accent); --cyan-dim: var(--accent-hover); --cyan-glow: var(--accent-soft);
+      --magenta: var(--accent); --magenta-dim: var(--accent-hover); --magenta-glow: var(--accent-soft);
+      --green-dim: var(--green); --red-dim: var(--red); --red-glow: var(--red-soft);
+      --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --bg: #0f0f12;
+        --surface: #17171b;
+        --surface-2: #1c1c21;
+        --surface-3: #25252b;
+        --border: #26262c;
+        --border-bright: #33333a;
+        --text: #ececf1;
+        --text-dim: #a1a1ab;
+        --text-muted: #6e6e78;
+        --accent: #f06595;
+        --accent-hover: #f783ac;
+        --accent-soft: rgba(240, 101, 149, 0.12);
+        --accent-ink: #1a0b11;
+        --violet: #a78bfa;
+        --green: #3ecf7e;
+        --green-soft: rgba(62, 207, 126, 0.12);
+        --red: #ff6b7a;
+        --red-soft: rgba(255, 107, 122, 0.12);
+        --yellow: #f2b84b;
+        --yellow-soft: rgba(242, 184, 75, 0.12);
+        --blue: #74a0ff;
+        --blue-soft: rgba(116, 160, 255, 0.12);
+        --shadow: none;
+        --log-bg: #0b0b0e;
+        --log-text: #e4e4ea;
+      }
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
-      font-family: 'JetBrains Mono', monospace;
+      font-family: var(--font-sans);
+      -webkit-font-smoothing: antialiased;
       background: var(--bg);
       color: var(--text);
       min-height: 100vh;
@@ -44,7 +101,7 @@
     }
 
     .terminal-header {
-      background: var(--bg);
+      background: var(--surface);
       padding: 0.75rem 1rem;
       display: flex;
       align-items: center;
@@ -64,9 +121,9 @@
 
     .terminal-title {
       flex: 1;
-      text-align: center;
-      font-size: 0.75rem;
-      color: var(--dim);
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--text);
     }
 
     .terminal-body {
@@ -137,7 +194,7 @@
 
     .progress-fill {
       height: 100%;
-      background: linear-gradient(90deg, var(--cyan), var(--magenta));
+      background: var(--accent);
       width: 0%;
       transition: width 1s linear;
     }
@@ -185,10 +242,7 @@
   <div class="container">
     <div class="terminal">
       <div class="terminal-header">
-        <div class="terminal-dot red"></div>
-        <div class="terminal-dot yellow"></div>
-        <div class="terminal-dot green"></div>
-        <div class="terminal-title" id="serverName">server.localhost</div><!-- updated by JS -->
+        <div class="terminal-title" id="serverName">Opening a portal</div><!-- updated by JS -->
       </div>
       <div class="terminal-body">
         <div id="logs">
@@ -226,7 +280,7 @@
     const existingUrl = vars.existingUrl || '';
     const REDIRECT_DELAY = 20; // seconds
 
-    document.getElementById('serverName').textContent = _host;
+    document.getElementById('serverName').textContent = `Opening a portal for ${_host}`;
     document.getElementById('portalLink').href = `${SCHEME}://portal.${_isBoundDomain ? 'localhost' : TLD}`;
 
     const logsEl = document.getElementById('logs');

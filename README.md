@@ -452,7 +452,7 @@ Requires `~/.config/candy/domains.json` with zone and tunnel configuration.
 
 | Page | Purpose |
 |------|---------|
-| `portal.html` | Dashboard with GUI panels (routes, portals, domains, processes, configs) + CLI terminal + log viewer with PTY passthrough |
+| `portal.html` | Dashboard (routes, processes, configs, portals, bound domains) with a log viewer that passes keystrokes to the process |
 | `candy.html` | Registration page (quick route mode + lazy server config mode) |
 | `starting.html` | Startup progress with live log SSE, manual port assignment, variant chooser |
 | `crashed.html` | Crash page with recent logs and restart action |

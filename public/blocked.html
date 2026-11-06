@@ -5,19 +5,58 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Access denied</title>
   <link rel="icon" href="/favicon.svg">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #0b0b10;
-      --surface: #13131b;
-      --border: #24242f;
-      --text: #e6e6ee;
-      --text-dim: #8a8a99;
-      --text-muted: #5a5a68;
-      --red: #ff4d6d;
+      color-scheme: light;
+      --bg: #f6f6f8;
+      --surface: #ffffff;
+      --surface-2: #f8f8fa;
+      --border: #e6e6eb;
+      --border-bright: #d9d9e0;
+      --text: #18181b;
+      --text-dim: #5f5f6b;
+      --text-muted: #8e8e99;
+      --accent: #d6336c;
+      --accent-hover: #c2255c;
+      --accent-soft: rgba(214, 51, 108, 0.09);
+      --accent-ink: #ffffff;
+      --violet: #8b5cf6;
+      --green: #1f9d55;
+      --green-soft: rgba(31, 157, 85, 0.1);
+      --red: #d92d3f;
+      --red-soft: rgba(217, 45, 63, 0.08);
+      --shadow: 0 1px 2px rgba(16, 16, 24, 0.04), 0 8px 24px rgba(16, 16, 24, 0.06);
+      --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --font-mono: 'JetBrains Mono', var(--font-mono);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --bg: #0f0f12;
+        --surface: #17171b;
+        --surface-2: #1c1c21;
+        --border: #26262c;
+        --border-bright: #33333a;
+        --text: #ececf1;
+        --text-dim: #a1a1ab;
+        --text-muted: #6e6e78;
+        --accent: #f06595;
+        --accent-hover: #f783ac;
+        --accent-soft: rgba(240, 101, 149, 0.12);
+        --accent-ink: #1a0b11;
+        --violet: #a78bfa;
+        --green: #3ecf7e;
+        --green-soft: rgba(62, 207, 126, 0.12);
+        --red: #ff6b7a;
+        --red-soft: rgba(255, 107, 122, 0.12);
+        --shadow: none;
+      }
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+      font-family: var(--font-sans);
+      -webkit-font-smoothing: antialiased;
       background: var(--bg);
       color: var(--text);
       min-height: 100vh;
@@ -32,18 +71,23 @@
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 14px;
-      padding: 28px 24px;
+      padding: 32px 28px;
       text-align: center;
+      box-shadow: var(--shadow);
     }
     .code {
-      font: 600 0.75rem ui-monospace, 'SF Mono', monospace;
+      display: inline-block;
+      font-size: 0.75rem;
+      font-weight: 600;
       color: var(--red);
-      letter-spacing: 0.08em;
-      margin-bottom: 10px;
+      background: var(--red-soft);
+      border-radius: 999px;
+      padding: 3px 10px;
+      margin-bottom: 14px;
     }
     h1 { font-size: 1.35rem; font-weight: 600; margin-bottom: 8px; }
     p { color: var(--text-dim); font-size: 0.92rem; line-height: 1.5; }
-    .domain { display: block; margin-top: 4px; font-family: ui-monospace, 'SF Mono', monospace; color: var(--text); overflow-wrap: anywhere; }
+    .domain { display: block; margin-top: 4px; font-family: var(--font-mono); color: var(--text); overflow-wrap: anywhere; }
     .retry {
       margin-top: 18px;
       padding-top: 16px;
@@ -51,12 +95,12 @@
       font-size: 0.85rem;
       color: var(--text-muted);
     }
-    .retry strong { color: var(--text); font-family: ui-monospace, 'SF Mono', monospace; font-weight: 500; }
+    .retry strong { color: var(--text); font-family: var(--font-mono); font-weight: 500; }
   </style>
 </head>
 <body>
   <main class="card">
-    <div class="code">429 · BLOCKED</div>
+    <div class="code">Blocked</div>
     <h1>Access denied</h1>
     <p>Too many failed sign-in attempts for<span class="domain" id="domain"></span></p>
     <div class="retry" id="retry">Try again in <strong id="countdown">–</strong></div>

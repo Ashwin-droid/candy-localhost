@@ -7,24 +7,53 @@
   <link rel="icon" href="/favicon.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #0b0b10;
-      --surface: #13131b;
-      --surface-2: #191923;
-      --border: #24242f;
-      --border-bright: #33333f;
-      --text: #e6e6ee;
-      --text-dim: #8a8a99;
-      --text-muted: #5a5a68;
-      --accent: #00d8f0;
-      --accent-soft: rgba(0, 216, 240, 0.12);
-      --green: #2ee67a;
-      --red: #ff4d6d;
+      color-scheme: light;
+      --bg: #f6f6f8;
+      --surface: #ffffff;
+      --surface-2: #f8f8fa;
+      --border: #e6e6eb;
+      --border-bright: #d9d9e0;
+      --text: #18181b;
+      --text-dim: #5f5f6b;
+      --text-muted: #8e8e99;
+      --accent: #d6336c;
+      --accent-hover: #c2255c;
+      --accent-soft: rgba(214, 51, 108, 0.09);
+      --accent-ink: #ffffff;
+      --violet: #8b5cf6;
+      --green: #1f9d55;
+      --green-soft: rgba(31, 157, 85, 0.1);
+      --red: #d92d3f;
+      --red-soft: rgba(217, 45, 63, 0.08);
+      --shadow: 0 1px 2px rgba(16, 16, 24, 0.04), 0 8px 24px rgba(16, 16, 24, 0.06);
+      --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
       --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
-      --font-sans: 'Space Grotesk', system-ui, sans-serif;
-      --radius: 10px;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --bg: #0f0f12;
+        --surface: #17171b;
+        --surface-2: #1c1c21;
+        --border: #26262c;
+        --border-bright: #33333a;
+        --text: #ececf1;
+        --text-dim: #a1a1ab;
+        --text-muted: #6e6e78;
+        --accent: #f06595;
+        --accent-hover: #f783ac;
+        --accent-soft: rgba(240, 101, 149, 0.12);
+        --accent-ink: #1a0b11;
+        --violet: #a78bfa;
+        --green: #3ecf7e;
+        --green-soft: rgba(62, 207, 126, 0.12);
+        --red: #ff6b7a;
+        --red-soft: rgba(255, 107, 122, 0.12);
+        --shadow: none;
+      }
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { min-height: 100%; }
@@ -46,26 +75,29 @@
       border: 1px solid var(--border);
       border-radius: 14px;
       overflow: hidden;
+      box-shadow: var(--shadow);
     }
     .card-head {
       padding: 22px 24px 18px;
       border-bottom: 1px solid var(--border);
     }
     .brand {
-      font-family: var(--font-mono);
-      font-size: 0.72rem;
+      font-size: 0.8rem;
+      font-weight: 600;
       color: var(--text-muted);
       letter-spacing: 0.04em;
       margin-bottom: 14px;
       display: flex;
       justify-content: space-between;
     }
-    .brand a { color: var(--text-dim); text-decoration: none; }
+    .brand-name { display: flex; align-items: center; gap: 8px; color: var(--text); }
+    .mark { width: 22px; height: 22px; border-radius: 6px; background: linear-gradient(135deg, var(--accent), var(--violet)); color: #fff; display: grid; place-items: center; font-size: 12px; font-weight: 700; }
+    .brand a { color: var(--text-dim); text-decoration: none; font-weight: 500; align-self: center; }
     .brand a:hover { color: var(--accent); }
     .domain {
-      font-family: var(--font-mono);
-      font-size: 1.35rem;
-      font-weight: 700;
+      font-size: 1.45rem;
+      font-weight: 650;
+      letter-spacing: -0.02em;
       word-break: break-all;
     }
     .domain .tld { color: var(--text-muted); font-weight: 400; }
@@ -86,9 +118,9 @@
     .tabs {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      background: var(--bg);
+      background: var(--surface-2);
       border: 1px solid var(--border);
-      border-radius: 8px;
+      border-radius: 9px;
       padding: 3px;
       margin-bottom: 20px;
     }
@@ -101,7 +133,7 @@
       padding: 8px 0;
       cursor: pointer;
     }
-    .tab.active { background: var(--surface-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-bright); }
+    .tab.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,0.08), inset 0 0 0 1px var(--border); }
     .tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
     .panel { display: none; }
     .panel.active { display: block; }
@@ -117,7 +149,7 @@
       width: 100%;
       font: 0.95rem var(--font-mono);
       color: var(--text);
-      background: var(--bg);
+      background: var(--surface);
       border: 1px solid var(--border-bright);
       border-radius: 8px;
       padding: 10px 12px;
@@ -153,7 +185,7 @@
       width: 100%;
       margin-top: 20px;
       font: 600 0.92rem var(--font-sans);
-      color: #04161a;
+      color: var(--accent-ink);
       background: var(--accent);
       border: 0;
       border-radius: 8px;
@@ -161,7 +193,7 @@
       cursor: pointer;
       transition: filter 0.15s;
     }
-    .btn:hover { filter: brightness(1.1); }
+    .btn:hover { background: var(--accent-hover); }
     .btn:disabled { opacity: 0.55; cursor: progress; }
     .msg {
       display: none;
@@ -171,15 +203,15 @@
       border-radius: 8px;
     }
     .msg.show { display: block; }
-    .msg.error { color: var(--red); background: rgba(255, 77, 109, 0.08); border: 1px solid rgba(255, 77, 109, 0.25); }
-    .msg.ok { color: var(--green); background: rgba(46, 230, 122, 0.08); border: 1px solid rgba(46, 230, 122, 0.25); }
+    .msg.error { color: var(--red); background: var(--red-soft); border: 1px solid transparent; }
+    .msg.ok { color: var(--green); background: var(--green-soft); border: 1px solid transparent; }
     .msg.info { color: var(--text-dim); background: var(--surface-2); border: 1px solid var(--border); }
   </style>
 </head>
 <body>
   <main class="card">
     <div class="card-head">
-      <div class="brand"><span>candy-localhost</span><a href="https://portal.localhost" id="portalLink">open portal →</a></div>
+      <div class="brand"><span class="brand-name"><span class="mark">c</span>candy</span><a href="https://portal.localhost" id="portalLink">open portal →</a></div>
       <div class="domain"><span id="domainName">…</span><span class="tld" id="domainTld"></span></div>
       <div class="sub"><span class="dot"></span>Not registered yet. Point it at a port or a command.</div>
     </div>

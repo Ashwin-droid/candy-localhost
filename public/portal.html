@@ -7,236 +7,191 @@
   <link rel="icon" href="/favicon.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #0b0b10;
-      --bg-deep: #08080c;
-      --surface: #13131b;
-      --surface-2: #191923;
-      --surface-3: #1f1f2b;
-      --border: #24242f;
-      --border-bright: #33333f;
-      --text: #e6e6ee;
-      --text-dim: #8a8a99;
-      --text-muted: #5a5a68;
-      --accent: #00d8f0;
-      --accent-soft: rgba(0, 216, 240, 0.12);
-      --cyan: var(--accent);
-      --magenta: #ff4fb8;
-      --magenta-glow: rgba(255, 79, 184, 0.12);
-      --green: #2ee67a;
-      --green-soft: rgba(46, 230, 122, 0.12);
-      --red: #ff4d6d;
-      --red-soft: rgba(255, 77, 109, 0.12);
-      --yellow: #ffc94d;
-      --yellow-soft: rgba(255, 201, 77, 0.12);
+      color-scheme: light;
+      --bg: #f6f6f8;
+      --surface: #ffffff;
+      --surface-2: #f8f8fa;
+      --surface-3: #efeff3;
+      --border: #e6e6eb;
+      --border-bright: #d9d9e0;
+      --text: #18181b;
+      --text-dim: #5f5f6b;
+      --text-muted: #8e8e99;
+      --accent: #d6336c;
+      --accent-hover: #c2255c;
+      --accent-soft: rgba(214, 51, 108, 0.09);
+      --accent-ink: #ffffff;
+      --green: #1f9d55;
+      --green-soft: rgba(31, 157, 85, 0.1);
+      --red: #d92d3f;
+      --red-soft: rgba(217, 45, 63, 0.08);
+      --yellow: #b7791f;
+      --yellow-soft: rgba(183, 121, 31, 0.1);
+      --blue: #3b6fd8;
+      --blue-soft: rgba(59, 111, 216, 0.1);
+      --violet: #8b5cf6;
+      --shadow: 0 1px 2px rgba(16, 16, 24, 0.04), 0 1px 3px rgba(16, 16, 24, 0.04);
+      --shadow-lg: 0 20px 50px rgba(16, 16, 24, 0.18);
+      --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
       --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
-      --font-sans: 'Space Grotesk', system-ui, sans-serif;
       --radius: 12px;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --bg: #0f0f12;
+        --surface: #17171b;
+        --surface-2: #1c1c21;
+        --surface-3: #25252b;
+        --border: #26262c;
+        --border-bright: #33333a;
+        --text: #ececf1;
+        --text-dim: #a1a1ab;
+        --text-muted: #6e6e78;
+        --accent: #f06595;
+        --accent-hover: #f783ac;
+        --accent-soft: rgba(240, 101, 149, 0.12);
+        --accent-ink: #1a0b11;
+        --green: #3ecf7e;
+        --green-soft: rgba(62, 207, 126, 0.12);
+        --red: #ff6b7a;
+        --red-soft: rgba(255, 107, 122, 0.12);
+        --yellow: #f2b84b;
+        --yellow-soft: rgba(242, 184, 75, 0.12);
+        --blue: #74a0ff;
+        --blue-soft: rgba(116, 160, 255, 0.12);
+        --violet: #a78bfa;
+        --shadow: none;
+        --shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.55);
+      }
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { height: 100%; }
     body {
       font-family: var(--font-sans);
+      font-size: 14px;
       background: var(--bg);
       color: var(--text);
       display: flex;
       flex-direction: column;
-      overflow: hidden;
       -webkit-font-smoothing: antialiased;
     }
     a { color: inherit; }
-    code { font-family: var(--font-mono); }
+    code { font-family: var(--font-mono); font-size: 0.92em; }
 
     /* ---------- Header ---------- */
     header {
+      position: sticky;
+      top: 0;
+      z-index: 50;
       display: flex;
       align-items: center;
       gap: 16px;
-      padding: 14px 28px;
+      padding: 12px 28px;
+      background: color-mix(in srgb, var(--surface) 85%, transparent);
+      backdrop-filter: saturate(1.4) blur(10px);
       border-bottom: 1px solid var(--border);
-      background: var(--bg-deep);
+    }
+    .logo { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .logo-mark {
+      width: 28px; height: 28px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--accent), var(--violet));
+      display: grid;
+      place-items: center;
+      color: #fff;
+      font-weight: 700;
+      font-size: 14px;
       flex-shrink: 0;
     }
-    .logo { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-    .logo-text {
-      font-family: var(--font-mono);
-      font-weight: 700;
-      font-size: 1rem;
-      color: var(--text);
-      text-decoration: none;
-      white-space: nowrap;
-    }
-    .logo-text span { color: var(--accent); }
-    .logo-sub { font-size: 0.8rem; color: var(--text-muted); white-space: nowrap; }
-    .header-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
-    .mode-switch {
-      display: flex;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 3px;
-    }
-    .mode-btn {
-      font: 500 0.8rem var(--font-sans);
-      color: var(--text-dim);
-      background: none;
-      border: 0;
-      border-radius: 6px;
-      padding: 6px 14px;
-      cursor: pointer;
-    }
-    .mode-btn:hover { color: var(--text); }
-    .mode-btn.active { background: var(--surface-3); color: var(--text); }
-    .status-indicator {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 0.8rem;
-      color: var(--text-dim);
-      white-space: nowrap;
-    }
-    .status-dot {
-      width: 8px; height: 8px;
-      border-radius: 50%;
-      background: var(--green);
-      box-shadow: 0 0 0 3px var(--green-soft);
-    }
+    .logo-text { font-weight: 650; font-size: 15px; color: var(--text); text-decoration: none; white-space: nowrap; letter-spacing: -0.01em; }
+    .logo-sub { font-size: 13px; color: var(--text-muted); white-space: nowrap; }
+    .header-right { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+    .status-indicator { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text-dim); white-space: nowrap; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
     .status-dot.offline { background: var(--red); box-shadow: 0 0 0 3px var(--red-soft); }
 
-    /* ---------- Panels ---------- */
-    main { flex: 1; min-height: 0; position: relative; }
-    .panel { display: none; height: 100%; }
-    .panel.active { display: flex; flex-direction: column; }
-
-    /* ---------- Terminal (CLI) ---------- */
-    #cli-panel { background: var(--bg-deep); }
-    .terminal {
-      flex: 1;
-      overflow-y: auto;
-      padding: 20px 28px;
-      font-family: var(--font-mono);
-      font-size: 0.82rem;
-      line-height: 1.6;
-      scrollbar-width: thin;
-      scrollbar-color: var(--border-bright) transparent;
-    }
-    .terminal-line { white-space: pre-wrap; word-break: break-word; }
-    .terminal-line.input { color: var(--accent); }
-    .terminal-line.output { color: var(--text); }
-    .terminal-line.error { color: var(--red); }
-    .terminal-line.success { color: var(--green); }
-    .terminal-line.portal { color: var(--magenta); }
-    .terminal-line.dim { color: var(--text-dim); }
-    .welcome { margin-bottom: 16px; color: var(--text-dim); }
-    .welcome strong { color: var(--text); font-weight: 700; }
-    .input-line {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 14px 28px;
-      border-top: 1px solid var(--border);
-      background: var(--bg);
-    }
-    .prompt { color: var(--accent); font-family: var(--font-mono); font-weight: 700; }
-    #cli-input {
-      flex: 1;
-      background: none;
-      border: 0;
-      outline: none;
-      color: var(--text);
-      font: 0.85rem var(--font-mono);
-    }
-    #cli-input::placeholder { color: var(--text-muted); }
-
-    /* ---------- Dashboard (GUI) ---------- */
-    #gui-panel { overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border-bright) transparent; }
+    /* ---------- Layout ---------- */
+    main { flex: 1; }
+    .panel { display: none; }
+    .panel.active { display: block; }
     .gui-content {
       width: 100%;
-      max-width: 1440px;
+      max-width: 1320px;
       margin: 0 auto;
-      padding: 24px 28px 48px;
+      padding: 28px 28px 56px;
       display: flex;
       flex-direction: column;
       gap: 20px;
     }
-    .stats-grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 12px;
-    }
+    .stats-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
     .stat-item {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      padding: 14px 18px;
+      box-shadow: var(--shadow);
+      padding: 16px 18px;
     }
-    .stat-label { font-size: 0.75rem; color: var(--text-dim); margin-bottom: 4px; }
-    .stat-value { font: 600 1.5rem var(--font-mono); color: var(--text); line-height: 1.2; }
-    .stat-value small { font-size: 0.8rem; color: var(--text-muted); font-weight: 400; margin-left: 4px; }
+    .stat-label { font-size: 12.5px; color: var(--text-dim); margin-bottom: 6px; }
+    .stat-value { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.1; font-variant-numeric: tabular-nums; }
+    .stat-value small { font-size: 14px; color: var(--text-muted); font-weight: 500; margin-left: 4px; }
 
-    .dash-grid {
-      display: grid;
-      grid-template-columns: minmax(0, 1.75fr) minmax(320px, 1fr);
-      gap: 20px;
-      align-items: start;
-    }
+    .dash-grid { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(320px, 1fr); gap: 20px; align-items: start; }
     .dash-col { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
 
     .card {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius);
+      box-shadow: var(--shadow);
       min-width: 0;
+      overflow: hidden;
     }
     .card-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      padding: 14px 18px;
+      padding: 0 18px;
       border-bottom: 1px solid var(--border);
+      height: 56px;
     }
-    .card-title {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-weight: 600;
-      font-size: 0.92rem;
-    }
+    .card-title { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14.5px; }
     .card-title .count {
-      font: 500 0.72rem var(--font-mono);
+      font-size: 12px;
+      font-weight: 500;
       color: var(--text-dim);
       background: var(--surface-3);
       border-radius: 999px;
       padding: 1px 8px;
+      font-variant-numeric: tabular-nums;
     }
-    .card-title .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
-    .card-body { padding: 4px 0; }
-    .card-body.scrollable { max-height: 460px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border-bright) transparent; }
-    .empty { padding: 18px; font-size: 0.85rem; color: var(--text-muted); line-height: 1.6; }
-    .empty code { color: var(--accent); font-size: 0.78rem; }
+    .card-title .dot { display: none; }
+    .card-body.scrollable { max-height: 480px; overflow-y: auto; }
+    .empty { padding: 22px 18px; font-size: 13.5px; color: var(--text-muted); line-height: 1.6; }
+    .empty code { color: var(--text-dim); background: var(--surface-3); border-radius: 5px; padding: 1px 5px; }
 
-    /* Shared list rows */
+    /* ---------- Rows ---------- */
     .route-item, .process-item, .config-item, .portal-item, .domain-item {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 12px;
-      padding: 11px 18px;
+      gap: 14px;
+      padding: 12px 18px;
       border-top: 1px solid var(--border);
+      transition: background 0.12s;
     }
     .card-body > :first-child { border-top: 0; }
     .route-item:hover, .process-item:hover, .config-item:hover, .portal-item:hover, .domain-item:hover { background: var(--surface-2); }
-
-    .route-info, .process-info, .config-info { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+    .route-info, .process-info, .config-info { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
     .route-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
     .route-name, .process-name, .config-name {
-      font-family: var(--font-mono);
       font-weight: 600;
-      font-size: 0.88rem;
+      font-size: 14px;
       color: var(--text);
       text-decoration: none;
       display: flex;
@@ -245,198 +200,151 @@
       flex-wrap: wrap;
     }
     a.route-name:hover { color: var(--accent); }
-    .route-name .tld { color: var(--text-muted); font-weight: 400; }
+    .route-name .tld, .config-name .muted { color: var(--text-muted); font-weight: 400; }
     .route-arrow { color: var(--text-muted); }
-    .route-port { font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-dim); word-break: break-all; }
+    .route-port, .process-meta { font-family: var(--font-mono); font-size: 12.5px; color: var(--text-dim); word-break: break-all; }
+    .process-meta { color: var(--text-muted); }
     .route-badges { display: flex; gap: 6px; flex-wrap: wrap; }
-    .tag, .route-persistent, .route-lan {
-      font: 500 0.66rem var(--font-mono);
-      letter-spacing: 0.02em;
-      border-radius: 5px;
-      padding: 2px 6px;
+    .tag, .route-persistent, .route-lan, .process-status, .domain-auth-badge {
+      font-size: 11.5px;
+      font-weight: 500;
+      border-radius: 999px;
+      padding: 2px 8px;
       text-decoration: none;
       white-space: nowrap;
       color: var(--text-dim);
       background: var(--surface-3);
     }
     .route-persistent { color: var(--accent); background: var(--accent-soft); }
-    .route-lan { color: var(--green); background: var(--green-soft); }
+    .route-lan { color: var(--green); background: var(--green-soft); font-family: var(--font-mono); font-size: 11px; }
     a.route-lan:hover { text-decoration: underline; }
-
-    .route-actions, .process-actions, .config-actions {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      flex-shrink: 0;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-    }
+    .route-actions, .process-actions, .config-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
 
     /* ---------- Buttons ---------- */
     .btn {
-      font: 600 0.8rem var(--font-sans);
-      color: #04161a;
+      font: 600 13px var(--font-sans);
+      color: var(--accent-ink);
       background: var(--accent);
       border: 1px solid transparent;
-      border-radius: 7px;
-      padding: 6px 12px;
+      border-radius: 8px;
+      padding: 7px 14px;
       cursor: pointer;
       white-space: nowrap;
-      transition: filter 0.15s, background 0.15s, color 0.15s;
+      transition: background 0.15s, border-color 0.15s;
     }
-    .btn:hover { filter: brightness(1.1); }
+    .btn:hover { background: var(--accent-hover); }
     .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-    .btn.secondary { background: var(--surface-2); color: var(--text); border-color: var(--border-bright); }
-    .btn.secondary:hover { border-color: var(--text-muted); filter: none; }
+    .btn.secondary { background: var(--surface); color: var(--text); border-color: var(--border-bright); box-shadow: var(--shadow); }
+    .btn.secondary:hover { background: var(--surface-2); }
     .btn-icon {
-      font: 500 0.72rem var(--font-sans);
+      font: 500 12.5px var(--font-sans);
       color: var(--text-dim);
-      background: transparent;
+      background: var(--surface);
       border: 1px solid var(--border-bright);
-      border-radius: 6px;
-      min-width: 28px;
-      height: 26px;
-      padding: 0 8px;
+      border-radius: 7px;
+      min-width: 30px;
+      height: 28px;
+      padding: 0 10px;
       cursor: pointer;
       white-space: nowrap;
-      transition: color 0.15s, border-color 0.15s, background 0.15s;
+      transition: color 0.12s, border-color 0.12s, background 0.12s;
     }
-    .btn-icon:hover { color: var(--text); border-color: var(--text-muted); }
-    .btn-icon.active { color: var(--accent); border-color: rgba(0, 216, 240, 0.4); background: var(--accent-soft); }
-    .btn-icon.lan.active { color: var(--green); border-color: rgba(46, 230, 122, 0.4); background: var(--green-soft); }
-    .btn-icon.portal:hover { color: var(--magenta); border-color: var(--magenta); }
-    .btn-icon.success:hover { color: var(--green); border-color: var(--green); }
-    .btn-icon.warning:hover { color: var(--yellow); border-color: var(--yellow); }
-    .btn-icon.danger:hover { color: var(--red); border-color: var(--red); background: var(--red-soft); }
-    .btn-icon.danger { font-size: 0.95rem; line-height: 1; }
-    .btn-icon.danger-text:hover { color: var(--red); border-color: var(--red); }
-    .btn:focus-visible, .btn-icon:focus-visible, .mode-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .btn-icon:hover { color: var(--text); background: var(--surface-2); }
+    .btn-icon.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); background: var(--accent-soft); }
+    .btn-icon.lan.active { color: var(--green); border-color: color-mix(in srgb, var(--green) 35%, transparent); background: var(--green-soft); }
+    .btn-icon.danger { font-size: 16px; line-height: 1; padding: 0 8px; }
+    .btn-icon.danger:hover, .btn-icon.danger-text:hover { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent); background: var(--red-soft); }
+    .btn:focus-visible, .btn-icon:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
     /* ---------- Processes ---------- */
-    .process-status {
-      font: 500 0.66rem var(--font-mono);
-      border-radius: 5px;
-      padding: 2px 6px;
-      color: var(--text-dim);
-      background: var(--surface-3);
-    }
     .process-status.running { color: var(--green); background: var(--green-soft); }
     .process-status.starting { color: var(--yellow); background: var(--yellow-soft); }
-    .process-status.dead { color: var(--text-muted); }
     .process-status.errored { color: var(--red); background: var(--red-soft); }
-    .process-meta { font: 0.75rem var(--font-mono); color: var(--text-muted); }
 
     /* ---------- Configs ---------- */
     .config-details {
       display: grid;
       grid-template-columns: auto minmax(0, 1fr);
       column-gap: 10px;
-      font: 0.75rem var(--font-mono);
+      row-gap: 1px;
+      font: 12.5px var(--font-mono);
       color: var(--text-dim);
     }
-    .config-details .label { color: var(--text-muted); }
+    .config-details .label { color: var(--text-muted); font-family: var(--font-sans); }
     .config-details span:not(.label) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .config-name .muted { color: var(--text-muted); font-weight: 400; font-size: 0.78rem; }
 
     /* ---------- Portals ---------- */
-    .portal-item { flex-direction: column; align-items: stretch; gap: 4px; }
-    .portal-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-    .portal-name { font: 600 0.88rem var(--font-mono); display: flex; align-items: center; gap: 8px; }
-    .portal-name::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--magenta); }
-    .portal-url { font: 0.75rem var(--font-mono); color: var(--text-muted); word-break: break-all; }
-    .portal-url a { color: var(--magenta); text-decoration: none; }
-    .portal-url a:hover { text-decoration: underline; }
-
-    /* ---------- Domains ---------- */
-    .domain-item { flex-direction: column; align-items: stretch; gap: 6px; }
-    .domain-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-    .domain-name { font: 600 0.88rem var(--font-mono); }
-    .domain-fqdn a { font: 0.78rem var(--font-mono); color: var(--yellow); text-decoration: none; word-break: break-all; }
-    .domain-fqdn a:hover { text-decoration: underline; }
-    .domain-server { font-size: 0.75rem; color: var(--text-muted); }
-    .domain-server span { font-family: var(--font-mono); color: var(--text-dim) !important; }
-    .domain-auth-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-    .domain-auth-badge { font: 500 0.68rem var(--font-mono); border-radius: 5px; padding: 2px 6px; }
+    .portal-item, .domain-item { flex-direction: column; align-items: stretch; gap: 5px; }
+    .portal-header, .domain-header, .domain-auth-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .portal-name, .domain-name { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+    .portal-url { font: 12.5px var(--font-mono); color: var(--text-muted); word-break: break-all; }
+    .portal-url a, .domain-fqdn a { color: var(--blue); text-decoration: none; }
+    .portal-url a:hover, .domain-fqdn a:hover { text-decoration: underline; }
+    .domain-fqdn a { font: 12.5px var(--font-mono); word-break: break-all; }
+    .domain-server { font-size: 12.5px; color: var(--text-muted); }
+    .domain-server span { font-family: var(--font-mono); color: var(--text-dim); }
     .domain-auth-badge.protected { color: var(--green); background: var(--green-soft); }
-    .domain-auth-badge.unprotected { color: var(--text-dim); background: var(--surface-3); }
-    .domain-auth-btn { font-size: 0.72rem; padding: 4px 10px; }
-    .domain-auth-btn.clear:hover { color: var(--red); border-color: var(--red); }
-    .auth-domain-pill {
-      font: 0.8rem var(--font-mono);
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 7px;
-      padding: 8px 10px;
-      word-break: break-all;
-    }
+    .domain-auth-btn { font-size: 12px; padding: 4px 10px; }
+    .domain-auth-btn.clear:hover { color: var(--red); }
+    .auth-domain-pill { font: 13px var(--font-mono); background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; word-break: break-all; }
 
     /* ---------- Forms & modals ---------- */
     .input-field {
-      font: 0.85rem var(--font-mono);
+      font: 14px var(--font-sans);
       color: var(--text);
-      background: var(--bg);
+      background: var(--surface);
       border: 1px solid var(--border-bright);
-      border-radius: 7px;
+      border-radius: 8px;
       padding: 9px 11px;
       outline: none;
       transition: border-color 0.15s, box-shadow 0.15s;
     }
     .input-field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
     .input-field::placeholder { color: var(--text-muted); }
-    .persistent-toggle { display: flex; align-items: center; gap: 8px; font-size: 0.82rem; color: var(--text-dim); cursor: pointer; }
+    .persistent-toggle { display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--text-dim); cursor: pointer; }
     .persistent-toggle input { accent-color: var(--accent); }
-    [id$="-modal"] { backdrop-filter: blur(3px); }
-    [id$="-modal"] > .card { max-width: calc(100vw - 32px); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); }
-    [id$="-modal"] .card-body { padding: 18px; }
+    .modal-label { font-size: 13px; font-weight: 500; color: var(--text-dim); display: block; margin-bottom: 6px; }
+    [id$="-modal"] { background: rgba(10, 10, 14, 0.45) !important; backdrop-filter: blur(4px); padding: 16px; }
+    [id$="-modal"] > .card { max-width: 100%; box-shadow: var(--shadow-lg); }
+    #logs-modal .card-header { height: auto; padding: 12px 18px; }
+    [id$="-modal"] .card-body { padding: 20px; }
+    #logs-content { background: #0e0e12; color: #e4e4ea; }
 
     /* ---------- Toasts ---------- */
-    .toast-container {
-      position: fixed;
-      right: 20px;
-      bottom: 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      z-index: 200;
-      max-width: min(420px, calc(100vw - 32px));
-    }
+    .toast-container { position: fixed; right: 20px; bottom: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 200; max-width: min(420px, calc(100vw - 32px)); }
     .toast {
-      background: var(--surface-2);
-      border: 1px solid var(--border-bright);
-      border-left: 3px solid var(--accent);
-      border-radius: 8px;
-      padding: 10px 14px;
-      font-size: 0.82rem;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--blue);
+      border-radius: 10px;
+      padding: 11px 14px;
+      font-size: 13.5px;
+      box-shadow: var(--shadow-lg);
       animation: slideIn 0.18s ease-out;
       word-break: break-word;
     }
     .toast.success { border-left-color: var(--green); }
     .toast.error { border-left-color: var(--red); }
     @keyframes slideIn { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
-    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
-    /* ---------- Responsive ---------- */
-    @media (max-width: 1100px) {
-      .dash-grid { grid-template-columns: minmax(0, 1fr); }
-    }
+    @media (max-width: 1100px) { .dash-grid { grid-template-columns: minmax(0, 1fr); } }
     @media (max-width: 720px) {
-      header { padding: 12px 16px; flex-wrap: wrap; }
-      .logo-sub { display: none; }
-      .gui-content { padding: 16px 16px 40px; }
-      .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      header { padding: 10px 16px; }
+      .logo-sub, .status-indicator span { display: none; }
+      .gui-content { padding: 16px 16px 40px; gap: 16px; }
+      .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
       .route-item, .process-item, .config-item { flex-direction: column; align-items: stretch; }
       .route-actions, .process-actions, .config-actions { justify-content: flex-start; }
-      .terminal, .input-line { padding-left: 16px; padding-right: 16px; }
-      .status-indicator span { display: none; }
     }
   </style>
 </head>
 <body>
   <header>
     <div class="logo">
-      <a href="candy://portal" class="logo-text" title="Open via the candy:// protocol">candy<span>://</span>portal</a>
-      <div class="logo-sub">local route registry</div>
+      <div class="logo-mark" aria-hidden="true">c</div>
+      <a href="candy://portal" class="logo-text" title="Open via the candy:// protocol">candy</a>
+      <div class="logo-sub">Local routes &amp; dev servers</div>
     </div>
     <div class="header-right">
       <div class="status-indicator">
@@ -444,28 +352,10 @@
         <span id="status-text">connecting…</span>
       </div>
       <button class="btn secondary" onclick="refreshAll()" title="Refresh everything">Refresh</button>
-      <div class="mode-switch" role="tablist">
-        <button class="mode-btn active" data-mode="gui">Dashboard</button>
-        <button class="mode-btn" data-mode="cli">Terminal</button>
-      </div>
     </div>
   </header>
 
   <main>
-    <!-- CLI Panel -->
-    <div id="cli-panel" class="panel">
-      <div class="terminal" id="terminal">
-        <div class="welcome">
-          <div><strong>candy</strong> control terminal</div>
-          <div class="terminal-line dim">Type 'help' for available commands.</div>
-        </div>
-      </div>
-      <div class="input-line">
-        <span class="prompt">&gt;</span>
-        <input type="text" id="cli-input" placeholder="enter command…" autocomplete="off" spellcheck="false">
-      </div>
-    </div>
-
     <!-- GUI Panel -->
     <div id="gui-panel" class="panel active">
       <div class="gui-content">
@@ -492,7 +382,7 @@
           <div class="dash-col">
             <section class="card">
               <div class="card-header">
-                <div class="card-title"><span class="dot"></span>Routes <span class="count" id="count-routes">0</span></div>
+                <div class="card-title">Routes <span class="count" id="count-routes">0</span></div>
                 <button class="btn" onclick="showAddRoute()">Add route</button>
               </div>
               <div class="card-body scrollable" id="routes-list">
@@ -502,7 +392,7 @@
 
             <section class="card">
               <div class="card-header">
-                <div class="card-title"><span class="dot" style="background: var(--green)"></span>Processes <span class="count" id="count-processes">0</span></div>
+                <div class="card-title">Processes <span class="count" id="count-processes">0</span></div>
               </div>
               <div class="card-body scrollable" id="processes-list">
                 <div class="empty">Loading processes…</div>
@@ -511,7 +401,7 @@
 
             <section class="card">
               <div class="card-header">
-                <div class="card-title"><span class="dot" style="background: var(--text-dim)"></span>Server configs <span class="count" id="count-configs">0</span></div>
+                <div class="card-title">Server configs <span class="count" id="count-configs">0</span></div>
                 <button class="btn" onclick="showAddConfig()">Add config</button>
               </div>
               <div class="card-body scrollable" id="configs-list">
@@ -523,7 +413,7 @@
           <div class="dash-col">
             <section class="card">
               <div class="card-header">
-                <div class="card-title"><span class="dot" style="background: var(--magenta)"></span>Portals <span class="count" id="count-portals">0</span></div>
+                <div class="card-title">Portals <span class="count" id="count-portals">0</span></div>
               </div>
               <div class="card-body scrollable" id="portals-list">
                 <div class="empty">Loading portals…</div>
@@ -532,7 +422,7 @@
 
             <section class="card" id="domains-card">
               <div class="card-header">
-                <div class="card-title"><span class="dot" style="background: var(--yellow)"></span>Bound domains <span class="count" id="count-domains">0</span></div>
+                <div class="card-title">Bound domains <span class="count" id="count-domains">0</span></div>
                 <button class="btn" id="bind-domain-btn" onclick="showBindDomain()">Bind</button>
               </div>
               <div class="card-body scrollable" id="domains-list">
@@ -555,14 +445,14 @@
       <div class="card-body">
         <form onsubmit="submitAddRoute(event)" style="display: flex; flex-direction: column; gap: 1rem;">
           <div>
-            <label style="font-size: 0.75rem; color: var(--text-dim); display: block; margin-bottom: 0.5rem;">Domain Name</label>
+            <label class="modal-label">Domain Name</label>
             <div style="display: flex; align-items: center; gap: 0.5rem;">
               <input type="text" id="add-name" class="input-field" placeholder="myapp" required pattern="[a-zA-Z0-9-]+" style="flex: 1;">
               <span style="color: var(--text-dim);" class="tld-suffix">.localhost</span>
             </div>
           </div>
           <div>
-            <label style="font-size: 0.75rem; color: var(--text-dim); display: block; margin-bottom: 0.5rem;">Port</label>
+            <label class="modal-label">Port</label>
             <input type="number" id="add-port" class="input-field" placeholder="3000" required min="1" max="65535" style="width: 100%;">
           </div>
           <div>
@@ -590,18 +480,18 @@
       <div class="card-body">
         <form onsubmit="submitAddConfig(event)" style="display: flex; flex-direction: column; gap: 1rem;">
           <div>
-            <label style="font-size: 0.75rem; color: var(--text-dim); display: block; margin-bottom: 0.5rem;">Server Name</label>
+            <label class="modal-label">Server Name</label>
             <div style="display: flex; align-items: center; gap: 0.5rem;">
               <input type="text" id="config-name" class="input-field" placeholder="myapp" required pattern="[a-zA-Z0-9-]+" style="flex: 1;">
               <span style="color: var(--text-dim);" class="tld-suffix">.localhost</span>
             </div>
           </div>
           <div>
-            <label style="font-size: 0.75rem; color: var(--text-dim); display: block; margin-bottom: 0.5rem;">Project Path</label>
+            <label class="modal-label">Project Path</label>
             <input type="text" id="config-cwd" class="input-field" placeholder="~/projects/myapp" required style="width: 100%;">
           </div>
           <div>
-            <label style="font-size: 0.75rem; color: var(--text-dim); display: block; margin-bottom: 0.5rem;">Start Command</label>
+            <label class="modal-label">Start Command</label>
             <input type="text" id="config-cmd" class="input-field" placeholder="npm run dev" required style="width: 100%;">
           </div>
           <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
@@ -631,20 +521,20 @@
           <div id="bind-domain-warning-text" style="color: var(--yellow);"></div>
           <div id="bind-domain-warning-records" style="color: var(--text-dim); font-size: 0.7rem; margin-top: 0.5rem;"></div>
           <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
-            <button class="btn" style="font-size: 0.7rem; padding: 0.35rem 0.75rem; background: var(--yellow); color: var(--bg-deep);" onclick="forceBindDomain()">Replace records</button>
+            <button class="btn" style="font-size: 0.7rem; padding: 0.35rem 0.75rem; background: var(--yellow); color: #fff;" onclick="forceBindDomain()">Replace records</button>
             <button class="btn secondary" style="font-size: 0.7rem; padding: 0.35rem 0.75rem;" onclick="hideBindDomain()">Cancel</button>
           </div>
         </div>
         <form id="bind-domain-form" onsubmit="submitBindDomain(event)" style="display: flex; flex-direction: column; gap: 1rem;">
           <div>
-            <label style="font-size: 0.75rem; color: var(--text-dim); display: block; margin-bottom: 0.5rem;">Subdomain</label>
+            <label class="modal-label">Subdomain</label>
             <div style="display: flex; align-items: center; gap: 0.5rem;">
               <input type="text" id="bind-subdomain" class="input-field" placeholder="myapp" required pattern="[a-zA-Z0-9-]+" style="flex: 1;">
               <span style="color: var(--text-dim);" id="bind-domain-suffix">.domain.com</span>
             </div>
           </div>
           <div>
-            <label style="font-size: 0.75rem; color: var(--text-dim); display: block; margin-bottom: 0.5rem;">Server</label>
+            <label class="modal-label">Server</label>
             <select id="bind-server" class="input-field" required style="width: 100%;">
               <option value="">Select a server...</option>
             </select>
@@ -668,15 +558,15 @@
       <div class="card-body">
         <form id="domain-auth-form" onsubmit="submitDomainPassword(event)" style="display: flex; flex-direction: column; gap: 1rem;">
           <div>
-            <label style="font-size: 0.75rem; color: var(--text-dim); display: block; margin-bottom: 0.5rem;">Domain</label>
+            <label class="modal-label">Domain</label>
             <div class="auth-domain-pill" id="domain-auth-target">-</div>
           </div>
           <div>
-            <label style="font-size: 0.75rem; color: var(--text-dim); display: block; margin-bottom: 0.5rem;">Password</label>
+            <label class="modal-label">Password</label>
             <input type="password" id="domain-auth-password" class="input-field" placeholder="Enter password" autocomplete="new-password" required style="width: 100%;">
           </div>
           <div>
-            <label style="font-size: 0.75rem; color: var(--text-dim); display: block; margin-bottom: 0.5rem;">Confirm Password</label>
+            <label class="modal-label">Confirm Password</label>
             <input type="password" id="domain-auth-password-confirm" class="input-field" placeholder="Confirm password" autocomplete="new-password" required style="width: 100%;">
           </div>
           <div style="display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 0.5rem;">
@@ -689,28 +579,27 @@
   </div>
 
   <!-- Logs Modal -->
-  <div id="logs-modal" style="display: none; position: fixed; inset: 0; background: rgba(5,5,8,0.92); z-index: 100; align-items: center; justify-content: center; backdrop-filter: blur(4px);">
-    <div class="card" style="width: 85vw; max-width: 1000px; height: 75vh; display: flex; flex-direction: column; box-shadow: 0 0 60px rgba(0,229,255,0.08), 0 0 120px rgba(255,0,170,0.04);">
-      <div class="card-header" style="border-bottom: 1px solid var(--border-bright);">
-        <div class="card-title" style="display: flex; align-items: center; gap: 0.75rem;">
-          <span style="color: var(--cyan);">❯</span>
-          <span id="logs-modal-title">Logs</span>
-          <span id="logs-modal-status" class="process-status" style="margin-left: 0.25rem;"></span>
-          <span class="tag" style="margin-left: 0.25rem;">interactive</span>
+  <div id="logs-modal" style="display: none; position: fixed; inset: 0; z-index: 100; align-items: center; justify-content: center;">
+    <div class="card" style="width: 1000px; height: 78vh; display: flex; flex-direction: column;">
+      <div class="card-header">
+        <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0;">
+          <div class="card-title">
+            <span id="logs-modal-title">Logs</span>
+            <span id="logs-modal-status" class="process-status"></span>
+          </div>
+          <div style="font-size: 12px; color: var(--text-muted);">Typing here goes to the process. Esc closes.</div>
         </div>
-        <div style="font-size: 0.65rem; color: var(--text-muted); margin-top: 0.25rem;">keystrokes go directly to terminal • Esc to close</div>
-        <div style="display: flex; gap: 0.75rem; align-items: center;">
-          <label style="font-size: 0.7rem; color: var(--text-dim); display: flex; align-items: center; gap: 0.35rem; cursor: pointer;">
-            <input type="checkbox" id="logs-autoscroll" checked style="margin: 0; accent-color: var(--cyan);">
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <label class="persistent-toggle" style="font-size: 12.5px;">
+            <input type="checkbox" id="logs-autoscroll" checked>
             Auto-scroll
           </label>
-          <button class="btn-icon" onclick="clearLogsDisplay()" title="Clear display">⌀</button>
-          <button class="btn-icon" onclick="hideLogs()" title="Close (Esc)">✕</button>
+          <button class="btn-icon" onclick="clearLogsDisplay()" title="Clear display">Clear</button>
+          <button class="btn-icon danger" onclick="hideLogs()" title="Close (Esc)" aria-label="Close">×</button>
         </div>
       </div>
-      <div class="card-body" style="flex: 1; overflow: hidden; padding: 0; position: relative;">
-        <div style="position: absolute; inset: 0; background: linear-gradient(180deg, var(--bg-deep) 0%, rgba(5,5,8,0.98) 100%);"></div>
-        <pre id="logs-content" style="position: relative; margin: 0; padding: 1.25rem; height: 100%; overflow-y: auto; font-family: var(--font-mono); font-size: 0.72rem; line-height: 1.6; color: var(--text); white-space: pre-wrap; word-break: break-all; scrollbar-width: thin; scrollbar-color: var(--border-bright) transparent;"></pre>
+      <div class="card-body" style="flex: 1; overflow: hidden; padding: 0;">
+        <pre id="logs-content" style="margin: 0; padding: 16px 18px; height: 100%; overflow-y: auto; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-all;"></pre>
       </div>
     </div>
   </div>
@@ -723,10 +612,6 @@
     const _isBoundDomain = !_host.endsWith('.candy') && !_host.endsWith('.localhost');
     const TLD = _host.endsWith('.candy') ? 'candy' : _host.endsWith('.localhost') ? 'localhost' : null;
     const SCHEME = 'https';
-    const terminal = document.getElementById('terminal');
-    const cliInput = document.getElementById('cli-input');
-    const commandHistory = [];
-    let historyIndex = -1;
 
     // Token management - rolling one-time-use tokens
     let currentToken = window.CANDY_TOKEN || null;
@@ -773,21 +658,6 @@
       return res;
     }
 
-    // Mode switching
-    document.querySelectorAll('.mode-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-        document.getElementById(btn.dataset.mode + '-panel').classList.add('active');
-        if (btn.dataset.mode === 'cli') {
-          cliInput.focus();
-        } else {
-          refreshAll();
-        }
-      });
-    });
-
     // Status check
     async function checkStatus() {
       try {
@@ -812,715 +682,6 @@
       container.appendChild(t);
       setTimeout(() => t.remove(), 3000);
     }
-
-    // CLI Terminal
-    function appendOutput(text, className = 'output') {
-      const line = document.createElement('div');
-      line.className = 'terminal-line ' + className;
-      line.textContent = text;
-      terminal.appendChild(line);
-      terminal.scrollTop = terminal.scrollHeight;
-    }
-
-    function appendLink(text, url, suffix = '', className = 'dim') {
-      const line = document.createElement('div');
-      line.className = 'terminal-line ' + className;
-      const link = document.createElement('a');
-      link.href = url;
-      link.target = '_blank';
-      link.textContent = text;
-      link.style.color = 'var(--accent)';
-      link.style.textDecoration = 'none';
-      line.appendChild(link);
-      if (suffix) {
-        const span = document.createElement('span');
-        span.textContent = suffix;
-        span.style.color = 'var(--text-dim)';
-        line.appendChild(span);
-      }
-      terminal.appendChild(line);
-      terminal.scrollTop = terminal.scrollHeight;
-    }
-
-    function appendHtml(html) {
-      const div = document.createElement('div');
-      div.innerHTML = html;
-      terminal.appendChild(div);
-      terminal.scrollTop = terminal.scrollHeight;
-    }
-
-    async function executeCommand(cmd) {
-      if (!cmd.trim()) return;
-
-      commandHistory.push(cmd);
-      historyIndex = commandHistory.length;
-      appendOutput('> ' + cmd, 'input');
-
-      const [command, ...args] = cmd.trim().split(/\s+/);
-
-      try {
-        switch (command) {
-          case 'help':
-          case 'h':
-          case '?':
-            appendOutput(`
-Daemon Control:
-  status                     Check daemon status.
-
-Routes:
-  add, a <name> <port>       Add a route.
-  rm, r <name>               Remove a route.
-  rename, ren <old> <new>    Rename a route.
-  ls, l                      List all routes.
-
-Dev Servers:
-  servers, sv                List all server configs.
-  start <name> [configId]    Start a dev server (switch active variant if needed).
-  stop <name>                Stop a running server.
-  restart <name>             Restart a server.
-  proc <name>                Show process details.
-  port <name> <port>         Manually set port.
-  tail <name> [lines]        View server logs.
-  send <name> <text>         Send input to PTY.
-
-Server Config:
-  config <name> <cwd> <cmd>  Register a server config.
-  unconfig <name> [configId] Remove one variant or all configs.
-
-Tunneling:
-  portal, p [name] <port>    Open a tunnel.
-  portals, ps                List active portals.
-  close, c <name>            Close a portal.
-
-Bound Domains:
-  domains, dom               List bound domains.
-  bind <sub> <server>        Bind subdomain to server.
-  unbind <sub>               Unbind a subdomain.
-  auth set <domain> <pass>   Set password protection for bound domain.
-  auth clear <domain>        Remove password protection.
-
-Activity:
-  logs [count]               View activity logs.
-  stats                      View traffic stats.
-
-Misc:
-  clear, cls                 Clear terminal.
-  help, h, ?                 Show this help.
-`, 'dim');
-            break;
-
-          case 'clear':
-          case 'cls':
-            terminal.innerHTML = '';
-            break;
-
-          case 'status':
-            const status = await checkStatus();
-            if (status) {
-              const h = Math.floor(status.uptime / 3600);
-              const m = Math.floor((status.uptime % 3600) / 60);
-              appendOutput(`Daemon: RUNNING (PID ${status.pid})`, 'success');
-              appendOutput(`Caddy: ${status.caddyRunning ? 'running' : 'stopped'}`, status.caddyRunning ? 'success' : 'error');
-              appendOutput(`Routes: ${status.routeCount}  Portals: ${status.portalCount}`, 'dim');
-              appendOutput(`Uptime: ${h}h ${m}m`, 'dim');
-            } else {
-              appendOutput('Daemon offline', 'error');
-            }
-            break;
-
-          case 'add':
-          case 'a':
-            if (args.length < 2) {
-              appendOutput('Usage: add <name> <port>', 'error');
-              break;
-            }
-            const addRes = await apiCall('/register', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name: args[0], port: parseInt(args[1]) })
-            });
-            const addData = await addRes.json();
-            if (addData.error) {
-              appendOutput(addData.error + (addData.details ? ' (' + addData.details + ')' : ''), 'error');
-            } else {
-              appendOutput(`+ ${args[0]}.${TLD} -> :${args[1]}`, 'success');
-              appendOutput(addData.message, 'dim');
-            }
-            break;
-
-          case 'rm':
-          case 'r':
-          case 'remove':
-            if (!args[0]) {
-              appendOutput('Usage: rm <name>', 'error');
-              break;
-            }
-            const rmRes = await apiCall('/register/' + args[0], { method: 'DELETE' });
-            const rmData = await rmRes.json();
-            if (rmData.error) {
-              appendOutput(rmData.error, 'error');
-            } else {
-              appendOutput(`- ${args[0]}.${TLD}`, 'error');
-              appendOutput(rmData.message, 'dim');
-            }
-            break;
-
-          case 'rename':
-          case 'ren':
-            if (args.length < 2) {
-              appendOutput('Usage: rename <old> <new>', 'error');
-              break;
-            }
-            const renRes = await apiCall('/rename', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ oldName: args[0], newName: args[1] })
-            });
-            const renData = await renRes.json();
-            if (renData.error) {
-              appendOutput(renData.error, 'error');
-            } else {
-              appendOutput(`~ ${args[0]}.${TLD} -> ${args[1]}.${TLD}`, 'output');
-              appendOutput(renData.message, 'dim');
-            }
-            break;
-
-          case 'ls':
-          case 'l':
-          case 'list':
-            const routesRes = await apiCall('/routes');
-            const routes = await routesRes.json();
-            const routeNames = Object.keys(routes);
-            if (routeNames.length === 0) {
-              appendOutput('No routes registered.', 'dim');
-            } else {
-              routeNames.forEach(name => {
-                const r = routes[name];
-                const target = r.isRestricted ? r.target + ' [RESTRICTED]' : ':' + r.target;
-                const pin = r.persistent ? ' [PINNED]' : '';
-                appendOutput(`  ${name}.${TLD} -> ${target}${pin}`, r.isRestricted ? 'error' : 'success');
-              });
-            }
-            break;
-
-          case 'portal':
-          case 'p':
-            if (!args[0]) {
-              appendOutput('Usage: portal [name] <port>', 'error');
-              break;
-            }
-            let pName, pPort;
-            if (!isNaN(parseInt(args[0]))) {
-              pPort = parseInt(args[0]);
-            } else {
-              pName = args[0];
-              pPort = args[1] ? parseInt(args[1]) : undefined;
-            }
-            appendOutput('Opening tunnel...', 'portal');
-            const pRes = await apiCall('/portal', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name: pName, port: pPort })
-            });
-            const pData = await pRes.json();
-            if (pData.error) {
-              appendOutput(pData.error, 'error');
-            } else {
-              appendOutput(`◉ ${pData.name} -> ${pData.url}`, 'portal');
-              appendOutput(pData.message, 'dim');
-            }
-            break;
-
-          case 'portals':
-          case 'ps':
-            const portalsRes = await apiCall('/portals');
-            const portals = await portalsRes.json();
-            const portalNames = Object.keys(portals);
-            if (portalNames.length === 0) {
-              appendOutput('No active portals.', 'dim');
-            } else {
-              portalNames.forEach(name => {
-                const p = portals[name];
-                appendOutput(`  ◉ ${name} (:${p.port}) -> ${p.url || '(connecting...)'}`, 'portal');
-              });
-            }
-            break;
-
-          case 'close':
-          case 'c':
-            if (!args[0]) {
-              appendOutput('Usage: close <name>', 'error');
-              break;
-            }
-            const closeRes = await apiCall('/portal/close/' + args[0], { method: 'POST' });
-            const closeData = await closeRes.json();
-            if (closeData.error) {
-              appendOutput(closeData.error, 'error');
-            } else {
-              appendOutput(`○ ${args[0]} closed`, 'portal');
-              appendOutput(closeData.message, 'dim');
-            }
-            break;
-
-          case 'logs':
-            const logsRes = await apiCall('/logs?count=' + (args[0] || 10));
-            const logsData = await logsRes.json();
-            if (logsData.logs.length === 0) {
-              appendOutput('No logs yet.', 'dim');
-            } else {
-              logsData.logs.forEach(l => {
-                const time = new Date(l.time).toLocaleTimeString();
-                appendOutput(`  ${time}  ${l.action.padEnd(10)}  ${l.details}`, 'dim');
-              });
-            }
-            break;
-
-          case 'stats':
-            {
-              const sRes = await apiCall('/stats');
-              const sData = await sRes.json();
-              appendOutput(`Total requests: ${sData.totalRequests}`, 'output');
-              appendOutput(`Domains: ${sData.domains?.length || 0}`, 'dim');
-              appendOutput('', 'dim');
-
-              // Display domains with children
-              for (const domain of sData.domains || []) {
-                const color = domain.alive ? 'success' : 'error';
-                appendLink(`${domain.name}`, `${SCHEME}://${domain.name}.${TLD}`, `  ${domain.total} req`, color);
-
-                domain.children.forEach((child, i) => {
-                  const prefix = i === domain.children.length - 1 ? '└─' : '├─';
-                  const childColor = child.alive ? 'success' : 'error';
-                  appendLink(`  ${prefix} ${child.name}`, child.url, `  ${child.total} req`, childColor);
-                });
-              }
-            }
-            break;
-
-          // === Bound Domain Commands ===
-
-          case 'domains':
-          case 'dom':
-            {
-              const domRes = await apiCall('/domains');
-              const domData = await domRes.json();
-              if (!domData.configured) {
-                appendOutput('Bound domains not configured.', 'dim');
-                appendOutput('Set up via CLI: candy domain config --zone domain.com --tunnel candy', 'dim');
-              } else {
-                appendOutput(`Zone: ${domData.zone?.domain || 'N/A'}  Tunnel: ${domData.tunnel?.name || 'N/A'}`, 'output');
-                const bindings = Object.values(domData.bindings || {});
-                if (bindings.length === 0) {
-                  appendOutput('No bound domains.', 'dim');
-                } else {
-                  bindings.forEach(b => {
-                    const protectedDomain = !!(b.hasPassword || (b.auth && b.auth.password));
-                    const authStatus = protectedDomain ? '🔒 protected' : '🔓 unprotected';
-                    appendOutput(`  ${b.fqdn} -> ${b.serverName}  ${authStatus}`, protectedDomain ? 'success' : 'dim');
-                  });
-                }
-              }
-            }
-            break;
-
-          case 'bind':
-            if (args.length < 2) {
-              appendOutput('Usage: bind <subdomain> <serverName> [--force]', 'error');
-              break;
-            }
-            {
-              const forceFlag = args.includes('--force') || args.includes('-f');
-              const bindArgs = args.filter(a => a !== '--force' && a !== '-f');
-              appendOutput(`Binding ${bindArgs[0]} -> ${bindArgs[1]}...`, 'dim');
-              const bindRes = await apiCall('/domains/bind', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ subdomain: bindArgs[0], serverName: bindArgs[1], force: forceFlag })
-              });
-              const bindData = await bindRes.json();
-              if (bindData.warning) {
-                appendOutput(bindData.message, 'error');
-                appendOutput('Use: bind <subdomain> <serverName> --force to override', 'dim');
-              } else if (bindData.error) {
-                appendOutput(bindData.error, 'error');
-              } else {
-                appendOutput(bindData.message || 'Domain bound', 'success');
-                if (bindData.binding) {
-                  appendOutput(`  ${bindData.binding.fqdn} -> ${bindData.binding.serverName}`, 'dim');
-                }
-              }
-            }
-            break;
-
-          case 'unbind':
-            if (!args[0]) {
-              appendOutput('Usage: unbind <subdomain>', 'error');
-              break;
-            }
-            {
-              const unbindRes = await apiCall('/domains/unbind/' + args[0], { method: 'DELETE' });
-              const unbindData = await unbindRes.json();
-              if (unbindData.error) {
-                appendOutput(unbindData.error, 'error');
-              } else {
-                appendOutput(unbindData.message || `${args[0]} unbound`, 'portal');
-              }
-            }
-            break;
-
-          case 'auth':
-            {
-              const authAction = (args[0] || '').toLowerCase();
-              if (authAction === 'set') {
-                if (args.length < 3) {
-                  appendOutput('Usage: auth set <domain|subdomain> <password>', 'error');
-                  break;
-                }
-                const domain = args[1];
-                const password = args.slice(2).join(' ');
-                if (!password) {
-                  appendOutput('Password cannot be empty.', 'error');
-                  break;
-                }
-                appendOutput(`Setting password for ${domain}...`, 'dim');
-                const authSetRes = await apiCall('/auth/set', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ domain, password })
-                });
-                const authSetData = await authSetRes.json();
-                if (authSetData.error) {
-                  appendOutput(authSetData.error, 'error');
-                } else {
-                  appendOutput(authSetData.message || `Password set for ${domain}`, 'success');
-                  await refreshDomains();
-                }
-              } else if (authAction === 'clear') {
-                if (!args[1]) {
-                  appendOutput('Usage: auth clear <domain|subdomain>', 'error');
-                  break;
-                }
-                const domain = args[1];
-                appendOutput(`Clearing password for ${domain}...`, 'dim');
-                const authClearRes = await apiCall('/auth/clear', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ domain })
-                });
-                const authClearData = await authClearRes.json();
-                if (authClearData.error) {
-                  appendOutput(authClearData.error, 'error');
-                } else {
-                  appendOutput(authClearData.message || `Password cleared for ${domain}`, 'portal');
-                  await refreshDomains();
-                }
-              } else {
-                appendOutput('Usage: auth set <domain|subdomain> <password>', 'error');
-                appendOutput('       auth clear <domain|subdomain>', 'error');
-              }
-            }
-            break;
-
-          // === Dev Server Commands ===
-
-          case 'servers':
-          case 'sv':
-            {
-              const [cfgRes, procRes] = await Promise.all([
-                apiCall('/configs'),
-                apiCall('/processes')
-              ]);
-              const configs = (await cfgRes.json()).configs || {};
-              const procs = (await procRes.json()).processes || {};
-              const names = Object.keys(configs);
-
-              if (names.length === 0) {
-                appendOutput('No server configs registered.', 'dim');
-              } else {
-                names.forEach(name => {
-                  const cfg = configs[name];
-                  const proc = procs[name];
-                  const status = proc?.status || 'stopped';
-                  const port = proc?.port ? `:${proc.port}` : '';
-                  const statusColor = status === 'running' ? 'success' : status === 'errored' ? 'error' : 'dim';
-                  appendOutput(`  ${name.padEnd(15)} ${status.padEnd(10)}${port}`, statusColor);
-                  const variants = Array.isArray(cfg.variants) && cfg.variants.length ? cfg.variants : [cfg];
-                  variants.forEach(v => {
-                    const active = proc?.configId === v.id ? ' [active]' : '';
-                    appendOutput(`    [${v.id}] ${v.cmd} in ${v.cwd}${active}`, 'dim');
-                  });
-                });
-              }
-            }
-            break;
-
-          case 'start':
-            if (!args[0]) {
-              appendOutput('Usage: start <name> [configId]', 'error');
-              break;
-            }
-            {
-              const configId = args[1];
-              appendOutput(`Starting ${args[0]}${configId ? ` (${configId})` : ''}...`, 'dim');
-              const startRes = await apiCall(`/process/start/${args[0]}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(configId ? { configId } : {})
-              });
-              const startData = await startRes.json();
-              if (startRes.status === 409 && startData.configs?.length) {
-                appendOutput(startData.error, 'error');
-                appendOutput('Available config variants:', 'dim');
-                startData.configs.forEach(c => appendOutput(`  ${c.id}  ${c.cmd} in ${c.cwd}`, 'output'));
-              } else if (startData.error) {
-                appendOutput(startData.error, 'error');
-              } else {
-                const d = startData.data || startData;
-                appendOutput(`▶ ${d.name} [${d.configId || 'default'}] running on :${d.port} (PID ${d.pid})`, 'success');
-              }
-            }
-            break;
-
-          case 'stop':
-            if (!args[0]) {
-              appendOutput('Usage: stop <name>', 'error');
-              break;
-            }
-            {
-              const stopRes = await apiCall(`/process/stop/${args[0]}`, { method: 'POST' });
-              const stopData = await stopRes.json();
-              if (stopData.error) {
-                appendOutput(stopData.error, 'error');
-              } else {
-                appendOutput(`■ ${args[0]} stopped`, 'dim');
-              }
-            }
-            break;
-
-          case 'restart':
-            if (!args[0]) {
-              appendOutput('Usage: restart <name>', 'error');
-              break;
-            }
-            {
-              appendOutput(`Restarting ${args[0]}...`, 'dim');
-              const restartRes = await apiCall(`/process/restart/${args[0]}`, { method: 'POST' });
-              const restartData = await restartRes.json();
-              if (restartData.error) {
-                appendOutput(restartData.error, 'error');
-              } else {
-                const d = restartData.data || restartData;
-                appendOutput(`↻ ${d.name} restarted on :${d.port} (PID ${d.pid})`, 'success');
-              }
-            }
-            break;
-
-          case 'proc':
-            if (!args[0]) {
-              appendOutput('Usage: proc <name>', 'error');
-              break;
-            }
-            {
-              const [cfgRes2, procRes2] = await Promise.all([
-                apiCall('/configs'),
-                apiCall('/processes')
-              ]);
-              const cfg2 = (await cfgRes2.json()).configs?.[args[0]];
-              const proc2 = (await procRes2.json()).processes?.[args[0]];
-
-              if (!cfg2) {
-                appendOutput(`Server '${args[0]}' not found.`, 'error');
-              } else {
-                appendOutput(`Server: ${args[0]}`, 'output');
-                const variants = Array.isArray(cfg2.variants) && cfg2.variants.length ? cfg2.variants : [cfg2];
-                appendOutput(`  Configs:  ${variants.length}`, 'dim');
-                variants.forEach(v => {
-                  const active = proc2?.configId === v.id ? ' [active]' : '';
-                  appendOutput(`    [${v.id}] ${v.cmd} in ${v.cwd}${active}`, 'dim');
-                });
-                if (proc2) {
-                  const statusColor = proc2.status === 'running' ? 'success' : proc2.status === 'errored' ? 'error' : 'dim';
-                  appendOutput(`  Status:   ${proc2.status}`, statusColor);
-                  appendOutput(`  Port:     ${proc2.port || 'N/A'}`, 'dim');
-                  appendOutput(`  PID:      ${proc2.pid || 'N/A'}`, 'dim');
-                  appendOutput(`  ConfigId: ${proc2.configId || 'N/A'}`, 'dim');
-                  if (proc2.startedAt) {
-                    const uptime = Math.floor((Date.now() - new Date(proc2.startedAt).getTime()) / 1000);
-                    const m = Math.floor(uptime / 60);
-                    const s = uptime % 60;
-                    appendOutput(`  Uptime:   ${m}m ${s}s`, 'dim');
-                  }
-                  if (proc2.detectedPorts?.length > 1) {
-                    appendOutput(`  Detected: ${proc2.detectedPorts.join(', ')}`, 'dim');
-                  }
-                } else {
-                  appendOutput(`  Status:   stopped`, 'dim');
-                }
-              }
-            }
-            break;
-
-          case 'port':
-            if (args.length < 2) {
-              appendOutput('Usage: port <name> <port>', 'error');
-              break;
-            }
-            {
-              const portRes = await apiCall(`/process/port/${args[0]}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ port: parseInt(args[1]) })
-              });
-              const portData = await portRes.json();
-              if (portData.error) {
-                appendOutput(portData.error, 'error');
-              } else {
-                appendOutput(`⚡ ${args[0]} port set to :${args[1]}`, 'success');
-              }
-            }
-            break;
-
-          case 'tail':
-            {
-              const tailName = args[0];
-              const tailLines = args[1] || 20;
-              if (!tailName) {
-                appendOutput('Usage: tail <name> [lines]', 'error');
-                break;
-              }
-              try {
-                const logFile = `/tmp/candy-logs/${tailName}.log`;
-                const tailRes = await fetch(`/stream/${tailName}`);
-                if (!tailRes.ok) throw new Error('Failed to fetch logs');
-
-                // Just fetch the log file content via a quick SSE connection
-                const reader = tailRes.body.getReader();
-                const decoder = new TextDecoder();
-                let content = '';
-                const startTime = Date.now();
-
-                while (Date.now() - startTime < 1000) {
-                  const { done, value } = await reader.read();
-                  if (done) break;
-                  const chunk = decoder.decode(value);
-                  const lines = chunk.split('\n');
-                  for (const line of lines) {
-                    if (line.startsWith('data: ')) {
-                      try {
-                        content += JSON.parse(line.slice(6));
-                      } catch {}
-                    }
-                  }
-                }
-                reader.cancel();
-
-                const logLines = content.split('\n').filter(l => l.trim());
-                const lastN = logLines.slice(-tailLines);
-                if (lastN.length === 0) {
-                  appendOutput('(no logs yet)', 'dim');
-                } else {
-                  lastN.forEach(l => appendOutput(l, 'dim'));
-                }
-              } catch (e) {
-                appendOutput(`Failed to read logs: ${e.message}`, 'error');
-              }
-            }
-            break;
-
-          case 'send':
-            if (args.length < 2) {
-              appendOutput('Usage: send <name> <text>', 'error');
-              break;
-            }
-            {
-              const sendName = args[0];
-              const sendText = args.slice(1).join(' ');
-              const sendRes = await apiCall(`/process/input/${sendName}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ input: sendText + '\n' })
-              });
-              const sendData = await sendRes.json();
-              if (sendData.error) {
-                appendOutput(sendData.error, 'error');
-              } else {
-                appendOutput(`→ sent to ${sendName}: ${sendText}`, 'dim');
-              }
-            }
-            break;
-
-          case 'config':
-            if (args.length < 3) {
-              appendOutput('Usage: config <name> <cwd> <cmd...>', 'error');
-              appendOutput('  Example: config myapp ~/projects/myapp npm run dev', 'dim');
-              break;
-            }
-            {
-              const cfgName = args[0];
-              const cfgCwd = args[1];
-              const cfgCmd = args.slice(2).join(' ');
-              const cfgRes = await apiCall('/config', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: cfgName, cwd: cfgCwd, cmd: cfgCmd })
-              });
-              const cfgData = await cfgRes.json();
-              if (cfgData.error) {
-                appendOutput(cfgData.error, 'error');
-              } else {
-                appendOutput(`+ ${cfgName} registered`, 'success');
-                appendOutput(`  ${cfgCmd} in ${cfgCwd}`, 'dim');
-              }
-            }
-            break;
-
-          case 'unconfig':
-            if (!args[0]) {
-              appendOutput('Usage: unconfig <name> [configId]', 'error');
-              break;
-            }
-            {
-              const configId = args[1];
-              const ucfgRes = await apiCall(`/config/${args[0]}${configId ? '/' + configId : ''}`, { method: 'DELETE' });
-              const ucfgData = await ucfgRes.json();
-              if (ucfgData.error) {
-                appendOutput(ucfgData.error, 'error');
-              } else {
-                appendOutput(`- ${args[0]}${configId ? ` [${configId}]` : ''} removed`, 'error');
-              }
-            }
-            break;
-
-          default:
-            appendOutput(`Unknown command: ${command}`, 'error');
-            appendOutput("Type 'help' for available commands.", 'dim');
-        }
-      } catch (e) {
-        appendOutput('Error: ' + e.message, 'error');
-      }
-    }
-
-    cliInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        executeCommand(cliInput.value);
-        cliInput.value = '';
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        if (historyIndex > 0) {
-          historyIndex--;
-          cliInput.value = commandHistory[historyIndex];
-        }
-      } else if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        if (historyIndex < commandHistory.length - 1) {
-          historyIndex++;
-          cliInput.value = commandHistory[historyIndex];
-        } else {
-          historyIndex = commandHistory.length;
-          cliInput.value = '';
-        }
-      }
-    });
 
     // GUI Functions
     function escapeHtml(value) {
@@ -1798,13 +959,6 @@ Misc:
       } catch (e) {
         toast('Failed to add route', 'error');
       }
-    }
-
-    function runCommand(cmd) {
-      document.querySelector('[data-mode="cli"]').click();
-      setTimeout(() => {
-        executeCommand(cmd);
-      }, 100);
     }
 
     // Update TLD-dependent elements

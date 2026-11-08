@@ -7,33 +7,33 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,400..700&family=Schibsted+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
       color-scheme: light;
-      --bg: #f6f6f8;
+      --bg: #eceef2;
       --surface: #ffffff;
-      --surface-2: #f8f8fa;
+      --surface-2: #f5f6f9;
       --surface-3: #efeff3;
-      --border: #e6e6eb;
-      --border-bright: #d9d9e0;
-      --text: #18181b;
-      --text-dim: #5f5f6b;
-      --text-muted: #8e8e99;
-      --accent: #d6336c;
-      --accent-hover: #c2255c;
-      --accent-soft: rgba(214, 51, 108, 0.09);
+      --border: #e1e4eb;
+      --border-bright: #c9cdd9;
+      --text: #1a1d33;
+      --text-dim: #555b75;
+      --text-muted: #8a90a8;
+      --accent: #d42a47;
+      --accent-hover: #bb1f3b;
+      --accent-soft: rgba(212, 42, 71, 0.09);
       --accent-ink: #ffffff;
-      --violet: #8b5cf6;
-      --green: #1f9d55;
-      --green-soft: rgba(31, 157, 85, 0.1);
-      --red: #d92d3f;
-      --red-soft: rgba(217, 45, 63, 0.08);
+      --violet: #6d4ae0;
+      --green: #0b9468;
+      --green-soft: rgba(11, 148, 104, 0.12);
+      --red: #d42a47;
+      --red-soft: rgba(212, 42, 71, 0.08);
       --yellow: #b7791f;
       --yellow-soft: rgba(183, 121, 31, 0.1);
       --blue: #3b6fd8;
       --blue-soft: rgba(59, 111, 216, 0.1);
-      --shadow: 0 1px 2px rgba(16, 16, 24, 0.04), 0 8px 24px rgba(16, 16, 24, 0.06);
+      --shadow: 0 1px 2px rgba(26, 29, 51, 0.05);
       --log-bg: #0e0e12;
       --log-text: #e4e4ea;
       /* legacy names used by this page's rules */
@@ -42,30 +42,30 @@
       --cyan: var(--accent); --cyan-dim: var(--accent-hover); --cyan-glow: var(--accent-soft);
       --magenta: var(--accent); --magenta-dim: var(--accent-hover); --magenta-glow: var(--accent-soft);
       --green-dim: var(--green); --red-dim: var(--red); --red-glow: var(--red-soft);
-      --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
-      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+      --font-sans: 'Schibsted Grotesk', system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --font-mono: 'Martian Mono', ui-monospace, 'SF Mono', Menlo, monospace;
     }
     @media (prefers-color-scheme: dark) {
       :root {
         color-scheme: dark;
-        --bg: #0f0f12;
-        --surface: #17171b;
-        --surface-2: #1c1c21;
+        --bg: #10121a;
+        --surface: #171a25;
+        --surface-2: #1d2130;
         --surface-3: #25252b;
-        --border: #26262c;
-        --border-bright: #33333a;
-        --text: #ececf1;
-        --text-dim: #a1a1ab;
-        --text-muted: #6e6e78;
-        --accent: #f06595;
-        --accent-hover: #f783ac;
-        --accent-soft: rgba(240, 101, 149, 0.12);
-        --accent-ink: #1a0b11;
-        --violet: #a78bfa;
-        --green: #3ecf7e;
-        --green-soft: rgba(62, 207, 126, 0.12);
-        --red: #ff6b7a;
-        --red-soft: rgba(255, 107, 122, 0.12);
+        --border: #252938;
+        --border-bright: #353a4c;
+        --text: #e7e9f2;
+        --text-dim: #a3a8c0;
+        --text-muted: #6c7290;
+        --accent: #ff5d78;
+        --accent-hover: #ff7a90;
+        --accent-soft: rgba(255, 93, 120, 0.12);
+        --accent-ink: #2a0710;
+        --violet: #a893ff;
+        --green: #3fd3a1;
+        --green-soft: rgba(63, 211, 161, 0.14);
+        --red: #ff5d78;
+        --red-soft: rgba(255, 93, 120, 0.12);
         --yellow: #f2b84b;
         --yellow-soft: rgba(242, 184, 75, 0.12);
         --blue: #74a0ff;
@@ -322,6 +322,13 @@
       font-size: 0.7rem;
       color: var(--cyan);
     }
+      code, .mono, [class*="domain"], pre { font-stretch: 87.5%; }
+  
+    /* hostnames read as hostnames: one face, no single-word highlight */
+    h1 .domain, h1 .domain-name { color: var(--text); font-family: var(--font-mono); font-stretch: 87.5%; font-weight: 600; letter-spacing: -0.02em; }
+    h1 .tld-suffix { color: var(--text-muted); font-family: var(--font-mono); font-stretch: 87.5%; font-weight: 400; letter-spacing: -0.02em; }
+    .panel-badge { text-transform: none !important; letter-spacing: 0 !important; }
+      .tip::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: var(--text-muted); flex-shrink: 0; margin-top: 0.55em; }
   </style>
 </head>
 <body>
@@ -329,9 +336,6 @@
   <div class="container">
     <header>
       <div class="header-left">
-        <div class="error-icon">
-          <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </div>
         <h1><span class="domain" id="serverName">server</span><span class="tld-suffix">.localhost</span> crashed</h1>
       </div>
       <div class="exit-badge" id="exitBadge">exit 1</div>
@@ -339,10 +343,10 @@
 
     <div class="logs-panel">
       <div class="panel-header">
-        <span class="panel-title">Error Logs</span>
+        <span class="panel-title">Output</span>
         <div style="display: flex; align-items: center; gap: 0.5rem;">
-          <span class="panel-badge" style="background: var(--accent-soft); color: var(--cyan); border: 1px solid var(--accent-soft);" title="keystrokes go directly to terminal">PTY ACTIVE</span>
-          <span class="panel-badge">LAST 100 LINES</span>
+          <span class="panel-badge" style="background: var(--accent-soft); color: var(--cyan); border: 1px solid var(--accent-soft);" title="Keystrokes go straight to the process">Typing goes to the process</span>
+          <span class="panel-badge">Last 100 lines</span>
         </div>
       </div>
       <div class="logs-content" id="logsContent">Loading logs...</div>
@@ -350,29 +354,24 @@
 
     <div class="actions">
       <button class="btn btn-primary" id="restartBtn" onclick="restartServer()">
-        <svg viewBox="0 0 24 24"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-        Restart Server
+        Restart
       </button>
-      <a href="#" class="btn btn-secondary" id="portalLink">Back to Portal</a>
+      <a href="#" class="btn btn-secondary" id="portalLink">Back to portal</a>
     </div>
 
     <div class="tips">
-      <div class="tips-title">Common Issues</div>
+      <div class="tips-title">Common causes</div>
       <div class="tips-grid">
         <div class="tip">
-          <div class="tip-icon">1</div>
           <span>Port already in use by another process</span>
         </div>
         <div class="tip">
-          <div class="tip-icon">2</div>
           <span>Missing dependencies (npm install)</span>
         </div>
         <div class="tip">
-          <div class="tip-icon">3</div>
           <span>Invalid configuration or syntax errors</span>
         </div>
         <div class="tip">
-          <div class="tip-icon">4</div>
           <span>Permission issues with files or directories</span>
         </div>
       </div>
@@ -533,12 +532,12 @@
           const data = await res.json();
           alert('Failed to restart: ' + (data.error || 'Unknown error'));
           btn.disabled = false;
-          btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>Restart Server';
+          btn.innerHTML = 'Restart';
         }
       } catch (e) {
         alert('Failed to restart: ' + e.message);
         btn.disabled = false;
-        btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>Restart Server';
+        btn.innerHTML = 'Restart';
       }
     }
 

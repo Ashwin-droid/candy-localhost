@@ -7,51 +7,51 @@
   <link rel="icon" href="/favicon.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,400..700&family=Schibsted+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
       color-scheme: light;
-      --bg: #f6f6f8;
+      --bg: #eceef2;
       --surface: #ffffff;
-      --surface-2: #f8f8fa;
-      --border: #e6e6eb;
-      --border-bright: #d9d9e0;
-      --text: #18181b;
-      --text-dim: #5f5f6b;
-      --text-muted: #8e8e99;
-      --accent: #d6336c;
-      --accent-hover: #c2255c;
-      --accent-soft: rgba(214, 51, 108, 0.09);
+      --surface-2: #f5f6f9;
+      --border: #e1e4eb;
+      --border-bright: #c9cdd9;
+      --text: #1a1d33;
+      --text-dim: #555b75;
+      --text-muted: #8a90a8;
+      --accent: #d42a47;
+      --accent-hover: #bb1f3b;
+      --accent-soft: rgba(212, 42, 71, 0.09);
       --accent-ink: #ffffff;
-      --violet: #8b5cf6;
-      --green: #1f9d55;
-      --green-soft: rgba(31, 157, 85, 0.1);
-      --red: #d92d3f;
-      --red-soft: rgba(217, 45, 63, 0.08);
-      --shadow: 0 1px 2px rgba(16, 16, 24, 0.04), 0 8px 24px rgba(16, 16, 24, 0.06);
-      --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
-      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+      --violet: #6d4ae0;
+      --green: #0b9468;
+      --green-soft: rgba(11, 148, 104, 0.12);
+      --red: #d42a47;
+      --red-soft: rgba(212, 42, 71, 0.08);
+      --shadow: 0 1px 2px rgba(26, 29, 51, 0.05);
+      --font-sans: 'Schibsted Grotesk', system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --font-mono: 'Martian Mono', ui-monospace, 'SF Mono', Menlo, monospace;
     }
     @media (prefers-color-scheme: dark) {
       :root {
         color-scheme: dark;
-        --bg: #0f0f12;
-        --surface: #17171b;
-        --surface-2: #1c1c21;
-        --border: #26262c;
-        --border-bright: #33333a;
-        --text: #ececf1;
-        --text-dim: #a1a1ab;
-        --text-muted: #6e6e78;
-        --accent: #f06595;
-        --accent-hover: #f783ac;
-        --accent-soft: rgba(240, 101, 149, 0.12);
-        --accent-ink: #1a0b11;
-        --violet: #a78bfa;
-        --green: #3ecf7e;
-        --green-soft: rgba(62, 207, 126, 0.12);
-        --red: #ff6b7a;
-        --red-soft: rgba(255, 107, 122, 0.12);
+        --bg: #10121a;
+        --surface: #171a25;
+        --surface-2: #1d2130;
+        --border: #252938;
+        --border-bright: #353a4c;
+        --text: #e7e9f2;
+        --text-dim: #a3a8c0;
+        --text-muted: #6c7290;
+        --accent: #ff5d78;
+        --accent-hover: #ff7a90;
+        --accent-soft: rgba(255, 93, 120, 0.12);
+        --accent-ink: #2a0710;
+        --violet: #a893ff;
+        --green: #3fd3a1;
+        --green-soft: rgba(63, 211, 161, 0.14);
+        --red: #ff5d78;
+        --red-soft: rgba(255, 93, 120, 0.12);
         --shadow: none;
       }
     }
@@ -91,7 +91,6 @@
       justify-content: space-between;
     }
     .brand-name { display: flex; align-items: center; gap: 8px; color: var(--text); }
-    .mark { width: 22px; height: 22px; border-radius: 6px; background: linear-gradient(135deg, var(--accent), var(--violet)); color: #fff; display: grid; place-items: center; font-size: 12px; font-weight: 700; }
     .brand a { color: var(--text-dim); text-decoration: none; font-weight: 500; align-self: center; }
     .brand a:hover { color: var(--accent); }
     .domain {
@@ -206,12 +205,21 @@
     .msg.error { color: var(--red); background: var(--red-soft); border: 1px solid transparent; }
     .msg.ok { color: var(--green); background: var(--green-soft); border: 1px solid transparent; }
     .msg.info { color: var(--text-dim); background: var(--surface-2); border: 1px solid var(--border); }
+      code, .mono, [class*="domain"], pre { font-stretch: 87.5%; }
+  
+    /* hostnames read as hostnames: one face, no single-word highlight */
+    h1 .domain, h1 .domain-name { color: var(--text); font-family: var(--font-mono); font-stretch: 87.5%; font-weight: 600; letter-spacing: -0.02em; }
+    h1 .tld-suffix { color: var(--text-muted); font-family: var(--font-mono); font-stretch: 87.5%; font-weight: 400; letter-spacing: -0.02em; }
+    .panel-badge { text-transform: none !important; letter-spacing: 0 !important; }
+      .brand-name { gap: 0; font-family: var(--font-mono); font-stretch: 112.5%; font-weight: 700; font-size: 17px; letter-spacing: -0.04em; color: var(--text); }
+    .brand-name .dot { color: var(--accent); }
+    .domain { font-family: var(--font-mono); font-stretch: 87.5%; }
   </style>
 </head>
 <body>
   <main class="card">
     <div class="card-head">
-      <div class="brand"><span class="brand-name"><span class="mark">c</span>candy</span><a href="https://portal.localhost" id="portalLink">open portal →</a></div>
+      <div class="brand"><span class="brand-name">candy<span class="dot">.</span></span><a href="https://portal.localhost" id="portalLink">Open portal</a></div>
       <div class="domain"><span id="domainName">…</span><span class="tld" id="domainTld"></span></div>
       <div class="sub"><span class="dot"></span>Not registered yet. Point it at a port or a command.</div>
     </div>
@@ -219,7 +227,7 @@
     <form id="registerForm" novalidate>
       <div class="tabs" role="tablist">
         <button type="button" class="tab active" data-mode="quick" role="tab" aria-selected="true">Existing port</button>
-        <button type="button" class="tab" data-mode="lazy" role="tab" aria-selected="false">Start on demand</button>
+        <button type="button" class="tab" data-mode="lazy" role="tab" aria-selected="false">Run a command</button>
       </div>
 
       <div class="panel active" data-panel="quick">

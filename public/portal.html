@@ -3,676 +3,548 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>candy portal</title>
+  <title>candy</title>
   <link rel="icon" href="/favicon.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,400..700&family=Schibsted+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
       color-scheme: light;
-      --bg: #f6f6f8;
-      --surface: #ffffff;
-      --surface-2: #f8f8fa;
-      --surface-3: #efeff3;
-      --border: #e6e6eb;
-      --border-bright: #d9d9e0;
-      --text: #18181b;
-      --text-dim: #5f5f6b;
-      --text-muted: #8e8e99;
-      --accent: #d6336c;
-      --accent-hover: #c2255c;
-      --accent-soft: rgba(214, 51, 108, 0.09);
-      --accent-ink: #ffffff;
-      --green: #1f9d55;
-      --green-soft: rgba(31, 157, 85, 0.1);
-      --red: #d92d3f;
-      --red-soft: rgba(217, 45, 63, 0.08);
-      --yellow: #b7791f;
-      --yellow-soft: rgba(183, 121, 31, 0.1);
-      --blue: #3b6fd8;
-      --blue-soft: rgba(59, 111, 216, 0.1);
-      --violet: #8b5cf6;
-      --shadow: 0 1px 2px rgba(16, 16, 24, 0.04), 0 1px 3px rgba(16, 16, 24, 0.04);
-      --shadow-lg: 0 20px 50px rgba(16, 16, 24, 0.18);
-      --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
-      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
-      --radius: 12px;
+      --bg: #eceef2;
+      --sheet: #ffffff;
+      --sheet-2: #f5f6f9;
+      --ink: #1a1d33;
+      --ink-2: #555b75;
+      --ink-3: #8a90a8;
+      --line: #e1e4eb;
+      --line-2: #c9cdd9;
+      --cherry: #d42a47;
+      --cherry-hover: #bb1f3b;
+      --cherry-ink: #ffffff;
+      --cherry-soft: rgba(212, 42, 71, 0.09);
+      --mint: #0b9468;
+      --mint-soft: rgba(11, 148, 104, 0.16);
+      --lemon: #c18a06;
+      --lemon-soft: rgba(232, 177, 11, 0.2);
+      --grape: #6d4ae0;
+      --log-bg: #141725;
+      --log-ink: #d7dbea;
+      --scrim: rgba(26, 29, 51, 0.38);
+      --font-ui: 'Schibsted Grotesk', system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --font-host: 'Martian Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+      /* names the shared pages and older inline styles still use */
+      --yellow: var(--lemon);
+      --text-dim: var(--ink-2);
+      --text-muted: var(--ink-3);
+      --font-mono: var(--font-host);
     }
     @media (prefers-color-scheme: dark) {
       :root {
         color-scheme: dark;
-        --bg: #0f0f12;
-        --surface: #17171b;
-        --surface-2: #1c1c21;
-        --surface-3: #25252b;
-        --border: #26262c;
-        --border-bright: #33333a;
-        --text: #ececf1;
-        --text-dim: #a1a1ab;
-        --text-muted: #6e6e78;
-        --accent: #f06595;
-        --accent-hover: #f783ac;
-        --accent-soft: rgba(240, 101, 149, 0.12);
-        --accent-ink: #1a0b11;
-        --green: #3ecf7e;
-        --green-soft: rgba(62, 207, 126, 0.12);
-        --red: #ff6b7a;
-        --red-soft: rgba(255, 107, 122, 0.12);
-        --yellow: #f2b84b;
-        --yellow-soft: rgba(242, 184, 75, 0.12);
-        --blue: #74a0ff;
-        --blue-soft: rgba(116, 160, 255, 0.12);
-        --violet: #a78bfa;
-        --shadow: none;
-        --shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.55);
+        --bg: #10121a;
+        --sheet: #171a25;
+        --sheet-2: #1d2130;
+        --ink: #e7e9f2;
+        --ink-2: #a3a8c0;
+        --ink-3: #6c7290;
+        --line: #252938;
+        --line-2: #353a4c;
+        --cherry: #ff5d78;
+        --cherry-hover: #ff7a90;
+        --cherry-ink: #2a0710;
+        --cherry-soft: rgba(255, 93, 120, 0.12);
+        --mint: #3fd3a1;
+        --mint-soft: rgba(63, 211, 161, 0.18);
+        --lemon: #f2c14e;
+        --lemon-soft: rgba(242, 193, 78, 0.2);
+        --grape: #a893ff;
+        --log-bg: #0c0e15;
+        --scrim: rgba(5, 6, 10, 0.6);
       }
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { height: 100%; }
+    html { -webkit-text-size-adjust: 100%; }
     body {
-      font-family: var(--font-sans);
-      font-size: 14px;
+      font: 14px/1.45 var(--font-ui);
       background: var(--bg);
-      color: var(--text);
-      display: flex;
-      flex-direction: column;
+      color: var(--ink);
       -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
     }
     a { color: inherit; }
-    code { font-family: var(--font-mono); font-size: 0.92em; }
+    button { font: inherit; color: inherit; }
+    :focus-visible { outline: 2px solid var(--cherry); outline-offset: 2px; border-radius: 6px; }
+    .mono { font-family: var(--font-host); font-stretch: 87.5%; }
 
-    /* ---------- Header ---------- */
-    header {
-      position: sticky;
-      top: 0;
-      z-index: 50;
-      display: flex;
-      align-items: center;
-      gap: 16px;
-      padding: 12px 28px;
-      background: color-mix(in srgb, var(--surface) 85%, transparent);
-      backdrop-filter: saturate(1.4) blur(10px);
-      border-bottom: 1px solid var(--border);
-    }
-    .logo { display: flex; align-items: center; gap: 10px; min-width: 0; }
-    .logo-mark {
-      width: 28px; height: 28px;
-      border-radius: 8px;
-      background: linear-gradient(135deg, var(--accent), var(--violet));
-      display: grid;
-      place-items: center;
-      color: #fff;
+    /* ---------- Top bar ---------- */
+    .top, .layout { max-width: 1240px; margin: 0 auto; padding-left: 28px; padding-right: 28px; }
+    .top { display: flex; align-items: center; gap: 18px; padding-top: 22px; }
+    .wordmark {
+      font-family: var(--font-host);
       font-weight: 700;
-      font-size: 14px;
-      flex-shrink: 0;
-    }
-    .logo-text { font-weight: 650; font-size: 15px; color: var(--text); text-decoration: none; white-space: nowrap; letter-spacing: -0.01em; }
-    .logo-sub { font-size: 13px; color: var(--text-muted); white-space: nowrap; }
-    .header-right { margin-left: auto; display: flex; align-items: center; gap: 14px; }
-    .status-indicator { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text-dim); white-space: nowrap; }
-    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
-    .status-dot.offline { background: var(--red); box-shadow: 0 0 0 3px var(--red-soft); }
-
-    /* ---------- Layout ---------- */
-    main { flex: 1; }
-    .panel { display: none; }
-    .panel.active { display: block; }
-    .gui-content {
-      width: 100%;
-      max-width: 1320px;
-      margin: 0 auto;
-      padding: 28px 28px 56px;
-      display: flex;
-      flex-direction: column;
-      gap: 20px;
-    }
-    .stats-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
-    .stat-item {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      padding: 16px 18px;
-    }
-    .stat-label { font-size: 12.5px; color: var(--text-dim); margin-bottom: 6px; }
-    .stat-value { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.1; font-variant-numeric: tabular-nums; }
-    .stat-value small { font-size: 14px; color: var(--text-muted); font-weight: 500; margin-left: 4px; }
-
-    .dash-grid { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(320px, 1fr); gap: 20px; align-items: start; }
-    .dash-col { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
-
-    .card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      min-width: 0;
-      overflow: hidden;
-    }
-    .card-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 0 18px;
-      border-bottom: 1px solid var(--border);
-      height: 56px;
-    }
-    .card-title { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14.5px; }
-    .card-title .count {
-      font-size: 12px;
-      font-weight: 500;
-      color: var(--text-dim);
-      background: var(--surface-3);
-      border-radius: 999px;
-      padding: 1px 8px;
-      font-variant-numeric: tabular-nums;
-    }
-    .card-title .dot { display: none; }
-    .card-body.scrollable { max-height: 480px; overflow-y: auto; }
-    .empty { padding: 22px 18px; font-size: 13.5px; color: var(--text-muted); line-height: 1.6; }
-    .empty code { color: var(--text-dim); background: var(--surface-3); border-radius: 5px; padding: 1px 5px; }
-
-    /* ---------- Rows ---------- */
-    .route-item, .process-item, .config-item, .portal-item, .domain-item {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 14px;
-      padding: 12px 18px;
-      border-top: 1px solid var(--border);
-      transition: background 0.12s;
-    }
-    .card-body > :first-child { border-top: 0; }
-    .route-item:hover, .process-item:hover, .config-item:hover, .portal-item:hover, .domain-item:hover { background: var(--surface-2); }
-    .route-info, .process-info, .config-info { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-    .route-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
-    .route-name, .process-name, .config-name {
-      font-weight: 600;
-      font-size: 14px;
-      color: var(--text);
+      font-size: 22px;
+      font-stretch: 112.5%;
+      letter-spacing: -0.04em;
       text-decoration: none;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
+      color: var(--ink);
     }
-    a.route-name:hover { color: var(--accent); }
-    .route-name .tld, .config-name .muted { color: var(--text-muted); font-weight: 400; }
-    .route-arrow { color: var(--text-muted); }
-    .route-port, .process-meta { font-family: var(--font-mono); font-size: 12.5px; color: var(--text-dim); word-break: break-all; }
-    .process-meta { color: var(--text-muted); }
-    .route-badges { display: flex; gap: 6px; flex-wrap: wrap; }
-    .tag, .route-persistent, .route-lan, .process-status, .domain-auth-badge {
-      font-size: 11.5px;
-      font-weight: 500;
-      border-radius: 999px;
-      padding: 2px 8px;
-      text-decoration: none;
-      white-space: nowrap;
-      color: var(--text-dim);
-      background: var(--surface-3);
-    }
-    .route-persistent { color: var(--accent); background: var(--accent-soft); }
-    .route-lan { color: var(--green); background: var(--green-soft); font-family: var(--font-mono); font-size: 11px; }
-    a.route-lan:hover { text-decoration: underline; }
-    .route-actions, .process-actions, .config-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+    .wordmark span { color: var(--cherry); }
+    .daemon { display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 13px; }
+    .top .spacer { flex: 1; }
+    .top-actions { display: flex; gap: 8px; }
 
     /* ---------- Buttons ---------- */
     .btn {
-      font: 600 13px var(--font-sans);
-      color: var(--accent-ink);
-      background: var(--accent);
-      border: 1px solid transparent;
-      border-radius: 8px;
-      padding: 7px 14px;
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      height: 32px; padding: 0 12px;
+      border: 1px solid var(--line-2); border-radius: 8px;
+      background: var(--sheet); color: var(--ink);
+      font-size: 13px; font-weight: 500; white-space: nowrap;
       cursor: pointer;
-      white-space: nowrap;
-      transition: background 0.15s, border-color 0.15s;
     }
-    .btn:hover { background: var(--accent-hover); }
-    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-    .btn.secondary { background: var(--surface); color: var(--text); border-color: var(--border-bright); box-shadow: var(--shadow); }
-    .btn.secondary:hover { background: var(--surface-2); }
-    .btn-icon {
-      font: 500 12.5px var(--font-sans);
-      color: var(--text-dim);
-      background: var(--surface);
-      border: 1px solid var(--border-bright);
-      border-radius: 7px;
-      min-width: 30px;
-      height: 28px;
-      padding: 0 10px;
-      cursor: pointer;
-      white-space: nowrap;
-      transition: color 0.12s, border-color 0.12s, background 0.12s;
-    }
-    .btn-icon:hover { color: var(--text); background: var(--surface-2); }
-    .btn-icon.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); background: var(--accent-soft); }
-    .btn-icon.lan.active { color: var(--green); border-color: color-mix(in srgb, var(--green) 35%, transparent); background: var(--green-soft); }
-    .btn-icon.danger { font-size: 16px; line-height: 1; padding: 0 8px; }
-    .btn-icon.danger:hover, .btn-icon.danger-text:hover { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent); background: var(--red-soft); }
-    .btn:focus-visible, .btn-icon:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .btn:hover { border-color: var(--ink-3); }
+    .btn:disabled { opacity: 0.5; cursor: default; }
+    .btn.primary { background: var(--cherry); border-color: var(--cherry); color: var(--cherry-ink); font-weight: 600; }
+    .btn.primary:hover { background: var(--cherry-hover); border-color: var(--cherry-hover); }
+    .btn.go { color: var(--mint); }
+    .btn.stop { color: var(--cherry); }
+    .btn.quiet { border-color: transparent; background: transparent; color: var(--ink-2); }
+    .btn.quiet:hover { color: var(--ink); background: var(--sheet-2); }
+    .btn.small { height: 26px; padding: 0 9px; font-size: 12px; border-radius: 7px; }
+    .btn.dots { width: 32px; padding: 0; font-size: 18px; line-height: 1; letter-spacing: 1px; }
 
-    .card-hint { font-size: 12px; color: var(--text-muted); }
-    .prompt-hint { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
-
-    /* ---------- Traffic ---------- */
-    .traffic-item { padding: 10px 18px; border-top: 1px solid var(--border); }
-    .traffic-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13.5px; }
-    .traffic-row a { text-decoration: none; font-weight: 500; display: flex; align-items: center; gap: 7px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .traffic-row a:hover { color: var(--accent); }
-    .traffic-row .n { font: 12.5px var(--font-mono); color: var(--text-dim); font-variant-numeric: tabular-nums; flex-shrink: 0; }
-    .traffic-child { padding-left: 14px; margin-top: 6px; font-size: 12.5px; }
-    .traffic-child a { font-family: var(--font-mono); font-weight: 400; font-size: 12px; color: var(--text-dim); }
-    .live { width: 7px; height: 7px; border-radius: 50%; background: var(--border-bright); flex-shrink: 0; }
-    .live.on { background: var(--green); }
-    .bar { height: 4px; border-radius: 4px; background: var(--surface-3); margin-top: 6px; overflow: hidden; }
-    .bar span { display: block; height: 100%; background: var(--accent); border-radius: 4px; opacity: 0.75; }
-
-    /* ---------- Activity ---------- */
-    .activity-item { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 2px 10px; padding: 9px 18px; border-top: 1px solid var(--border); font-size: 13px; }
-    .activity-time { font: 12px var(--font-mono); color: var(--text-muted); font-variant-numeric: tabular-nums; padding-top: 1px; }
-    .activity-action { font-weight: 600; font-size: 12px; color: var(--text-dim); letter-spacing: 0.01em; }
-    .activity-details { grid-column: 2; color: var(--text-dim); font: 12px var(--font-mono); word-break: break-word; }
-
-    /* ---------- Processes ---------- */
-    .process-status.running { color: var(--green); background: var(--green-soft); }
-    .process-status.starting { color: var(--yellow); background: var(--yellow-soft); }
-    .process-status.errored { color: var(--red); background: var(--red-soft); }
-
-    /* ---------- Configs ---------- */
-    .config-details {
+    /* ---------- Layout ---------- */
+    .layout {
       display: grid;
-      grid-template-columns: auto minmax(0, 1fr);
-      column-gap: 10px;
-      row-gap: 1px;
-      font: 12.5px var(--font-mono);
-      color: var(--text-dim);
+      grid-template-columns: minmax(0, 1fr) 300px;
+      gap: 28px;
+      padding-top: 22px;
+      padding-bottom: 64px;
+      align-items: start;
     }
-    .config-details .label { color: var(--text-muted); font-family: var(--font-sans); }
-    .config-details span:not(.label) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-    /* ---------- Portals ---------- */
-    .portal-item, .domain-item { flex-direction: column; align-items: stretch; gap: 5px; }
-    .portal-header, .domain-header, .domain-auth-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-    .portal-name, .domain-name { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; }
-    .portal-url { font: 12.5px var(--font-mono); color: var(--text-muted); word-break: break-all; }
-    .portal-url a, .domain-fqdn a { color: var(--blue); text-decoration: none; }
-    .portal-url a:hover, .domain-fqdn a:hover { text-decoration: underline; }
-    .domain-fqdn a { font: 12.5px var(--font-mono); word-break: break-all; }
-    .domain-server { font-size: 12.5px; color: var(--text-muted); }
-    .domain-server span { font-family: var(--font-mono); color: var(--text-dim); }
-    .domain-auth-badge.protected { color: var(--green); background: var(--green-soft); }
-    .domain-auth-btn { font-size: 12px; padding: 4px 10px; }
-    .domain-auth-btn.clear:hover { color: var(--red); }
-    .auth-domain-pill { font: 13px var(--font-mono); background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; word-break: break-all; }
+    /* ---------- Sites sheet ---------- */
+    .sheet { background: var(--sheet); border: 1px solid var(--line); border-radius: 12px; }
+    .sheet-head { display: flex; align-items: baseline; gap: 12px; padding: 18px 22px 14px; }
+    .sheet-head h1 { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
+    .summary { color: var(--ink-3); font-size: 13px; }
 
-    /* ---------- Forms & modals ---------- */
+    .site {
+      position: relative;
+      display: grid;
+      grid-template-columns: 12px minmax(0, 1fr) auto;
+      column-gap: 16px;
+      padding: 16px 22px 16px 22px;
+      border-top: 1px solid var(--line);
+    }
+    .site > .lamp { margin-top: 9px; }
+    .host-line { display: flex; align-items: baseline; gap: 12px; min-width: 0; flex-wrap: wrap; }
+    .host {
+      font-family: var(--font-host);
+      font-stretch: 87.5%;
+      font-size: 19px;
+      font-weight: 500;
+      letter-spacing: -0.02em;
+      text-decoration: none;
+      overflow-wrap: anywhere;
+    }
+    .host .tld { color: var(--ink-3); font-weight: 400; }
+    a.host:hover .sub { color: var(--cherry); }
+    .target { font-family: var(--font-host); font-stretch: 87.5%; font-size: 13px; color: var(--ink-2); overflow-wrap: anywhere; }
+
+    .meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 5px; font-size: 13px; color: var(--ink-2); }
+    .meta .state { font-weight: 600; }
+    .state.running { color: var(--mint); }
+    .state.starting { color: var(--lemon); }
+    .state.crashed { color: var(--cherry); }
+    .state.idle, .state.stopped, .state.ext { color: var(--ink-2); }
+    .meta .cmd { font-family: var(--font-host); font-stretch: 87.5%; font-size: 12px; color: var(--ink-3); min-width: 0; overflow-wrap: anywhere; }
+    .meta .cmd b { color: var(--ink-2); font-weight: 400; }
+
+    .chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
+    .chip {
+      height: 24px; padding: 0 10px;
+      border: 1px solid var(--line-2); border-radius: 999px;
+      background: transparent; color: var(--ink-3);
+      font-size: 12px; font-weight: 500; cursor: pointer;
+    }
+    .chip:hover { color: var(--ink); border-color: var(--ink-3); }
+    .chip.on { background: var(--ink); border-color: var(--ink); color: var(--sheet); cursor: default; }
+    span.chip { display: inline-flex; align-items: center; }
+    .chip-link { font-family: var(--font-host); font-stretch: 87.5%; font-size: 12px; color: var(--ink-2); text-decoration: none; }
+    .chip-link:hover { color: var(--cherry); text-decoration: underline; }
+
+    .portal-line {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px;
+      margin-top: 12px; padding: 8px 10px 8px 12px;
+      background: var(--sheet-2); border-radius: 8px;
+      font-size: 13px; color: var(--ink-2);
+    }
+    .portal-line a { font-family: var(--font-host); font-stretch: 87.5%; font-size: 12px; color: var(--ink); overflow-wrap: anywhere; min-width: 0; flex: 1; }
+    .portal-line a:hover { color: var(--grape); }
+
+    .actions { display: flex; align-items: flex-start; gap: 6px; padding-top: 1px; }
+
+    /* ---------- Status lamps ---------- */
+    .lamp { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--line-2); flex-shrink: 0; }
+    .lamp.running { background: var(--mint); border-color: var(--mint); box-shadow: 0 0 0 3px var(--mint-soft); }
+    .lamp.starting { background: var(--lemon); border-color: var(--lemon); box-shadow: 0 0 0 3px var(--lemon-soft); animation: pulse 1.2s ease-in-out infinite; }
+    .lamp.crashed { background: var(--cherry); border-color: var(--cherry); box-shadow: 0 0 0 3px var(--cherry-soft); }
+    .lamp.ext { border-style: dashed; }
+    .lamp.portal { background: var(--grape); border-color: var(--grape); width: 8px; height: 8px; }
+    .lamp.offline { background: var(--cherry); border-color: var(--cherry); }
+    @keyframes pulse { 50% { box-shadow: 0 0 0 6px transparent; } }
+
+    /* ---------- More menu ---------- */
+    .menu-wrap { position: relative; }
+    .menu {
+      display: none;
+      position: absolute; right: 0; top: calc(100% + 6px); z-index: 20;
+      min-width: 190px; padding: 6px;
+      background: var(--sheet); border: 1px solid var(--line-2); border-radius: 10px;
+      box-shadow: 0 12px 32px rgba(26, 29, 51, 0.16);
+    }
+    .menu-wrap.open .menu { display: block; }
+    .menu button {
+      display: block; width: 100%; text-align: left;
+      padding: 7px 10px; border: 0; border-radius: 6px; background: none;
+      font-size: 13px; cursor: pointer; white-space: nowrap;
+    }
+    .menu button:hover, .menu button:focus-visible { background: var(--sheet-2); outline: none; }
+    .menu button.danger { color: var(--cherry); }
+    .menu hr { border: 0; border-top: 1px solid var(--line); margin: 5px 4px; }
+
+    /* ---------- Side rail ---------- */
+    .rail { display: flex; flex-direction: column; gap: 30px; padding-top: 4px; }
+    .rail-head { display: flex; align-items: center; gap: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line-2); }
+    .rail-head h2 { font-size: 15px; font-weight: 700; }
+    .rail-head .n { color: var(--ink-3); font-size: 13px; }
+    .rail-head .btn { margin-left: auto; }
+    .rail-list { max-height: 420px; overflow-y: auto; }
+    .rail-item { padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+    .rail-item .fqdn { font-family: var(--font-host); font-stretch: 87.5%; font-size: 13px; font-weight: 500; text-decoration: none; overflow-wrap: anywhere; }
+    .rail-item .fqdn:hover { color: var(--cherry); }
+    .rail-item .sub-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 4px; color: var(--ink-2); }
+    .lock { font-weight: 500; }
+    .link-row { display: flex; gap: 14px; margin-top: 6px; }
+    .link-row button { border: 0; background: none; padding: 0; font-size: 12.5px; font-weight: 600; color: var(--ink-2); cursor: pointer; }
+    .link-row button:hover { color: var(--ink); text-decoration: underline; }
+    .link-row button.danger { color: var(--cherry); }
+    .lock.on { color: var(--mint); }
+    .activity-item { display: grid; grid-template-columns: 46px minmax(0, 1fr); gap: 1px 10px; }
+    .activity-time { font-family: var(--font-host); font-stretch: 87.5%; font-size: 11.5px; color: var(--ink-3); padding-top: 2px; font-variant-numeric: tabular-nums; }
+    .activity-action { font-weight: 600; }
+    .activity-action::first-letter { text-transform: uppercase; }
+    .activity-details { grid-column: 2; color: var(--ink-2); font-size: 12.5px; overflow-wrap: anywhere; }
+
+    .empty { padding: 20px 0; color: var(--ink-3); font-size: 13px; line-height: 1.55; }
+    .sheet .empty { padding: 22px; border-top: 1px solid var(--line); }
+    .empty code { font-family: var(--font-host); font-stretch: 87.5%; font-size: 12px; color: var(--ink-2); }
+
+    /* ---------- Dialogs ---------- */
+    .modal { display: none; position: fixed; inset: 0; z-index: 100; align-items: center; justify-content: center; padding: 16px; background: var(--scrim); }
+    .dialog {
+      width: 440px; max-width: 100%; max-height: calc(100vh - 32px); overflow-y: auto;
+      background: var(--sheet); border: 1px solid var(--line-2); border-radius: 14px;
+      box-shadow: 0 24px 64px rgba(10, 12, 24, 0.28);
+    }
+    .dialog-head { display: flex; align-items: center; gap: 12px; padding: 18px 22px 0; }
+    .dialog-head h2 { font-size: 17px; font-weight: 700; flex: 1; min-width: 0; }
+    .dialog-body { padding: 16px 22px 22px; }
+    .dialog form { display: flex; flex-direction: column; gap: 16px; }
+    .dialog form[hidden] { display: none; }
+    .field label, .modal-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+    .with-suffix { display: flex; align-items: center; gap: 8px; }
+    .with-suffix span { color: var(--ink-3); font-family: var(--font-host); font-stretch: 87.5%; font-size: 13px; }
     .input-field {
-      font: 14px var(--font-sans);
-      color: var(--text);
-      background: var(--surface);
-      border: 1px solid var(--border-bright);
-      border-radius: 8px;
-      padding: 9px 11px;
-      outline: none;
-      transition: border-color 0.15s, box-shadow 0.15s;
+      width: 100%; height: 38px; padding: 0 12px;
+      border: 1px solid var(--line-2); border-radius: 8px;
+      background: var(--sheet); color: var(--ink);
+      font: 14px var(--font-ui);
     }
-    .input-field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-    .input-field::placeholder { color: var(--text-muted); }
-    .persistent-toggle { display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--text-dim); cursor: pointer; }
-    .persistent-toggle input { accent-color: var(--accent); }
-    .modal-label { font-size: 13px; font-weight: 500; color: var(--text-dim); display: block; margin-bottom: 6px; }
-    [id$="-modal"] { background: rgba(10, 10, 14, 0.45) !important; backdrop-filter: blur(4px); padding: 16px; }
-    [id$="-modal"] > .card { max-width: 100%; box-shadow: var(--shadow-lg); }
-    #logs-modal .card-header { height: auto; padding: 12px 18px; }
-    [id$="-modal"] .card-body { padding: 20px; }
-    #logs-content { background: #0e0e12; color: #e4e4ea; }
+    .input-field.code, input#add-name, input#config-name, input#config-cwd, input#config-cmd, input#bind-subdomain, input#prompt-input { font-family: var(--font-host); font-stretch: 87.5%; font-size: 13px; }
+    .input-field:focus { outline: none; border-color: var(--cherry); box-shadow: 0 0 0 3px var(--cherry-soft); }
+    .hint, .prompt-hint { font-size: 12.5px; color: var(--ink-3); margin-top: 6px; }
+    .check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+    .check input { accent-color: var(--cherry); width: 15px; height: 15px; }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+    .presets { display: flex; flex-wrap: wrap; gap: 6px; }
+    .presets .chip { font-family: var(--font-host); font-stretch: 87.5%; font-size: 11.5px; }
+    .segmented { display: flex; gap: 4px; padding: 4px; background: var(--sheet-2); border-radius: 10px; }
+    .segmented button { flex: 1; height: 30px; border: 0; border-radius: 7px; background: none; color: var(--ink-2); font-size: 13px; font-weight: 500; cursor: pointer; }
+    .segmented button[aria-selected="true"] { background: var(--sheet); color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px rgba(26, 29, 51, 0.12); }
+    .warning { background: var(--lemon-soft); border-radius: 10px; padding: 12px 14px; font-size: 13px; }
+    .warning-records { color: var(--ink-2); font-family: var(--font-host); font-stretch: 87.5%; font-size: 12px; margin-top: 6px; }
+    .auth-domain-pill { font-family: var(--font-host); font-stretch: 87.5%; font-size: 13px; padding: 8px 12px; background: var(--sheet-2); border-radius: 8px; overflow-wrap: anywhere; }
+
+    /* Logs */
+    .dialog.logs { width: 1000px; height: 80vh; display: flex; flex-direction: column; overflow: hidden; }
+    .logs .dialog-head { padding-bottom: 14px; }
+    .logs-sub { font-size: 12.5px; color: var(--ink-3); font-weight: 400; }
+    #logs-content {
+      flex: 1; margin: 0; padding: 16px 20px; overflow-y: auto;
+      background: var(--log-bg); color: var(--log-ink);
+      font: 12.5px/1.6 var(--font-host); font-stretch: 87.5%;
+      white-space: pre-wrap; word-break: break-all;
+    }
+    .process-status { font-size: 12px; font-weight: 600; margin-left: 8px; }
+    .process-status.running { color: var(--mint); }
+    .process-status.starting { color: var(--lemon); }
+    .process-status.errored, .process-status.dead { color: var(--cherry); }
 
     /* ---------- Toasts ---------- */
-    .toast-container { position: fixed; right: 20px; bottom: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 200; max-width: min(420px, calc(100vw - 32px)); }
+    .toast-container { position: fixed; right: 20px; bottom: 20px; z-index: 200; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
     .toast {
-      background: var(--surface);
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-left: 3px solid var(--blue);
-      border-radius: 10px;
-      padding: 11px 14px;
-      font-size: 13.5px;
-      box-shadow: var(--shadow-lg);
-      animation: slideIn 0.18s ease-out;
-      word-break: break-word;
+      display: flex; align-items: center; gap: 10px;
+      max-width: 420px; padding: 10px 14px;
+      background: var(--ink); color: var(--sheet);
+      border-radius: 10px; font-size: 13px; font-weight: 500;
+      box-shadow: 0 10px 30px rgba(10, 12, 24, 0.25);
+      animation: toast-in 0.18s ease-out;
     }
-    .toast.success { border-left-color: var(--green); }
-    .toast.error { border-left-color: var(--red); }
-    @keyframes slideIn { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+    .toast::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); flex-shrink: 0; }
+    .toast.success::before { background: var(--mint); }
+    .toast.error::before { background: var(--cherry); }
+    @keyframes toast-in { from { transform: translateY(6px); opacity: 0; } }
 
-    @media (max-width: 1100px) { .dash-grid { grid-template-columns: minmax(0, 1fr); } }
-    @media (max-width: 720px) {
-      header { padding: 10px 16px; }
-      .logo-sub, .status-indicator span { display: none; }
-      .gui-content { padding: 16px 16px 40px; gap: 16px; }
-      .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-      .route-item, .process-item, .config-item { flex-direction: column; align-items: stretch; }
-      .route-actions, .process-actions, .config-actions { justify-content: flex-start; }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before { animation: none !important; transition: none !important; }
+    }
+
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: minmax(0, 1fr); }
+    }
+    @media (max-width: 640px) {
+      .top, .layout { padding-left: 16px; padding-right: 16px; }
+      .top { padding-top: 16px; gap: 12px; flex-wrap: wrap; }
+      .daemon { order: 3; width: 100%; }
+      .sheet-head { padding: 16px 16px 12px; flex-wrap: wrap; }
+      .site { grid-template-columns: 12px minmax(0, 1fr); padding: 14px 16px; column-gap: 12px; }
+      .site .actions { grid-column: 2; margin-top: 12px; }
+      .site .actions:not(.has-buttons) { margin-top: 0; }
+      .site .menu-wrap { position: absolute; top: 12px; right: 12px; }
+      .site .menu { right: 0; left: auto; }
+      .host-line { padding-right: 40px; }
+      .portal-line a { flex-basis: 100%; order: -1; }
+      .host { font-size: 17px; }
+      .sheet .empty { padding: 18px 16px; }
     }
   </style>
 </head>
 <body>
-  <header>
-    <div class="logo">
-      <div class="logo-mark" aria-hidden="true">c</div>
-      <a href="candy://portal" class="logo-text" title="Open via the candy:// protocol">candy</a>
-      <div class="logo-sub">Local routes &amp; dev servers</div>
-    </div>
-    <div class="header-right">
-      <div class="status-indicator">
-        <div class="status-dot" id="status-dot"></div>
-        <span id="status-text">connecting…</span>
-      </div>
-      <button class="btn secondary" onclick="refreshAll(); refreshTraffic();" title="Refresh everything">Refresh</button>
+  <header class="top">
+    <a href="candy://portal" class="wordmark" title="Open via the candy:// protocol">candy<span>.</span></a>
+    <div class="daemon"><span class="lamp" id="status-dot"></span><span id="status-text">Connecting…</span></div>
+    <div class="spacer"></div>
+    <div class="top-actions">
+      <button class="btn quiet" onclick="refreshAll(); refreshTraffic();">Refresh</button>
+      <button class="btn primary" onclick="showAddRoute()">Add site</button>
     </div>
   </header>
 
-  <main>
-    <!-- GUI Panel -->
-    <div id="gui-panel" class="panel active">
-      <div class="gui-content">
-        <div class="stats-grid">
-          <div class="stat-item">
-            <div class="stat-label">Routes</div>
-            <div class="stat-value" id="stat-routes">–</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-label">Running servers</div>
-            <div class="stat-value" id="stat-processes">–</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-label">Portals</div>
-            <div class="stat-value" id="stat-portals">–</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-label">Daemon uptime</div>
-            <div class="stat-value" id="stat-uptime">–</div>
-          </div>
-        </div>
-
-        <div class="dash-grid">
-          <div class="dash-col">
-            <section class="card">
-              <div class="card-header">
-                <div class="card-title">Routes <span class="count" id="count-routes">0</span></div>
-                <button class="btn" onclick="showAddRoute()">Add route</button>
-              </div>
-              <div class="card-body scrollable" id="routes-list">
-                <div class="empty">Loading routes…</div>
-              </div>
-            </section>
-
-            <section class="card">
-              <div class="card-header">
-                <div class="card-title">Processes <span class="count" id="count-processes">0</span></div>
-              </div>
-              <div class="card-body scrollable" id="processes-list">
-                <div class="empty">Loading processes…</div>
-              </div>
-            </section>
-
-            <section class="card">
-              <div class="card-header">
-                <div class="card-title">Server configs <span class="count" id="count-configs">0</span></div>
-                <button class="btn" onclick="showAddConfig()">Add config</button>
-              </div>
-              <div class="card-body scrollable" id="configs-list">
-                <div class="empty">Loading configs…</div>
-              </div>
-            </section>
-          </div>
-
-          <div class="dash-col">
-            <section class="card">
-              <div class="card-header">
-                <div class="card-title">Portals <span class="count" id="count-portals">0</span></div>
-              </div>
-              <div class="card-body scrollable" id="portals-list">
-                <div class="empty">Loading portals…</div>
-              </div>
-            </section>
-
-            <section class="card">
-              <div class="card-header">
-                <div class="card-title">Traffic <span class="count" id="count-requests">0</span></div>
-                <span class="card-hint">requests since boot</span>
-              </div>
-              <div class="card-body scrollable" id="traffic-list">
-                <div class="empty">Loading traffic…</div>
-              </div>
-            </section>
-
-            <section class="card" id="domains-card">
-              <div class="card-header">
-                <div class="card-title">Bound domains <span class="count" id="count-domains">0</span></div>
-                <button class="btn" id="bind-domain-btn" onclick="showBindDomain()">Bind</button>
-              </div>
-              <div class="card-body scrollable" id="domains-list">
-                <div class="empty">Loading domains…</div>
-              </div>
-            </section>
-
-            <section class="card">
-              <div class="card-header">
-                <div class="card-title">Activity</div>
-                <span class="card-hint">latest first</span>
-              </div>
-              <div class="card-body scrollable" id="activity-list">
-                <div class="empty">Loading activity…</div>
-              </div>
-            </section>
-          </div>
-        </div>
+  <main class="layout">
+    <section class="sheet" aria-labelledby="sites-heading">
+      <div class="sheet-head">
+        <h1 id="sites-heading">Sites</h1>
+        <span class="summary" id="sites-summary"></span>
       </div>
-    </div>
+      <div id="sites-list">
+        <div class="empty">Loading…</div>
+      </div>
+    </section>
+
+    <aside class="rail">
+      <section id="domains-card">
+        <div class="rail-head">
+          <h2>Public domains</h2>
+          <span class="n" id="count-domains"></span>
+          <button class="btn small" id="bind-domain-btn" onclick="showBindDomain()" style="display: none;">Bind domain</button>
+        </div>
+        <div class="rail-list" id="domains-list"><div class="empty">Loading…</div></div>
+      </section>
+
+      <section>
+        <div class="rail-head"><h2>Activity</h2></div>
+        <div class="rail-list" id="activity-list"><div class="empty">Loading…</div></div>
+      </section>
+    </aside>
   </main>
 
-  <!-- Add Route Modal -->
-  <div id="add-route-modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; align-items: center; justify-content: center;">
-    <div class="card" style="width: 400px;">
-      <div class="card-header">
-        <div class="card-title">Add Route</div>
-        <button class="btn-icon" onclick="hideAddRoute()">&times;</button>
+  <!-- Add site: an existing port, or a command candy starts on demand -->
+  <div id="add-route-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="add-title">
+    <div class="dialog">
+      <div class="dialog-head">
+        <h2 id="add-title">Add site</h2>
+        <button class="btn quiet dots" onclick="hideAddRoute()" aria-label="Close">&times;</button>
       </div>
-      <div class="card-body">
-        <form onsubmit="submitAddRoute(event)" style="display: flex; flex-direction: column; gap: 1rem;">
-          <div>
-            <label class="modal-label">Domain Name</label>
-            <div style="display: flex; align-items: center; gap: 0.5rem;">
-              <input type="text" id="add-name" class="input-field" placeholder="myapp" required pattern="[a-zA-Z0-9-]+" style="flex: 1;">
-              <span style="color: var(--text-dim);" class="tld-suffix">.localhost</span>
+      <div class="dialog-body" style="display: flex; flex-direction: column; gap: 18px;">
+        <div class="segmented" role="tablist">
+          <button type="button" role="tab" id="tab-port" aria-selected="true" onclick="setAddMode('port')">Existing port</button>
+          <button type="button" role="tab" id="tab-cmd" aria-selected="false" onclick="setAddMode('cmd')">Run a command</button>
+        </div>
+
+        <form id="add-route-form" onsubmit="submitAddRoute(event)">
+          <div class="field">
+            <label for="add-name">Name</label>
+            <div class="with-suffix">
+              <input type="text" id="add-name" class="input-field" placeholder="myapp" required pattern="[a-zA-Z0-9-]+" autocomplete="off" spellcheck="false">
+              <span class="tld-suffix">.localhost</span>
             </div>
           </div>
-          <div>
-            <label class="modal-label">Port</label>
-            <input type="number" id="add-port" class="input-field" placeholder="3000" required min="1" max="65535" style="width: 100%;">
+          <div class="field">
+            <label for="add-port">Port</label>
+            <input type="number" id="add-port" class="input-field code" placeholder="3000" required min="1" max="65535">
+            <div class="hint">Something already listening on this machine.</div>
           </div>
-          <div>
-            <label class="persistent-toggle">
-              <input type="checkbox" id="add-persistent">
-              Persistent route (survives daemon restart)
-            </label>
+          <label class="check"><input type="checkbox" id="add-persistent"> Keep this route when the daemon restarts</label>
+          <div class="dialog-actions">
+            <button type="button" class="btn" onclick="hideAddRoute()">Cancel</button>
+            <button type="submit" class="btn primary">Add site</button>
           </div>
-          <div style="display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 0.5rem;">
-            <button type="button" class="btn secondary" onclick="hideAddRoute()">Cancel</button>
-            <button type="submit" class="btn">Add Route</button>
+        </form>
+
+        <form id="add-config-form" onsubmit="submitAddConfig(event)" hidden>
+          <div class="field">
+            <label for="config-name">Name</label>
+            <div class="with-suffix">
+              <input type="text" id="config-name" class="input-field" placeholder="myapp" required pattern="[a-zA-Z0-9-]+" autocomplete="off" spellcheck="false">
+              <span class="tld-suffix">.localhost</span>
+            </div>
+          </div>
+          <div class="field">
+            <label for="config-cwd">Project folder</label>
+            <input type="text" id="config-cwd" class="input-field" placeholder="~/projects/myapp" required spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="config-cmd">Start command</label>
+            <input type="text" id="config-cmd" class="input-field" placeholder="npm run dev" required spellcheck="false">
+            <div class="presets" style="margin-top: 8px;">
+              <button type="button" class="chip" onclick="setCmd('npm run dev')">npm run dev</button>
+              <button type="button" class="chip" onclick="setCmd('bun dev')">bun dev</button>
+              <button type="button" class="chip" onclick="setCmd('pnpm dev')">pnpm dev</button>
+              <button type="button" class="chip" onclick="setCmd('yarn dev')">yarn dev</button>
+            </div>
+            <div class="hint">candy starts it the first time the site is opened and finds the port from its output.</div>
+          </div>
+          <div class="dialog-actions">
+            <button type="button" class="btn" onclick="hideAddRoute()">Cancel</button>
+            <button type="submit" class="btn primary">Add site</button>
           </div>
         </form>
       </div>
     </div>
   </div>
 
-  <!-- Add Config Modal -->
-  <div id="add-config-modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; align-items: center; justify-content: center;">
-    <div class="card" style="width: 450px;">
-      <div class="card-header">
-        <div class="card-title">Add Server Config</div>
-        <button class="btn-icon" onclick="hideAddConfig()">&times;</button>
+  <!-- Bind public domain -->
+  <div id="bind-domain-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="bind-title">
+    <div class="dialog">
+      <div class="dialog-head">
+        <h2 id="bind-title">Bind a public domain</h2>
+        <button class="btn quiet dots" onclick="hideBindDomain()" aria-label="Close">&times;</button>
       </div>
-      <div class="card-body">
-        <form onsubmit="submitAddConfig(event)" style="display: flex; flex-direction: column; gap: 1rem;">
-          <div>
-            <label class="modal-label">Server Name</label>
-            <div style="display: flex; align-items: center; gap: 0.5rem;">
-              <input type="text" id="config-name" class="input-field" placeholder="myapp" required pattern="[a-zA-Z0-9-]+" style="flex: 1;">
-              <span style="color: var(--text-dim);" class="tld-suffix">.localhost</span>
-            </div>
-          </div>
-          <div>
-            <label class="modal-label">Project Path</label>
-            <input type="text" id="config-cwd" class="input-field" placeholder="~/projects/myapp" required style="width: 100%;">
-          </div>
-          <div>
-            <label class="modal-label">Start Command</label>
-            <input type="text" id="config-cmd" class="input-field" placeholder="npm run dev" required style="width: 100%;">
-          </div>
-          <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-            <button type="button" class="btn secondary" style="font-size: 0.65rem; padding: 0.35rem 0.6rem;" onclick="document.getElementById('config-cmd').value='npm run dev'">npm run dev</button>
-            <button type="button" class="btn secondary" style="font-size: 0.65rem; padding: 0.35rem 0.6rem;" onclick="document.getElementById('config-cmd').value='bun dev'">bun dev</button>
-            <button type="button" class="btn secondary" style="font-size: 0.65rem; padding: 0.35rem 0.6rem;" onclick="document.getElementById('config-cmd').value='pnpm dev'">pnpm dev</button>
-            <button type="button" class="btn secondary" style="font-size: 0.65rem; padding: 0.35rem 0.6rem;" onclick="document.getElementById('config-cmd').value='yarn dev'">yarn dev</button>
-          </div>
-          <div style="display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 0.5rem;">
-            <button type="button" class="btn secondary" onclick="hideAddConfig()">Cancel</button>
-            <button type="submit" class="btn">Add Config</button>
-          </div>
-        </form>
-      </div>
-    </div>
-  </div>
-
-  <!-- Bind Domain Modal -->
-  <div id="bind-domain-modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; align-items: center; justify-content: center;">
-    <div class="card" style="width: 450px;">
-      <div class="card-header">
-        <div class="card-title">Bind Domain</div>
-        <button class="btn-icon" onclick="hideBindDomain()">&times;</button>
-      </div>
-      <div class="card-body">
-        <div id="bind-domain-warning" style="display: none; background: rgba(255, 204, 0, 0.1); border: 1px solid rgba(255, 204, 0, 0.3); border-radius: 4px; padding: 0.75rem; margin-bottom: 1rem; font-size: 0.8rem;">
-          <div id="bind-domain-warning-text" style="color: var(--yellow);"></div>
-          <div id="bind-domain-warning-records" style="color: var(--text-dim); font-size: 0.7rem; margin-top: 0.5rem;"></div>
-          <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
-            <button class="btn" style="font-size: 0.7rem; padding: 0.35rem 0.75rem; background: var(--yellow); color: #fff;" onclick="forceBindDomain()">Replace records</button>
-            <button class="btn secondary" style="font-size: 0.7rem; padding: 0.35rem 0.75rem;" onclick="hideBindDomain()">Cancel</button>
+      <div class="dialog-body">
+        <div id="bind-domain-warning" class="warning" style="display: none;">
+          <div id="bind-domain-warning-text"></div>
+          <div id="bind-domain-warning-records" class="warning-records"></div>
+          <div class="dialog-actions" style="justify-content: flex-start; margin-top: 12px;">
+            <button class="btn primary small" onclick="forceBindDomain()">Replace records</button>
+            <button class="btn small" onclick="hideBindDomain()">Cancel</button>
           </div>
         </div>
-        <form id="bind-domain-form" onsubmit="submitBindDomain(event)" style="display: flex; flex-direction: column; gap: 1rem;">
-          <div>
-            <label class="modal-label">Subdomain</label>
-            <div style="display: flex; align-items: center; gap: 0.5rem;">
-              <input type="text" id="bind-subdomain" class="input-field" placeholder="myapp" required pattern="[a-zA-Z0-9-]+" style="flex: 1;">
-              <span style="color: var(--text-dim);" id="bind-domain-suffix">.domain.com</span>
+        <form id="bind-domain-form" onsubmit="submitBindDomain(event)">
+          <div class="field">
+            <label for="bind-subdomain">Subdomain</label>
+            <div class="with-suffix">
+              <input type="text" id="bind-subdomain" class="input-field" placeholder="myapp" required pattern="[a-zA-Z0-9-]+" autocomplete="off" spellcheck="false">
+              <span id="bind-domain-suffix">.domain.com</span>
             </div>
           </div>
-          <div>
-            <label class="modal-label">Server</label>
-            <select id="bind-server" class="input-field" required style="width: 100%;">
-              <option value="">Select a server...</option>
+          <div class="field">
+            <label for="bind-server">Site</label>
+            <select id="bind-server" class="input-field" required>
+              <option value="">Choose a site</option>
             </select>
           </div>
-          <div style="display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 0.5rem;">
-            <button type="button" class="btn secondary" onclick="hideBindDomain()">Cancel</button>
-            <button type="submit" class="btn">Bind Domain</button>
+          <div class="dialog-actions">
+            <button type="button" class="btn" onclick="hideBindDomain()">Cancel</button>
+            <button type="submit" class="btn primary">Bind domain</button>
           </div>
         </form>
       </div>
     </div>
   </div>
 
-  <!-- Domain Password Modal -->
-  <div id="domain-auth-modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; align-items: center; justify-content: center;">
-    <div class="card" style="width: 450px;">
-      <div class="card-header">
-        <div class="card-title">Set Domain Password</div>
-        <button class="btn-icon" onclick="hideDomainPasswordForm()">&times;</button>
+  <!-- Domain password -->
+  <div id="domain-auth-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+    <div class="dialog">
+      <div class="dialog-head">
+        <h2 id="auth-title">Set a password</h2>
+        <button class="btn quiet dots" onclick="hideDomainPasswordForm()" aria-label="Close">&times;</button>
       </div>
-      <div class="card-body">
-        <form id="domain-auth-form" onsubmit="submitDomainPassword(event)" style="display: flex; flex-direction: column; gap: 1rem;">
-          <div>
-            <label class="modal-label">Domain</label>
-            <div class="auth-domain-pill" id="domain-auth-target">-</div>
+      <div class="dialog-body">
+        <form id="domain-auth-form" onsubmit="submitDomainPassword(event)">
+          <div class="auth-domain-pill" id="domain-auth-target">-</div>
+          <div class="field">
+            <label for="domain-auth-password">Password</label>
+            <input type="password" id="domain-auth-password" class="input-field" autocomplete="new-password" required>
           </div>
-          <div>
-            <label class="modal-label">Password</label>
-            <input type="password" id="domain-auth-password" class="input-field" placeholder="Enter password" autocomplete="new-password" required style="width: 100%;">
+          <div class="field">
+            <label for="domain-auth-password-confirm">Confirm password</label>
+            <input type="password" id="domain-auth-password-confirm" class="input-field" autocomplete="new-password" required>
           </div>
-          <div>
-            <label class="modal-label">Confirm Password</label>
-            <input type="password" id="domain-auth-password-confirm" class="input-field" placeholder="Confirm password" autocomplete="new-password" required style="width: 100%;">
-          </div>
-          <div style="display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 0.5rem;">
-            <button type="button" class="btn secondary" onclick="hideDomainPasswordForm()">Cancel</button>
-            <button type="submit" class="btn">Set Password</button>
+          <div class="dialog-actions">
+            <button type="button" class="btn" onclick="hideDomainPasswordForm()">Cancel</button>
+            <button type="submit" class="btn primary">Set password</button>
           </div>
         </form>
       </div>
     </div>
   </div>
 
-  <!-- Single-field prompt modal (rename route, set port) -->
-  <div id="prompt-modal" style="display: none; position: fixed; inset: 0; z-index: 100; align-items: center; justify-content: center;">
-    <div class="card" style="width: 400px;">
-      <div class="card-header">
-        <div class="card-title" id="prompt-title">Edit</div>
-        <button class="btn-icon danger" onclick="hidePrompt()" aria-label="Close">&times;</button>
+  <!-- Single-field prompt (rename, set port) -->
+  <div id="prompt-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
+    <div class="dialog" style="width: 400px;">
+      <div class="dialog-head">
+        <h2 id="prompt-title">Edit</h2>
+        <button class="btn quiet dots" onclick="hidePrompt()" aria-label="Close">&times;</button>
       </div>
-      <div class="card-body">
-        <form onsubmit="submitPrompt(event)" style="display: flex; flex-direction: column; gap: 1rem;">
-          <div>
-            <label class="modal-label" for="prompt-input" id="prompt-label">Value</label>
-            <div style="display: flex; align-items: center; gap: 0.5rem;">
-              <input type="text" id="prompt-input" class="input-field" required autocomplete="off" spellcheck="false" style="flex: 1; min-width: 0;">
-              <span style="color: var(--text-dim);" id="prompt-suffix"></span>
+      <div class="dialog-body">
+        <form onsubmit="submitPrompt(event)">
+          <div class="field">
+            <label for="prompt-input" id="prompt-label">Value</label>
+            <div class="with-suffix">
+              <input type="text" id="prompt-input" class="input-field" required autocomplete="off" spellcheck="false" style="min-width: 0;">
+              <span id="prompt-suffix"></span>
             </div>
             <div class="prompt-hint" id="prompt-hint"></div>
           </div>
-          <div style="display: flex; gap: 0.75rem; justify-content: flex-end;">
-            <button type="button" class="btn secondary" onclick="hidePrompt()">Cancel</button>
-            <button type="submit" class="btn" id="prompt-submit">Save</button>
+          <div class="dialog-actions">
+            <button type="button" class="btn" onclick="hidePrompt()">Cancel</button>
+            <button type="submit" class="btn primary" id="prompt-submit">Save</button>
           </div>
         </form>
       </div>
     </div>
   </div>
 
-  <!-- Logs Modal -->
-  <div id="logs-modal" style="display: none; position: fixed; inset: 0; z-index: 100; align-items: center; justify-content: center;">
-    <div class="card" style="width: 1000px; height: 78vh; display: flex; flex-direction: column;">
-      <div class="card-header">
-        <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0;">
-          <div class="card-title">
-            <span id="logs-modal-title">Logs</span>
-            <span id="logs-modal-status" class="process-status"></span>
-          </div>
-          <div style="font-size: 12px; color: var(--text-muted);">Typing here goes to the process. Esc closes.</div>
-        </div>
-        <div style="display: flex; gap: 8px; align-items: center;">
-          <label class="persistent-toggle" style="font-size: 12.5px;">
-            <input type="checkbox" id="logs-autoscroll" checked>
-            Auto-scroll
-          </label>
-          <button class="btn-icon" onclick="clearLogsDisplay()" title="Clear display">Clear</button>
-          <button class="btn-icon danger" onclick="hideLogs()" title="Close (Esc)" aria-label="Close">×</button>
-        </div>
+  <!-- Logs -->
+  <div id="logs-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="logs-modal-title">
+    <div class="dialog logs">
+      <div class="dialog-head">
+        <h2><span id="logs-modal-title" class="mono">Logs</span><span id="logs-modal-status" class="process-status"></span>
+          <div class="logs-sub">Typing here goes to the process. Esc closes.</div>
+        </h2>
+        <label class="check"><input type="checkbox" id="logs-autoscroll" checked> Follow</label>
+        <button class="btn small" onclick="clearLogsDisplay()">Clear</button>
+        <button class="btn quiet dots" onclick="hideLogs()" aria-label="Close">&times;</button>
       </div>
-      <div class="card-body" style="flex: 1; overflow: hidden; padding: 0;">
-        <pre id="logs-content" style="margin: 0; padding: 16px 18px; height: 100%; overflow-y: auto; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-all;"></pre>
-      </div>
+      <pre id="logs-content"></pre>
     </div>
   </div>
 
-  <div class="toast-container" id="toast-container"></div>
+  <div class="toast-container" id="toast-container" role="status" aria-live="polite"></div>
 
   <script>
     const API = '';
@@ -726,20 +598,6 @@
       return res;
     }
 
-    // Status check
-    async function checkStatus() {
-      try {
-        const res = await apiCall('/status');
-        const data = await res.json();
-        document.getElementById('status-dot').classList.remove('offline');
-        document.getElementById('status-text').textContent = 'daemon online';
-        return data;
-      } catch {
-        document.getElementById('status-dot').classList.add('offline');
-        document.getElementById('status-text').textContent = 'daemon offline';
-        return null;
-      }
-    }
 
     // Toast notifications
     function toast(message, type = 'info') {
@@ -780,98 +638,7 @@
       if (el) el.textContent = n;
     }
 
-    async function refreshAll() {
-      await checkStatus().then(data => {
-        if (data) {
-          document.getElementById('stat-routes').textContent = data.routeCount;
-          document.getElementById('stat-portals').textContent = data.portalCount;
-          document.getElementById('stat-uptime').textContent = formatUptime(data.uptime);
-        }
-      });
-      await refreshRoutes();
-      await refreshPortals();
-      await refreshDomains();
-      await refreshProcesses();
-      await refreshConfigs();
-      await refreshActivity();
-    }
 
-    async function refreshRoutes() {
-      try {
-        const res = await apiCall('/routes');
-        const routes = await res.json();
-        const list = document.getElementById('routes-list');
-        const names = Object.keys(routes);
-        setCount('count-routes', names.length);
-
-        if (names.length === 0) {
-          list.innerHTML = `<div class="empty">No routes yet. Visit any <code>name.${TLD}</code> to register one, or use Add route.</div>`;
-        } else {
-          list.innerHTML = names.sort().map(name => {
-            const r = routes[name];
-            const safe = escapeHtml(name);
-            const js = escapeJsSingle(name);
-            const target = r.isRestricted ? r.target : ':' + r.target;
-            const badges = [
-              r.isRestricted ? '<span class="tag" title="Proxies to an external URL">external</span>' : '',
-              r.lan ? lanHttpsLink(r.lanHttps) : '',
-            ].join('');
-            return `
-              <div class="route-item">
-                <div class="route-info">
-                  <div class="route-line">
-                    <a class="route-name" href="${SCHEME}://${safe}.${TLD}" target="_blank">${safe}<span class="tld">.${TLD}</span></a>
-                    <span class="route-arrow">→</span>
-                    <span class="route-port">${escapeHtml(target)}</span>
-                  </div>
-                  ${badges ? `<div class="route-badges">${badges}</div>` : ''}
-                </div>
-                <div class="route-actions">
-                  <button class="btn-icon pin ${r.persistent ? 'active' : ''}" onclick="togglePersistent('${js}', ${!r.persistent})" title="${r.persistent ? 'Unpin: forget on daemon restart' : 'Pin: keep across daemon restarts'}">${r.persistent ? 'Pinned' : 'Pin'}</button>
-                  ${lanToggleButton(name, r.lan, r.lanHttps)}
-                  ${r.isRestricted ? '' : `<button class="btn-icon portal" onclick="openPortal('${js}', ${Number(r.target)})" title="Open a public Cloudflare tunnel">Portal</button>`}
-                  <button class="btn-icon" onclick="renameRoute('${js}')" title="Rename route">Rename</button>
-                  <button class="btn-icon danger" onclick="deleteRoute('${js}')" title="Delete route" aria-label="Delete route">×</button>
-                </div>
-              </div>
-            `;
-          }).join('');
-        }
-      } catch (e) {
-        document.getElementById('routes-list').innerHTML = '<div class="empty">Failed to load routes.</div>';
-      }
-    }
-
-    async function refreshPortals() {
-      try {
-        const res = await apiCall('/portals');
-        const portals = await res.json();
-        const list = document.getElementById('portals-list');
-        const names = Object.keys(portals);
-        setCount('count-portals', names.length);
-
-        if (names.length === 0) {
-          list.innerHTML = '<div class="empty">No open portals. Use Portal on a route to share it publicly.</div>';
-        } else {
-          list.innerHTML = names.map(name => {
-            const p = portals[name];
-            return `
-              <div class="portal-item">
-                <div class="portal-header">
-                  <span class="portal-name">${escapeHtml(name)} <span class="route-port">:${escapeHtml(p.port)}</span></span>
-                  <button class="btn-icon danger" onclick="closePortal('${escapeJsSingle(name)}')" title="Close portal" aria-label="Close portal">×</button>
-                </div>
-                <div class="portal-url">
-                  ${p.url ? `<a href="${escapeHtml(p.url)}" target="_blank">${escapeHtml(p.url)}</a>` : 'connecting…'}
-                </div>
-              </div>
-            `;
-          }).join('');
-        }
-      } catch (e) {
-        document.getElementById('portals-list').innerHTML = '<div class="empty">Failed to load portals.</div>';
-      }
-    }
 
     async function deleteRoute(name) {
       if (!confirm(`Delete ${name}.${TLD}?`)) return;
@@ -994,9 +761,9 @@
       }
     }
 
-    function showAddRoute() {
+    function showAddRoute(mode = 'port') {
       document.getElementById('add-route-modal').style.display = 'flex';
-      document.getElementById('add-name').focus();
+      setAddMode(mode);
     }
 
     function hideAddRoute() {
@@ -1004,6 +771,9 @@
       document.getElementById('add-name').value = '';
       document.getElementById('add-port').value = '';
       document.getElementById('add-persistent').checked = false;
+      document.getElementById('config-name').value = '';
+      document.getElementById('config-cwd').value = '';
+      document.getElementById('config-cmd').value = '';
     }
 
     async function submitAddRoute(e) {
@@ -1068,7 +838,11 @@
     }
 
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && document.getElementById('prompt-modal').style.display === 'flex') hidePrompt();
+      if (e.key !== 'Escape') return;
+      if (document.getElementById('prompt-modal').style.display === 'flex') hidePrompt();
+      else if (document.getElementById('add-route-modal').style.display === 'flex') hideAddRoute();
+      else if (document.getElementById('bind-domain-modal').style.display === 'flex') hideBindDomain();
+      else if (document.getElementById('domain-auth-modal').style.display === 'flex') hideDomainPasswordForm();
     });
 
     document.getElementById('prompt-modal').addEventListener('click', (e) => {
@@ -1135,132 +909,7 @@
       });
     }
 
-    // ----- Activity log -----
-    async function refreshActivity() {
-      const list = document.getElementById('activity-list');
-      try {
-        const res = await apiCall('/logs?count=40');
-        const data = await res.json();
-        const logs = (data.logs || []).slice().reverse();
-        if (logs.length === 0) {
-          list.innerHTML = '<div class="empty">Nothing yet. Route, server and portal changes show up here.</div>';
-          return;
-        }
-        list.innerHTML = logs.map(l => {
-          const t = new Date(l.time);
-          const time = t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-          const action = String(l.action || '').toLowerCase().replace(/_/g, ' ');
-          return `
-            <div class="activity-item" title="${escapeHtml(t.toLocaleString())}">
-              <div class="activity-time">${escapeHtml(time)}</div>
-              <div class="activity-action">${escapeHtml(action)}</div>
-              <div class="activity-details">${escapeHtml(l.details)}</div>
-            </div>`;
-        }).join('');
-      } catch {
-        list.innerHTML = '<div class="empty">Failed to load activity.</div>';
-      }
-    }
 
-    // ----- Traffic (from the Caddy access log) -----
-    async function refreshTraffic() {
-      const list = document.getElementById('traffic-list');
-      try {
-        const res = await apiCall('/stats');
-        const data = await res.json();
-        const domains = data.domains || [];
-        setCount('count-requests', domains.reduce((sum, d) => sum + (Number(d.total) || 0), 0).toLocaleString());
-        if (domains.length === 0) {
-          list.innerHTML = '<div class="empty">No requests yet.</div>';
-          return;
-        }
-        const max = Math.max(1, ...domains.map(d => d.total));
-        list.innerHTML = domains.map(d => `
-          <div class="traffic-item">
-            <div class="traffic-row">
-              <a href="${SCHEME}://${escapeHtml(d.name)}.${TLD}" target="_blank" title="${d.alive ? 'Server running' : 'Server not running'}"><span class="live ${d.alive ? 'on' : ''}"></span>${escapeHtml(d.name)}</a>
-              <span class="n">${Number(d.total).toLocaleString()}</span>
-            </div>
-            <div class="bar"><span style="width: ${Math.max(2, Math.round(d.total / max * 100))}%"></span></div>
-            ${(d.children || []).map(c => `
-              <div class="traffic-row traffic-child">
-                <a href="${escapeHtml(c.url)}" target="_blank" title="${c.alive ? 'Portal open' : 'Portal closed'}"><span class="live ${c.alive ? 'on' : ''}"></span>${escapeHtml(c.name)}</a>
-                <span class="n">${Number(c.total).toLocaleString()}</span>
-              </div>`).join('')}
-          </div>`).join('');
-      } catch {
-        list.innerHTML = '<div class="empty">Failed to load traffic.</div>';
-      }
-    }
-
-    // Update TLD-dependent elements
-    document.querySelectorAll('.tld-suffix').forEach(el => el.textContent = '.' + TLD);
-
-    // Init
-    refreshAll();
-    setInterval(refreshAll, 5000); // Refresh every 5s
-    // Traffic parses the Caddy access log, so poll it less often
-    refreshTraffic();
-    setInterval(refreshTraffic, 15000);
-
-    // Click outside modal to close
-    document.getElementById('add-route-modal').addEventListener('click', (e) => {
-      if (e.target.id === 'add-route-modal') hideAddRoute();
-    });
-    document.getElementById('add-config-modal').addEventListener('click', (e) => {
-      if (e.target.id === 'add-config-modal') hideAddConfig();
-    });
-
-    // Processes functions
-    async function refreshProcesses() {
-      try {
-        const res = await apiCall('/processes');
-        const data = await res.json();
-        const list = document.getElementById('processes-list');
-        const processesObj = data.processes || {};
-        const processes = Object.entries(processesObj).map(([name, p]) => ({ name, ...p }));
-
-        setCount('count-processes', processes.length);
-        const running = processes.filter(p => p.status === 'running').length;
-        document.getElementById('stat-processes').innerHTML = `${running}<small>/ ${processes.length}</small>`;
-
-        if (processes.length === 0) {
-          list.innerHTML = '<div class="empty">No managed processes. Servers from configs start when their domain is visited.</div>';
-        } else {
-          list.innerHTML = processes.map(p => {
-            const statusClass = p.status;
-            const portInfo = p.port ? `:${p.port}` : '';
-            const pidInfo = p.pid ? `PID ${p.pid}` : '';
-            const cfgInfo = p.configId ? `cfg ${p.configId}` : '';
-            const meta = [portInfo, pidInfo, cfgInfo].filter(Boolean).join(' · ');
-
-            const js = escapeJsSingle(p.name);
-            const active = p.status === 'running' || p.status === 'starting';
-            return `
-              <div class="process-item">
-                <div class="process-info">
-                  <div class="process-name">
-                    ${escapeHtml(p.name)}
-                    <span class="process-status ${escapeHtml(statusClass)}">${escapeHtml(p.status)}</span>
-                  </div>
-                  <div class="process-meta">${escapeHtml(meta || 'not started')}</div>
-                </div>
-                <div class="process-actions">
-                  <button class="btn-icon" onclick="showLogs('${js}')" title="Open logs and interactive terminal">Logs</button>
-                  ${active
-                    ? `<button class="btn-icon danger-text" onclick="stopProcess('${js}')" title="Stop">Stop</button>`
-                    : `<button class="btn-icon success" onclick="startProcess('${js}')" title="Start">Start</button>`}
-                  <button class="btn-icon warning" onclick="restartProcess('${js}')" title="Restart">Restart</button>
-                  <button class="btn-icon" onclick="setProcessPort('${js}', ${Number(p.port) || 'null'})" title="Set the port by hand if detection picked the wrong one">Port</button>
-                </div>
-              </div>
-            `;
-          }).join('');
-        }
-      } catch (e) {
-        document.getElementById('processes-list').innerHTML = '<div class="empty">Failed to load processes.</div>';
-      }
-    }
 
     async function startProcess(name, configId = null) {
       try {
@@ -1272,7 +921,7 @@
         });
         const data = await res.json();
         if (res.status === 409 && data.configs?.length) {
-          toast('Multiple variants found. Pick one from the Configs panel.', 'error');
+          toast(`${name} has several start commands. Pick one from its ··· menu.`, 'error');
         } else if (data.error) {
           toast(data.error, 'error');
         } else {
@@ -1315,52 +964,6 @@
       }
     }
 
-    // Configs functions
-    async function refreshConfigs() {
-      try {
-        const res = await apiCall('/configs');
-        const data = await res.json();
-        const configs = data.configs || data;
-        const list = document.getElementById('configs-list');
-        const names = Object.keys(configs).filter(k => k !== 'success');
-
-        setCount('count-configs', names.length);
-        if (names.length === 0) {
-          list.innerHTML = '<div class="empty">No server configs. Add one to start a dev server on demand.</div>';
-        } else {
-          const html = [];
-          names.forEach(name => {
-            const c = configs[name];
-            const variants = Array.isArray(c.variants) && c.variants.length ? c.variants : [c];
-            variants.forEach((variant, idx) => {
-              const heading = idx === 0
-                ? `${escapeHtml(name)}<span class="muted">.${TLD}</span>${variants.length > 1 ? ` <span class="tag">${variants.length} variants</span>` : ''}${c.lan ? ' <span class="route-lan">lan</span>' + lanHttpsLink(c.lanHttps) : ''}`
-                : `${escapeHtml(name)}<span class="muted">.${TLD}</span> <span class="tag">variant</span>`;
-              html.push(`
-                <div class="config-item">
-                  <div class="config-info">
-                    <div class="config-name">${heading}</div>
-                    <div class="config-details">
-                      <span class="label">cwd</span><span title="${escapeHtml(variant.cwd)}">${escapeHtml(variant.cwd)}</span>
-                      <span class="label">cmd</span><span title="${escapeHtml(variant.cmd)}">${escapeHtml(variant.cmd)}</span>
-                      <span class="label">id</span><span>${escapeHtml(variant.id)}</span>
-                    </div>
-                  </div>
-                  <div class="config-actions">
-                    ${idx === 0 ? lanToggleButton(name, c.lan, c.lanHttps) : ''}
-                    <button class="btn-icon success" onclick="startProcess('${escapeJsSingle(name)}', '${escapeJsSingle(variant.id)}')" title="Start this config">Start</button>
-                    <button class="btn-icon danger" onclick="deleteConfig('${escapeJsSingle(name)}', '${escapeJsSingle(variant.id)}')" title="Delete config" aria-label="Delete config">×</button>
-                  </div>
-                </div>
-              `);
-            });
-          });
-          list.innerHTML = html.join('');
-        }
-      } catch (e) {
-        document.getElementById('configs-list').innerHTML = '<div class="empty">Failed to load configs.</div>';
-      }
-    }
 
     async function deleteConfig(name, configId = null) {
       if (!confirm(`Delete config for ${name}${configId ? ` (${configId})` : ''}?`)) return;
@@ -1378,17 +981,8 @@
       }
     }
 
-    function showAddConfig() {
-      document.getElementById('add-config-modal').style.display = 'flex';
-      document.getElementById('config-name').focus();
-    }
-
-    function hideAddConfig() {
-      document.getElementById('add-config-modal').style.display = 'none';
-      document.getElementById('config-name').value = '';
-      document.getElementById('config-cwd').value = '';
-      document.getElementById('config-cmd').value = '';
-    }
+    function showAddConfig() { showAddRoute('cmd'); }
+    function hideAddConfig() { hideAddRoute(); }
 
     // Logs modal
     let logsEventSource = null;
@@ -1549,51 +1143,48 @@
     let pendingAuthDomain = null;
 
     async function refreshDomains() {
+      const list = document.getElementById('domains-list');
+      const btn = document.getElementById('bind-domain-btn');
       try {
-        const res = await apiCall('/domains');
-        const data = await res.json();
-        const list = document.getElementById('domains-list');
-        const card = document.getElementById('domains-card');
-
+        const data = await getJSON('/domains');
         if (!data.configured) {
-          setCount('count-domains', 0);
-          document.getElementById('bind-domain-btn').style.display = 'none';
-          list.innerHTML = '<div class="empty">Not configured. Set up a zone from the CLI:<br><code>candy domain config --zone domain.com --tunnel candy</code></div>';
+          setCount('count-domains', '');
+          btn.style.display = 'none';
+          list.innerHTML = '<div class="empty">Put a site on your own domain through a Cloudflare tunnel. Set up a zone from the CLI first:<br><code>candy domain config --zone example.com --tunnel candy</code></div>';
           return;
         }
 
         domainZone = data.zone;
         const suffix = document.getElementById('bind-domain-suffix');
         if (suffix && domainZone) suffix.textContent = '.' + domainZone.domain;
+        btn.style.display = '';
 
-        document.getElementById('bind-domain-btn').style.display = '';
         const bindings = Object.values(data.bindings || {});
-        setCount('count-domains', bindings.length);
+        setCount('count-domains', bindings.length || '');
         if (bindings.length === 0) {
-          list.innerHTML = '<div class="empty">No bound domains yet.</div>';
-        } else {
-          list.innerHTML = bindings.map(b => `
-            <div class="domain-item">
-              <div class="domain-header">
-                <span class="domain-name">${escapeHtml(b.subdomain)}</span>
-                <button class="btn-icon danger" onclick="unbindDomain('${escapeJsSingle(b.subdomain)}')" title="Unbind" aria-label="Unbind">&times;</button>
-              </div>
-              <div class="domain-fqdn">
-                <a href="https://${escapeHtml(b.fqdn)}" target="_blank">${escapeHtml(b.fqdn)}</a>
-              </div>
-              <div class="domain-server">server <span>${escapeHtml(b.serverName)}</span></div>
-              <div class="domain-auth-row">
-                <span class="domain-auth-badge ${(b.hasPassword || (b.auth && b.auth.password)) ? 'protected' : 'unprotected'}">${(b.hasPassword || (b.auth && b.auth.password)) ? 'password protected' : 'public'}</span>
-                ${(b.hasPassword || (b.auth && b.auth.password))
-                  ? `<button class="btn secondary domain-auth-btn clear" onclick="clearDomainPassword('${escapeJsSingle(b.fqdn)}')">Remove password</button>`
-                  : `<button class="btn secondary domain-auth-btn set" onclick="showDomainPasswordForm('${escapeJsSingle(b.fqdn)}')">Set password</button>`
-                }
-              </div>
-            </div>
-          `).join('');
+          list.innerHTML = `<div class="empty">No public domains yet. Bind one to serve a site at <code>name.${escapeHtml(domainZone?.domain || 'your domain')}</code>.</div>`;
+          return;
         }
-      } catch (e) {
-        document.getElementById('domains-list').innerHTML = '<div class="empty">Failed to load domains.</div>';
+        list.innerHTML = bindings.map(b => {
+          const locked = !!(b.hasPassword || (b.auth && b.auth.password));
+          const fqdn = escapeJsSingle(b.fqdn);
+          return `
+            <div class="rail-item">
+              <a class="fqdn" href="https://${escapeHtml(b.fqdn)}" target="_blank">${escapeHtml(b.fqdn)}</a>
+              <div class="sub-line">
+                <span>Serves ${escapeHtml(b.serverName)}</span>
+                <span class="lock ${locked ? 'on' : ''}">${locked ? 'Password protected' : 'Open to anyone'}</span>
+              </div>
+              <div class="link-row">
+                ${locked
+                  ? `<button onclick="clearDomainPassword('${fqdn}')">Remove password</button>`
+                  : `<button onclick="showDomainPasswordForm('${fqdn}')">Add password</button>`}
+                <button class="danger" onclick="unbindDomain('${escapeJsSingle(b.subdomain)}')">Unbind</button>
+              </div>
+            </div>`;
+        }).join('');
+      } catch {
+        list.innerHTML = '<div class="empty">Couldn’t load domains.</div>';
       }
     }
 
@@ -1611,7 +1202,7 @@
         const data = await res.json();
         const configs = data.configs || {};
         const select = document.getElementById('bind-server');
-        select.innerHTML = '<option value="">Select a server...</option>';
+        select.innerHTML = '<option value="">Choose a site</option>';
         for (const name of Object.keys(configs).filter(k => k !== 'success')) {
           const opt = document.createElement('option');
           opt.value = name;
@@ -1809,6 +1400,300 @@
     // Close domain auth modal on backdrop click
     document.getElementById('domain-auth-modal').addEventListener('click', (e) => {
       if (e.target.id === 'domain-auth-modal') hideDomainPasswordForm();
+    });
+
+    // ----- Sites: routes, processes, configs, portals and traffic merged by name -----
+    const state = { status: null, routes: {}, processes: {}, configs: {}, portals: {}, stats: null };
+    let renderPending = false;
+
+    async function getJSON(endpoint) {
+      const res = await apiCall(endpoint);
+      return res.json();
+    }
+
+    async function checkStatus() {
+      const dot = document.getElementById('status-dot');
+      const text = document.getElementById('status-text');
+      try {
+        state.status = await getJSON('/status');
+        dot.className = 'lamp running';
+        text.textContent = `Daemon up ${formatUptime(state.status.uptime)}`;
+        return state.status;
+      } catch {
+        dot.className = 'lamp offline';
+        text.textContent = 'Daemon offline';
+        return null;
+      }
+    }
+
+    async function refreshRoutes() {
+      try { state.routes = await getJSON('/routes'); } catch {}
+      renderSites();
+    }
+    async function refreshProcesses() {
+      try { state.processes = (await getJSON('/processes')).processes || {}; } catch {}
+      renderSites();
+    }
+    async function refreshConfigs() {
+      try {
+        const data = await getJSON('/configs');
+        const configs = { ...(data.configs || data) };
+        delete configs.success;
+        state.configs = configs;
+      } catch {}
+      renderSites();
+    }
+    async function refreshPortals() {
+      try { state.portals = await getJSON('/portals'); } catch {}
+      renderSites();
+    }
+    async function refreshTraffic() {
+      try { state.stats = await getJSON('/stats'); } catch {}
+      renderSites();
+    }
+
+    // Calls run one after another: each one rolls the session token
+    async function refreshAll() {
+      if (!(await checkStatus())) return;
+      await refreshRoutes();
+      await refreshProcesses();
+      await refreshConfigs();
+      await refreshPortals();
+      await refreshDomains();
+      await refreshActivity();
+    }
+
+    function variantsOf(config) {
+      if (!config) return [];
+      return Array.isArray(config.variants) && config.variants.length ? config.variants : [config];
+    }
+
+    function collectSites() {
+      const traffic = {};
+      (state.stats?.domains || []).forEach(d => { traffic[d.name] = d; });
+      const names = new Set([
+        ...Object.keys(state.routes || {}),
+        ...Object.keys(state.processes || {}),
+        ...Object.keys(state.configs || {}),
+        ...Object.keys(state.portals || {}),
+      ]);
+      return [...names].sort().map(name => ({
+        name,
+        route: state.routes[name],
+        proc: state.processes[name],
+        config: state.configs[name],
+        portal: state.portals[name],
+        traffic: traffic[name],
+      }));
+    }
+
+    function siteStatus(s) {
+      const p = s.proc?.status;
+      if (p === 'running') return ['running', 'Running'];
+      if (p === 'starting') return ['starting', 'Starting'];
+      if (p === 'errored') return ['crashed', 'Crashed'];
+      if (p === 'dead' || p === 'stopped') return ['stopped', 'Stopped'];
+      if (p) return ['idle', p.charAt(0).toUpperCase() + p.slice(1)];
+      if (s.config) return ['idle', 'Starts when opened'];
+      if (s.route?.isRestricted) return ['ext', 'External URL'];
+      if (s.traffic?.alive) return ['running', 'Listening'];
+      return ['idle', 'Forwarding'];
+    }
+
+    function plural(n, word) {
+      return `${Number(n).toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
+    }
+
+    function shortPath(p) {
+      return String(p || '').replace(/^\/home\/[^/]+/, '~');
+    }
+
+    function menuItem(label, action, danger = false) {
+      return `<button role="menuitem" class="${danger ? 'danger' : ''}" onclick="closeMenus(); ${action}">${escapeHtml(label)}</button>`;
+    }
+
+    function siteRow(s) {
+      const name = s.name;
+      const safe = escapeHtml(name);
+      const js = escapeJsSingle(name);
+      const [st, label] = siteStatus(s);
+      const route = s.route;
+      const variants = variantsOf(s.config);
+      const active = s.proc && (s.proc.status === 'running' || s.proc.status === 'starting');
+      const port = s.proc?.port || (route && !route.isRestricted ? route.target : null);
+      const target = route ? (route.isRestricted ? route.target : ':' + route.target) : (s.proc?.port ? ':' + s.proc.port : '');
+
+      const meta = [`<span class="state ${st}">${escapeHtml(label)}</span>`];
+      if (active && s.proc.pid) meta.push(`<span>pid ${escapeHtml(s.proc.pid)}</span>`);
+      if (s.traffic) meta.push(`<span>${plural(s.traffic.total, 'request')}</span>`);
+      if (variants.length > 1) meta.push(`<span>${variants.length} variants</span>`);
+      if (variants[0]) {
+        const v = variants[0];
+        meta.push(`<span class="cmd" title="${escapeHtml(v.cwd)}">${escapeHtml(shortPath(v.cwd))} <b>${escapeHtml(v.cmd)}</b></span>`);
+      }
+
+      const lan = route ? route.lan : s.config?.lan;
+      const lanHttps = route ? route.lanHttps : s.config?.lanHttps;
+      const chips = [];
+      if (route?.persistent) chips.push('<span class="chip on" title="Kept across daemon restarts">Pinned</span>');
+      if (lan) chips.push(`<span class="chip on" title="${safe}.candy is reachable from the local network">On LAN</span>`);
+      if (lanHttps) chips.push(`<a class="chip-link" href="${escapeHtml(lanHttps)}" target="_blank" title="LAN address with a trusted ts.net certificate">${escapeHtml(lanHttps.replace(/^https:\/\//, ''))}</a>`);
+
+      let portalLine = '';
+      if (s.portal) {
+        const child = (s.traffic?.children || []).find(c => c.url === s.portal.url);
+        portalLine = `
+          <div class="portal-line">
+            <span class="lamp portal"></span>
+            ${s.portal.url ? `<a href="${escapeHtml(s.portal.url)}" target="_blank">${escapeHtml(s.portal.url.replace(/^https:\/\//, ''))}</a>` : '<span style="flex: 1;">Opening portal…</span>'}
+            ${child ? `<span>${plural(child.total, 'request')}</span>` : ''}
+            <button class="btn small" onclick="closePortal('${js}')">Close portal</button>
+          </div>`;
+      }
+
+      const items = [];
+      if (s.proc) items.push(menuItem('Restart', `restartProcess('${js}')`));
+      if (s.proc) items.push(menuItem('Set port…', `setProcessPort('${js}', ${Number(s.proc.port) || 'null'})`));
+      if (route) items.push(menuItem('Rename…', `renameRoute('${js}')`));
+      if (route && !route.isRestricted && !s.portal) items.push(menuItem('Open public portal', `openPortal('${js}', ${Number(route.target)})`));
+      if (variants.length > 1) variants.forEach(v => items.push(menuItem(`Start ${v.id}`, `startProcess('${js}', '${escapeJsSingle(v.id)}')`)));
+      const toggles = [];
+      if (route) toggles.push(menuItem(route.persistent ? 'Unpin' : 'Pin across restarts', `togglePersistent('${js}', ${!route.persistent})`));
+      if (route || s.config) toggles.push(menuItem(lan ? 'Remove from LAN' : 'Publish to LAN…', `toggleLan('${js}', ${!lan})`));
+      if (lan) toggles.push(menuItem(lanHttps ? 'Turn off LAN HTTPS' : 'Serve LAN over HTTPS', `toggleLanHttps('${js}', ${!lanHttps})`));
+      const danger = [];
+      if (route) danger.push(menuItem('Delete route', `deleteRoute('${js}')`, true));
+      if (s.config) variants.forEach(v => danger.push(menuItem(variants.length > 1 ? `Delete command ${v.id}` : 'Delete start command', `deleteConfig('${js}', '${escapeJsSingle(v.id)}')`, true)));
+      const menu = items.length || toggles.length || danger.length ? `
+        <div class="menu-wrap">
+          <button class="btn dots" aria-haspopup="menu" aria-expanded="false" aria-label="More for ${safe}" onclick="toggleMenu(event, this)">&middot;&middot;&middot;</button>
+          <div class="menu" role="menu">${[items, toggles, danger].filter(g => g.length).map(g => g.join('')).join('<hr>')}</div>
+        </div>` : '';
+
+      const buttons = [];
+      if (s.proc) buttons.push(`<button class="btn" onclick="showLogs('${js}')">Logs</button>`);
+      if (active) buttons.push(`<button class="btn stop" onclick="stopProcess('${js}')">Stop</button>`);
+      else if (s.proc || s.config) buttons.push(`<button class="btn go" onclick="startProcess('${js}'${variants.length > 1 ? `, '${escapeJsSingle(variants[0].id)}'` : ''})">Start</button>`);
+
+      const href = TLD ? `${SCHEME}://${safe}.${TLD}` : '#';
+      return `
+        <div class="site">
+          <span class="lamp ${st}" title="${escapeHtml(label)}"></span>
+          <div style="min-width: 0;">
+            <div class="host-line">
+              <a class="host" href="${href}" target="_blank"><span class="sub">${safe}</span><span class="tld">.${escapeHtml(TLD || '')}</span></a>
+              ${target ? `<span class="target">${escapeHtml(target)}</span>` : ''}
+            </div>
+            <div class="meta">${meta.join('')}</div>
+            ${chips.length ? `<div class="chips">${chips.join('')}</div>` : ''}
+            ${portalLine}
+          </div>
+          <div class="actions ${buttons.length ? 'has-buttons' : ''}">${buttons.join('')}${menu}</div>
+        </div>`;
+    }
+
+    function renderSites() {
+      if (document.querySelector('.menu-wrap.open')) { renderPending = true; return; }
+      renderPending = false;
+      const sites = collectSites();
+      const running = sites.filter(s => s.proc?.status === 'running').length;
+      const portals = sites.filter(s => s.portal).length;
+      const summary = [plural(sites.length, 'site')];
+      if (running) summary.push(`${running} running`);
+      if (portals) summary.push(`${plural(portals, 'portal')} open`);
+      document.getElementById('sites-summary').textContent = summary.join(', ');
+
+      const list = document.getElementById('sites-list');
+      list.innerHTML = sites.length
+        ? sites.map(siteRow).join('')
+        : `<div class="empty">No sites yet. Open any <code>name.${escapeHtml(TLD || 'localhost')}</code> in a browser to set one up, or use Add site.</div>`;
+    }
+
+    // ----- More menu -----
+    function closeMenus() {
+      document.querySelectorAll('.menu-wrap.open').forEach(w => {
+        w.classList.remove('open');
+        w.querySelector('[aria-expanded]')?.setAttribute('aria-expanded', 'false');
+      });
+      if (renderPending) renderSites();
+    }
+
+    function toggleMenu(e, btn) {
+      e.stopPropagation();
+      const wrap = btn.parentElement;
+      const wasOpen = wrap.classList.contains('open');
+      document.querySelectorAll('.menu-wrap.open').forEach(w => {
+        w.classList.remove('open');
+        w.querySelector('[aria-expanded]')?.setAttribute('aria-expanded', 'false');
+      });
+      if (!wasOpen) {
+        wrap.classList.add('open');
+        btn.setAttribute('aria-expanded', 'true');
+        wrap.querySelector('.menu button')?.focus();
+      } else if (renderPending) {
+        renderSites();
+      }
+    }
+
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.menu-wrap')) closeMenus();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && document.querySelector('.menu-wrap.open')) closeMenus();
+    });
+
+    // ----- Add site dialog -----
+    function setAddMode(mode) {
+      const port = mode === 'port';
+      document.getElementById('tab-port').setAttribute('aria-selected', String(port));
+      document.getElementById('tab-cmd').setAttribute('aria-selected', String(!port));
+      document.getElementById('add-route-form').hidden = !port;
+      document.getElementById('add-config-form').hidden = port;
+      document.getElementById(port ? 'add-name' : 'config-name').focus();
+    }
+
+    function setCmd(cmd) {
+      document.getElementById('config-cmd').value = cmd;
+    }
+
+    // ----- Activity -----
+    async function refreshActivity() {
+      const list = document.getElementById('activity-list');
+      try {
+        const data = await getJSON('/logs?count=40');
+        const logs = (data.logs || []).slice().reverse();
+        if (logs.length === 0) {
+          list.innerHTML = '<div class="empty">Nothing yet. Sites added, renamed, started or shared show up here.</div>';
+          return;
+        }
+        list.innerHTML = logs.map(l => {
+          const t = new Date(l.time);
+          const time = t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+          const action = String(l.action || '').toLowerCase().replace(/_/g, ' ');
+          return `
+            <div class="rail-item activity-item" title="${escapeHtml(t.toLocaleString())}">
+              <div class="activity-time">${escapeHtml(time)}</div>
+              <div class="activity-action">${escapeHtml(action)}</div>
+              <div class="activity-details">${escapeHtml(l.details)}</div>
+            </div>`;
+        }).join('');
+      } catch {
+        list.innerHTML = '<div class="empty">Couldn’t load activity.</div>';
+      }
+    }
+
+    // Update TLD-dependent elements
+    document.querySelectorAll('.tld-suffix').forEach(el => el.textContent = '.' + (TLD || 'localhost'));
+
+    // Init
+    refreshAll().then(refreshTraffic);
+    setInterval(refreshAll, 5000);
+    // Traffic parses the Caddy access log, so poll it less often
+    setInterval(refreshTraffic, 15000);
+
+    // Click outside a dialog to close it
+    document.getElementById('add-route-modal').addEventListener('click', (e) => {
+      if (e.target.id === 'add-route-modal') hideAddRoute();
     });
 
   </script>

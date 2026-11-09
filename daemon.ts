@@ -11,6 +11,7 @@ import { chmod, chown, mkdir, unlink, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
 import { userInfo } from "node:os"
 import { SHARED_GROUP, SHARED_SECRET_FILE } from "./secret.ts"
+import { JtiBloom, readCredential, signJwt, stripCandyCredentials, verifyJwt, JWT_AUDIENCE, MAX_TOKEN_LIFETIME_S, type AuthResult, ipAllowed, isLoopback, parseCidr, TAILSCALE_RANGES } from "./server-auth.ts"
 
 import {
   buildActionSubdomain,
@@ -161,6 +162,12 @@ interface DomainBinding {
   auth?: {
     password: string | null  // bcrypt hash, null = no auth (nag mode)
     enabled: boolean
+    jwtSecret?: string       // HMAC secret for server-to-server JWTs (API-mode sites)
+  }
+  // Allowlist mode: only these IPs/CIDRs (plus Tailscale and this machine) get in
+  allowlist?: {
+    enabled: boolean
+    ips: string[]
   }
 }
 
@@ -232,10 +239,15 @@ const generateAuthToken = (): string => {
 
 // Get fingerprint key from request
 const getFingerprint = (req: Request, server: any): { ip: string; userAgent: string } => {
-  const ip = normalizeIp(
+  const direct = normalizeIp(
     req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
     server.requestIP(req)?.address || 'unknown'
   )
+  // Tunnel traffic reaches Caddy from cloudflared on loopback, so every visitor
+  // would share one IP. Cloudflare's header has the real one; only trust it
+  // from loopback, so a LAN client can't pick its own.
+  const cf = req.headers.get('cf-connecting-ip')?.trim()
+  const ip = cf && isLoopback(direct) ? normalizeIp(cf) : direct
   const userAgent = req.headers.get('user-agent') || 'unknown'
   return { ip, userAgent }
 }
@@ -286,7 +298,10 @@ const maybeRenewSession = (token: string): boolean => {
 }
 
 // Get auth failure state for an IP+UA combo
-const getAuthFailureKey = (ip: string, userAgent: string): string => `${ip}:${userAgent}`
+// Lockouts are per domain. The login page counts per IP + browser; API-mode
+// sites count per IP, so one bad caller can't lock out the others.
+const webFailureKey = (binding: DomainBinding, ip: string, userAgent: string): string => `web:${binding.subdomain}:${ip}:${userAgent}`
+const apiFailureKey = (binding: DomainBinding, ip: string): string => `api:${binding.subdomain}:${ip}`
 
 const withAuthFailureLock = async <T>(fn: () => Promise<T>): Promise<T> => {
   const run = authFailureIo.then(fn, fn)
@@ -384,10 +399,9 @@ const watchAuthFailures = async () => {
   }
 }
 
-const checkAuthBlocked = async (ip: string, userAgent: string): Promise<{ blocked: boolean; retryAfter: number }> => {
+const checkAuthBlocked = async (key: string): Promise<{ blocked: boolean; retryAfter: number }> => {
   return withAuthFailureLock(async () => {
     await loadAuthFailures('sync')
-    const key = getAuthFailureKey(ip, userAgent)
     const state = authFailures.get(key)
     if (!state) return { blocked: false, retryAfter: 0 }
     if (state.blockedUntil > Date.now()) {
@@ -397,10 +411,9 @@ const checkAuthBlocked = async (ip: string, userAgent: string): Promise<{ blocke
   })
 }
 
-const recordAuthFailure = async (ip: string, userAgent: string): Promise<{ retryAfter: number }> => {
+const recordAuthFailure = async (key: string): Promise<{ retryAfter: number }> => {
   return withAuthFailureLock(async () => {
     await loadAuthFailures('sync')
-    const key = getAuthFailureKey(ip, userAgent)
     const state = authFailures.get(key) || { count: 0, fibIndex: 0, blockedUntil: 0, lastAttempt: 0 }
     state.count++
     state.lastAttempt = Date.now()
@@ -418,10 +431,10 @@ const recordAuthFailure = async (ip: string, userAgent: string): Promise<{ retry
   })
 }
 
-const clearAuthFailures = async (ip: string, userAgent: string) => {
+const clearAuthFailures = async (key: string) => {
   await withAuthFailureLock(async () => {
     await loadAuthFailures('sync')
-    authFailures.delete(getAuthFailureKey(ip, userAgent))
+    authFailures.delete(key)
     await saveAuthFailures()
   })
 }
@@ -464,7 +477,109 @@ const getAuthCookie = (req: Request, domain: string): string | null => {
 }
 
 const hasBindingAuth = (binding: DomainBinding): boolean =>
-  !!(binding.auth?.enabled && binding.auth?.password)
+  !!(binding.auth?.enabled && (binding.auth?.password || binding.auth?.jwtSecret))
+
+const hasAllowlist = (binding: DomainBinding): boolean => !!binding.allowlist?.enabled
+
+// Domains with auth or an allowlist go through Caddy's forward_auth check
+const isGatedBinding = (binding: DomainBinding): boolean => hasBindingAuth(binding) || hasAllowlist(binding)
+
+// Fallback only: Caddy already drops these (abort) before they reach the daemon.
+// Refuse callers outside the allowlist. Not a failed login, so no lockout.
+const checkAllowlist = (req: Request, server: any, binding: DomainBinding): Response | null => {
+  if (!hasAllowlist(binding)) return null
+  const { ip } = getFingerprint(req, server)
+  if (ipAllowed(ip, binding.allowlist!.ips)) return null
+  if (isApiSite(binding)) {
+    return Response.json({ error: `${binding.fqdn} only accepts requests from allowlisted IPs.` }, { status: 403, headers: { "X-Candy": "allowlist" } })
+  }
+  return new Response(`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Not available</title>
+<style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px 16px;box-sizing:border-box;background:#eceef2;color:#1a1d33;font:15px/1.5 system-ui,sans-serif}h1{font-size:20px;margin:0 0 6px}p{margin:0;color:#555b75}@media (prefers-color-scheme:dark){body{background:#10121a;color:#e7e9f2}p{color:#a3a8c0}}</style>
+</head><body><main><h1>Not available from your network</h1><p>This site only accepts visitors from approved addresses.</p></main></body></html>`, {
+    status: 403,
+    headers: { "Content-Type": "text/html; charset=utf-8", "X-Candy": "allowlist" },
+  })
+}
+
+// ============================================================================
+// Server-to-server auth (API-mode sites): Basic or JWT, no login page
+// ============================================================================
+
+const DAEMON_STARTED_S = Math.floor(Date.now() / 1000)
+// Caddy copies this from a passing /candy-auth/check into the proxied request,
+// so the daemon doesn't verify (and burn the jti of) the same request twice.
+const CADDY_VERIFIED_NONCE = crypto.randomUUID()
+const jtiBlooms = new Map<string, JtiBloom>()
+const jtiBloomFor = (site: string): JtiBloom => {
+  let bloom = jtiBlooms.get(site)
+  if (!bloom) jtiBlooms.set(site, bloom = new JtiBloom(DAEMON_STARTED_S))
+  return bloom
+}
+// Server went down: forget used jtis, and refuse every token issued before now
+const resetJtiBloom = (site: string) => jtiBloomFor(site).reset(Math.floor(Date.now() / 1000))
+
+const isApiSite = (binding: DomainBinding): boolean => apiModeConfig(binding.serverName) !== null
+
+// Positive Basic checks only, so a correct password isn't re-hashed on every call
+const basicAuthCache = new Map<string, number>()
+const verifyBasicPassword = async (binding: DomainBinding, password: string): Promise<boolean> => {
+  const hash = binding.auth?.password
+  if (!hash) return false
+  const key = new Bun.CryptoHasher("sha256").update(`${binding.subdomain}\0${hash}\0${password}`).digest("hex")
+  const until = basicAuthCache.get(key)
+  if (until && until > Date.now()) return true
+  if (!await Bun.password.verify(password, hash)) return false
+  if (basicAuthCache.size > 256) basicAuthCache.clear()
+  basicAuthCache.set(key, Date.now() + 10 * 60 * 1000)
+  return true
+}
+
+const serverAuthDenied = (binding: DomainBinding, status: number, error: string, extra: Record<string, string> = {}) => {
+  const headers: Record<string, string> = { "X-Candy": "auth", ...extra }
+  if (status === 401 && binding.auth?.password) headers["WWW-Authenticate"] = `Basic realm="${binding.fqdn}", charset="UTF-8"`
+  return Response.json({ error }, { status, headers })
+}
+
+// Returns null when the request may pass, or the error response
+const checkServerAuth = async (req: Request, server: any, binding: DomainBinding): Promise<Response | null> => {
+  const { ip } = getFingerprint(req, server)
+  const failureKey = apiFailureKey(binding, ip)
+  const { blocked, retryAfter } = await checkAuthBlocked(failureKey)
+  if (blocked && retryAfter > 0) {
+    return serverAuthDenied(binding, 429, `Too many failed attempts. Try again in ${retryAfter}s.`, { "Retry-After": String(retryAfter) })
+  }
+
+  const cred = readCredential(req.headers)
+  let result: AuthResult
+  if (!cred) {
+    result = { ok: false, error: "Authentication required. Send a JWT or the domain password in X-Auth-Token (or X-Candy-Auth), or use HTTP Basic auth." }
+  } else if (cred.kind === "basic") {
+    result = !binding.auth?.password
+      ? { ok: false, error: "This domain has no password. Send a JWT in X-Auth-Token." }
+      : await verifyBasicPassword(binding, cred.password)
+        ? { ok: true, via: "basic" }
+        : { ok: false, error: "Wrong password", guess: true }
+  } else if (!binding.auth?.jwtSecret) {
+    result = { ok: false, error: "This domain has no JWT secret. Use HTTP Basic auth." }
+  } else {
+    const managed = processes.get(binding.serverName)
+    const live = managed && (managed.status === "running" || managed.status === "starting")
+    result = verifyJwt(cred.token, {
+      secret: binding.auth.jwtSecret,
+      site: binding.serverName,
+      now: Math.floor(Date.now() / 1000),
+      serverStartedAt: live ? Math.floor(managed!.startedAt.getTime() / 1000) : null,
+      bloom: jtiBloomFor(binding.serverName),
+    })
+  }
+
+  if (result.ok) {
+    if (authFailures.get(failureKey)?.count) await clearAuthFailures(failureKey)
+    return null
+  }
+  if (result.guess) await recordAuthFailure(failureKey)
+  return serverAuthDenied(binding, 401, result.error)
+}
 
 const renderBoundDomainLogin = async (
   binding: DomainBinding,
@@ -472,7 +587,7 @@ const renderBoundDomainLogin = async (
   userAgent: string,
 ): Promise<Response> => {
   try {
-    const { blocked, retryAfter } = await checkAuthBlocked(ip, userAgent)
+    const { blocked, retryAfter } = await checkAuthBlocked(webFailureKey(binding, ip, userAgent))
     if (blocked && retryAfter > 0) {
       const blockedHtml = (await Bun.file(import.meta.dir + "/public/blocked.html").text())
         .replace('__DOMAIN__', binding.fqdn)
@@ -502,7 +617,12 @@ const requireBoundDomainAuth = async (
   server: any,
   binding: DomainBinding,
 ): Promise<Response | null> => {
+  if (!isGatedBinding(binding)) return null
+  if (req.headers.get("x-candy-verified") === CADDY_VERIFIED_NONCE) return null
+  const outside = checkAllowlist(req, server, binding)
+  if (outside) return outside
   if (!hasBindingAuth(binding)) return null
+  if (isApiSite(binding)) return checkServerAuth(req, server, binding)
 
   const { ip, userAgent } = getFingerprint(req, server)
   const token = getAuthCookie(req, binding.subdomain)
@@ -529,22 +649,37 @@ const getBindingAuth = (subdomain: string): { password: string | null; enabled: 
   return domainConfig.bindings[subdomain].auth!
 }
 
-// Set password for a bound domain
-const setBindingPassword = async (subdomain: string, password: string): Promise<boolean> => {
-  if (!domainConfig?.bindings?.[subdomain]) return false
-  const hash = await Bun.password.hash(password)
-  domainConfig.bindings[subdomain].auth = { password: hash, enabled: true }
+// Set a password and/or JWT secret for a bound domain (keeps whichever isn't given)
+const setBindingAuth = async (subdomain: string, opts: { password?: string; jwtSecret?: string }): Promise<boolean> => {
+  const binding = domainConfig?.bindings?.[subdomain]
+  if (!binding) return false
+  const auth = binding.auth ?? { password: null, enabled: true }
+  if (opts.password !== undefined) auth.password = await Bun.password.hash(opts.password)
+  if (opts.jwtSecret !== undefined) auth.jwtSecret = opts.jwtSecret
+  auth.enabled = true
+  binding.auth = auth
+  basicAuthCache.clear()
   await saveDomainConfig()
   return true
 }
 
-// Clear password for a bound domain
-const clearBindingPassword = async (subdomain: string): Promise<boolean> => {
-  if (!domainConfig?.bindings?.[subdomain]) return false
-  delete domainConfig.bindings[subdomain].auth
+// Clear the password, the JWT secret, or both
+const clearBindingAuth = async (subdomain: string, which: 'password' | 'jwt' | 'all' = 'all'): Promise<boolean> => {
+  const binding = domainConfig?.bindings?.[subdomain]
+  if (!binding) return false
+  if (which === 'all' || !binding.auth) delete binding.auth
+  else {
+    if (which === 'password') binding.auth.password = null
+    if (which === 'jwt') delete binding.auth.jwtSecret
+    if (!binding.auth.password && !binding.auth.jwtSecret) delete binding.auth
+  }
+  basicAuthCache.clear()
   await saveDomainConfig()
   return true
 }
+
+const MIN_JWT_SECRET_LENGTH = 32
+const generateJwtSecret = () => Buffer.from(crypto.getRandomValues(new Uint8Array(48))).toString('base64url')
 
 // Resolve an auth target from either subdomain or full domain (fqdn)
 const resolveBindingKey = (subdomain?: string, domain?: string): string | null => {
@@ -610,6 +745,7 @@ const saveDomainConfig = async () => {
   if (!domainConfig) return
   await $`mkdir -p ${CANDY_CONFIG_DIR}`.quiet().nothrow()
   await Bun.write(DOMAINS_CONFIG, JSON.stringify(domainConfig, null, 2))
+  await chmod(DOMAINS_CONFIG, 0o600).catch(() => {})  // holds the API token and JWT secrets
 }
 
 // Resolve an incoming Host header to a bound domain's server name
@@ -1692,7 +1828,7 @@ const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'transfer-en
 const apiModeError = (status: number, error: string, details: Record<string, unknown> = {}) =>
   Response.json({ error, ...details }, { status, headers: { 'X-Candy': 'api-mode' } })
 
-const forwardApiModeRequest = async (req: Request, url: URL, name: string, config: ServerConfig): Promise<Response> => {
+const forwardApiModeRequest = async (req: Request, url: URL, name: string, config: ServerConfig, protectedDomain = false): Promise<Response> => {
   let managed = processes.get(name)
   if (!managed || (managed.status !== 'running' && managed.status !== 'starting')) {
     // One start per name, however many requests arrive together
@@ -1726,6 +1862,8 @@ const forwardApiModeRequest = async (req: Request, url: URL, name: string, confi
 
   const headers = new Headers(req.headers)
   for (const h of HOP_BY_HOP) headers.delete(h)
+  headers.delete('x-candy-verified')
+  if (protectedDomain) stripCandyCredentials(headers)
   const hasBody = req.method !== 'GET' && req.method !== 'HEAD'
   try {
     const upstream = await fetch(`http://localhost:${managed.port}${url.pathname}${url.search}`, {
@@ -1888,6 +2026,7 @@ const spawnProcess = async (name: string, actor: Actor = 'System', configId?: st
 
   // Handle process exit
   proc.exited.then((exitCode) => {
+    resetJtiBloom(name)
     // If already marked dead (intentional kill), don't overwrite with errored
     if (managed.status === 'dead') {
       managed.proc = null
@@ -2411,6 +2550,12 @@ const syncCaddy = async () => {
     output file ${CADDY_LOG.replace(/\\/g, "/")}
     format json
   }
+  # Tunnel traffic arrives from cloudflared on loopback; take the visitor's IP
+  # from Cloudflare's header (used by allowlists via client_ip)
+  servers {
+    trusted_proxies static 127.0.0.1/8 ::1
+    client_ip_headers Cf-Connecting-Ip
+  }
 }
 
 `
@@ -2543,15 +2688,23 @@ const syncCaddy = async () => {
   if (domainConfig) {
     for (const binding of Object.values(domainConfig.bindings || {})) {
       const upstream = bindingUpstream(binding.serverName)
-      const hasAuth = hasBindingAuth(binding)
+      let body: string
 
-      if (hasAuth) {
+      if (hasBindingAuth(binding)) {
         const proxyTarget = upstream ?? "localhost:9999"
 
         // Protected domains must authenticate before either proxying to a running
         // app or touching the daemon's lazy-start/log UI for a stopped app.
-        content += `http://${binding.fqdn} {
-  handle /candy-auth/* {
+        // API-mode sites: the check hands back a nonce so the daemon trusts it,
+        // and candy's own credentials are removed before the app sees the request
+        const apiSite = isApiSite(binding)
+        const stripLines = (apiSite ? `
+    request_header -X-Candy-Auth
+    request_header -X-Auth-Token
+    @candy_basic header Authorization "Basic *"
+    request_header @candy_basic -Authorization` : '') + (proxyTarget === "localhost:9999" ? '' : `
+    request_header -X-Candy-Verified`)
+        body = `  handle /candy-auth/* {
     reverse_proxy localhost:9999 {
       header_up X-Forwarded-Host {host}
     }
@@ -2560,30 +2713,36 @@ const syncCaddy = async () => {
     forward_auth localhost:9999 {
       uri /candy-auth/check
       header_up X-Forwarded-Host {host}
-    }
+      copy_headers X-Candy-Verified
+    }${stripLines}
     ${caddyUpstream(proxyTarget)}
-  }
-  log
-}
-
-`
+  }`
       } else if (upstream) {
         // Unprotected + reachable: caddy proxies directly to the server, no daemon in the middle
-        content += `http://${binding.fqdn} {
-  ${caddyUpstream(upstream)}
-  log
-}
-
-`
+        body = `  ${caddyUpstream(upstream)}`
       } else {
         // Server not running: proxy to candy daemon for starting page
-        content += `http://${binding.fqdn} {
-  reverse_proxy localhost:9999
+        body = `  reverse_proxy localhost:9999`
+      }
+
+      if (hasAllowlist(binding)) {
+        // Allowlist mode: Caddy closes the connection without a reply for anyone
+        // else, before any auth check or upstream connection. The client IP comes
+        // from Cf-Connecting-Ip when cloudflared (loopback) forwards the request.
+        const allowed = [...binding.allowlist!.ips, ...TAILSCALE_RANGES, "127.0.0.1/8", "::1"].join(" ")
+        body = `  @candy_blocked not client_ip ${allowed}
+  route {
+    abort @candy_blocked
+${body.split("\n").map(line => line ? `  ${line}` : line).join("\n")}
+  }`
+      }
+
+      content += `http://${binding.fqdn} {
+${body}
   log
 }
 
 `
-      }
     }
   }
 
@@ -2810,8 +2969,19 @@ const controlServer = Bun.serve({
 
       // No auth configured = unprotected, pass straight through (no rate limits, no auth)
       // Nag banner shows on portal page instead to guilt the owner
+      const verified = { 'X-Candy-Verified': CADDY_VERIFIED_NONCE }
+      const outside = checkAllowlist(req, controlServer, binding)
+      if (outside) return outside
+
       if (!hasBindingAuth(binding)) {
-        return new Response('OK', { status: 200 })
+        return new Response('OK', { status: 200, headers: verified })
+      }
+
+      // API-mode sites: credentials on every request, never a login page
+      if (isApiSite(binding)) {
+        const denied = await checkServerAuth(req, controlServer, binding)
+        if (denied) return denied
+        return new Response('OK', { status: 200, headers: verified })
       }
 
       // Auth is enabled - check cookie
@@ -2821,7 +2991,7 @@ const controlServer = Bun.serve({
         if (session) {
           // Valid session - update last seen
           session.lastSeen = Date.now()
-          return new Response('OK', { status: 200 })
+          return new Response('OK', { status: 200, headers: verified })
         }
       }
 
@@ -2841,15 +3011,18 @@ const controlServer = Bun.serve({
       }
 
       const { binding } = boundMatch
+      const outsideLogin = checkAllowlist(req, controlServer, binding)
+      if (outsideLogin) return outsideLogin
       const auth = binding.auth
       if (!auth?.enabled || !auth?.password) {
         return Response.json({ error: 'No password configured' }, { status: 400 })
       }
 
       const { ip, userAgent } = getFingerprint(req, controlServer)
+      const failureKey = webFailureKey(binding, ip, userAgent)
 
       // Check fibonacci backoff block
-      const { blocked, retryAfter } = await checkAuthBlocked(ip, userAgent)
+      const { blocked, retryAfter } = await checkAuthBlocked(failureKey)
       if (blocked) {
         return Response.json({ error: 'Too many attempts', retryAfter }, { status: 429 })
       }
@@ -2868,7 +3041,7 @@ const controlServer = Bun.serve({
       // Verify password
       const valid = await Bun.password.verify(password, auth.password)
       if (!valid) {
-        const failure = await recordAuthFailure(ip, userAgent)
+        const failure = await recordAuthFailure(failureKey)
         auditLog('AUTH_FAIL', `${binding.fqdn} from ${ip}`, 'System')
         return Response.json({
           error: 'Wrong password',
@@ -2877,7 +3050,7 @@ const controlServer = Bun.serve({
       }
 
       // Correct password - issue session
-      await clearAuthFailures(ip, userAgent)
+      await clearAuthFailures(failureKey)
       const token = createAuthSession(ip, userAgent, binding.subdomain)
       const cookie = makeAuthCookie(binding.subdomain, token, binding.fqdn)
       auditLog('AUTH_SUCCESS', `${binding.fqdn} from ${ip}`, 'System')
@@ -2903,9 +3076,15 @@ const controlServer = Bun.serve({
         }
       }
 
-      const { subdomain, domain, password } = await req.json() as { subdomain?: string; domain?: string; password?: string }
-      if ((!subdomain && !domain) || !password) {
-        return Response.json({ error: "domain (or subdomain) and password required" }, { status: 400, headers: corsHeaders })
+      const { subdomain, domain, password, jwtSecret: rawJwtSecret } = await req.json() as { subdomain?: string; domain?: string; password?: string; jwtSecret?: string }
+      if ((!subdomain && !domain) || (!password && !rawJwtSecret)) {
+        return Response.json({ error: "domain (or subdomain) and a password or jwtSecret are required" }, { status: 400, headers: corsHeaders })
+      }
+      // "generate" asks the daemon for a random secret, returned once in the response
+      const generated = rawJwtSecret === "generate"
+      const jwtSecret = generated ? generateJwtSecret() : rawJwtSecret
+      if (jwtSecret !== undefined && jwtSecret.length < MIN_JWT_SECRET_LENGTH) {
+        return Response.json({ error: `The JWT secret must be at least ${MIN_JWT_SECRET_LENGTH} characters. Use "generate" for a random one.` }, { status: 400, headers: corsHeaders })
       }
 
       const bindingKey = resolveBindingKey(subdomain, domain)
@@ -2914,7 +3093,7 @@ const controlServer = Bun.serve({
         return Response.json({ error: `No binding found for '${target}'` }, { status: 404, headers: corsHeaders })
       }
 
-      const ok = await setBindingPassword(bindingKey, password)
+      const ok = await setBindingAuth(bindingKey, { password: password || undefined, jwtSecret })
       if (!ok) {
         return Response.json({ error: `No binding found for '${bindingKey}'` }, { status: 404, headers: corsHeaders })
       }
@@ -2922,8 +3101,17 @@ const controlServer = Bun.serve({
       await syncCaddy()
       const label = domainConfig?.bindings?.[bindingKey]?.fqdn || bindingKey
       const actor: Actor = isMcpRequest ? 'AI' : 'Portal'
-      auditLog('AUTH_SET', `Password set for ${label}`, actor)
-      return Response.json({ success: true, message: `Password set for ${label}` }, { headers: corsHeaders })
+      const what = [password ? 'Password' : '', jwtSecret ? 'JWT secret' : ''].filter(Boolean).join(' and ')
+      auditLog('AUTH_SET', `${what} set for ${label}`, actor)
+      const binding = domainConfig!.bindings[bindingKey]
+      const note = jwtSecret && !isApiSite(binding)
+        ? ` ${binding.serverName} isn't in API mode, so browsers still get the login page and JWTs aren't checked until it is.`
+        : ''
+      return Response.json({
+        success: true,
+        message: `${what} set for ${label}.${note}`,
+        ...(generated ? { jwtSecret } : {}),
+      }, { headers: corsHeaders })
     }
 
     if (req.method === "POST" && url.pathname === "/auth/clear") {
@@ -2936,7 +3124,7 @@ const controlServer = Bun.serve({
         }
       }
 
-      const { subdomain, domain } = await req.json() as { subdomain?: string; domain?: string }
+      const { subdomain, domain, which } = await req.json() as { subdomain?: string; domain?: string; which?: 'password' | 'jwt' | 'all' }
       if (!subdomain && !domain) {
         return Response.json({ error: "domain (or subdomain) required" }, { status: 400, headers: corsHeaders })
       }
@@ -2947,7 +3135,7 @@ const controlServer = Bun.serve({
         return Response.json({ error: `No binding found for '${target}'` }, { status: 404, headers: corsHeaders })
       }
 
-      const ok = await clearBindingPassword(bindingKey)
+      const ok = await clearBindingAuth(bindingKey, which === 'password' || which === 'jwt' ? which : 'all')
       if (!ok) {
         return Response.json({ error: `No binding found for '${bindingKey}'` }, { status: 404, headers: corsHeaders })
       }
@@ -2960,6 +3148,78 @@ const controlServer = Bun.serve({
       const actor: Actor = isMcpRequest ? 'AI' : 'Portal'
       auditLog('AUTH_CLEAR', `Password cleared for ${label}`, actor)
       return Response.json({ success: true, message: `Password cleared for ${label}` }, { headers: corsHeaders })
+    }
+
+    // Allowlist mode for a bound domain: only listed IPs/CIDRs, Tailscale and this machine
+    if (req.method === "POST" && url.pathname === "/domains/allowlist") {
+      const mcpApiKey = req.headers.get("X-Candy-API-Key")
+      const isMcpRequest = !!(mcpApiKey && validateMcpApiKey(mcpApiKey))
+      if (!isMcpRequest) {
+        const token = req.headers.get("X-Candy-Token")
+        if (!token || !consumeToken(token)) return unauthorizedResponse(corsHeaders)
+      }
+      const body = await req.json().catch(() => ({})) as { subdomain?: string; domain?: string; enabled?: boolean; ips?: string[]; add?: string[]; remove?: string[] }
+      const bindingKey = resolveBindingKey(body.subdomain, body.domain)
+      const binding = bindingKey ? domainConfig?.bindings?.[bindingKey] : undefined
+      if (!binding) {
+        return Response.json({ error: `No binding found for '${body.domain || body.subdomain || '(unknown)'}'` }, { status: 404, headers: corsHeaders })
+      }
+      const entries = [...(body.ips ?? []), ...(body.add ?? [])].map(e => String(e).trim().replace(/^\[|\](?=\/|$)/g, '')).filter(Boolean)
+      const bad = entries.filter(e => !parseCidr(e))
+      if (bad.length) {
+        return Response.json({ error: `Not an IP or CIDR: ${bad.join(', ')}` }, { status: 400, headers: corsHeaders })
+      }
+      const current = binding.allowlist ?? { enabled: false, ips: [] }
+      let ips = body.ips ? [] : [...current.ips]
+      for (const e of entries) if (!ips.includes(e)) ips.push(e)
+      const removing = new Set((body.remove ?? []).map(e => String(e).trim()))
+      ips = ips.filter(e => !removing.has(e))
+      // Adding entries turns it on unless told otherwise
+      const enabled = typeof body.enabled === "boolean" ? body.enabled : (entries.length > 0 || current.enabled)
+      binding.allowlist = { enabled, ips }
+      await saveDomainConfig()
+      await syncCaddy()
+      const actor: Actor = isMcpRequest ? 'AI' : 'Portal'
+      const summary = enabled ? `on (${ips.length ? ips.join(', ') : 'no extra IPs'} + Tailscale)` : 'off'
+      auditLog('ALLOWLIST', `${binding.fqdn}: ${summary}`, actor)
+      return Response.json({
+        success: true,
+        allowlist: binding.allowlist,
+        message: enabled
+          ? `${binding.fqdn} now only accepts ${ips.length ? `${ips.length} allowlisted address${ips.length === 1 ? '' : 'es'}, ` : ''}Tailscale and this machine`
+          : `${binding.fqdn} accepts any address again`,
+      }, { headers: corsHeaders })
+    }
+
+    // Mint a server-auth JWT for an API-mode domain (for scripts and testing)
+    if (req.method === "POST" && url.pathname === "/auth/token") {
+      const mcpApiKey = req.headers.get("X-Candy-API-Key")
+      const isMcpRequest = !!(mcpApiKey && validateMcpApiKey(mcpApiKey))
+      if (!isMcpRequest) {
+        const token = req.headers.get("X-Candy-Token")
+        if (!token || !consumeToken(token)) return unauthorizedResponse(corsHeaders)
+      }
+      const { subdomain, domain, ttl, jti } = await req.json().catch(() => ({})) as { subdomain?: string; domain?: string; ttl?: number; jti?: boolean | string }
+      const bindingKey = resolveBindingKey(subdomain, domain)
+      const binding = bindingKey ? domainConfig?.bindings?.[bindingKey] : undefined
+      if (!binding) {
+        return Response.json({ error: `No binding found for '${domain || subdomain || '(unknown)'}'` }, { status: 404, headers: corsHeaders })
+      }
+      if (!binding.auth?.jwtSecret) {
+        return Response.json({ error: `${binding.fqdn} has no JWT secret. Set one first.` }, { status: 400, headers: corsHeaders })
+      }
+      // Only the owner or the user the site runs as may mint tokens for it
+      const requester = requestUser(req)
+      const siteUsers = getConfigsForName(binding.serverName).map(configUser)
+      if (RUNNING_AS_ROOT && requester !== OWNER && !siteUsers.includes(requester)) {
+        return Response.json({ error: `Only ${OWNER} or the site's own user can mint tokens for it.` }, { status: 403, headers: corsHeaders })
+      }
+      const lifetime = Math.min(Math.max(Math.floor(Number(ttl) || 600), 1), MAX_TOKEN_LIFETIME_S)
+      const now = Math.floor(Date.now() / 1000)
+      const claims: Record<string, unknown> = { aud: JWT_AUDIENCE, sub: `${binding.serverName}.candy`, iat: now, nbf: now, exp: now + lifetime }
+      if (jti) claims.jti = typeof jti === "string" ? jti : crypto.randomUUID()
+      auditLog('AUTH_TOKEN', `Token minted for ${binding.fqdn} (${lifetime}s${claims.jti ? ', single use' : ''})`, isMcpRequest ? 'AI' : 'Portal')
+      return Response.json({ token: signJwt(claims, binding.auth.jwtSecret), claims }, { headers: corsHeaders })
     }
 
     if (req.method === "GET" && url.pathname === "/auth/status") {
@@ -2976,6 +3236,8 @@ const controlServer = Bun.serve({
             serverName: binding.serverName,
             authEnabled: !!binding.auth?.enabled,
             hasPassword: !!binding.auth?.password,
+            hasJwtSecret: !!binding.auth?.jwtSecret,
+            apiMode: isApiSite(binding),
             activeSessions: sessionCount,
           }
         }
@@ -3031,7 +3293,10 @@ const controlServer = Bun.serve({
     if (isLocalhostDomain && !url.pathname.startsWith("/candy-auth/")) {
       const apiName = boundDomainMatch ? boundDomainMatch.serverName : resolveLocalCandyDomain(hostHeader)
       const apiConfig = apiName && apiName !== "portal" ? apiModeConfig(apiName) : null
-      if (apiConfig) return await forwardApiModeRequest(req, url, apiName, apiConfig)
+      if (apiConfig) {
+        const protectedDomain = !!boundDomainMatch && hasBindingAuth(boundDomainMatch.binding)
+        return await forwardApiModeRequest(req, url, apiName, apiConfig, protectedDomain)
+      }
     }
 
     // === Network Discovery API (unauthenticated, Tailscale-protected) ===
@@ -4013,6 +4278,7 @@ const controlServer = Bun.serve({
       }
       for (const cfg of targets) setApiFlag(cfg, api)
       await saveServerConfigs()
+      await syncCaddy()  // protected domains switch between login page and header auth
       const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
       auditLog('CONFIG_API', `${name}: API mode ${api ? 'on' : 'off'}`, actor)
       return Response.json({ success: true, api, message: `API mode ${api ? 'on' : 'off'} for ${name}` }, { headers: corsHeaders })
@@ -4048,6 +4314,9 @@ const controlServer = Bun.serve({
           boundAt: binding.boundAt,
           authEnabled: !!binding.auth?.enabled,
           hasPassword: !!binding.auth?.password,
+          hasJwtSecret: !!binding.auth?.jwtSecret,
+          apiMode: isApiSite(binding),
+          allowlist: binding.allowlist ?? { enabled: false, ips: [] },
         }
       }
       return Response.json({

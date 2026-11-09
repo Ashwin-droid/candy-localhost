@@ -463,6 +463,21 @@ Requires `~/.config/candy/domains.json` with zone and tunnel configuration.
 
 **Unbind flow:** delete DNS records via CF API → remove binding → regenerate ingress → restart cloudflared
 
+### Protecting a public domain
+
+- **Browser sites:** a password gives a login page and a cookie session (`candy auth set <domain>`).
+- **API-mode sites:** there is no login page. Every request carries credentials, which candy strips before the app sees the request. `Authorization` is left free for the app's own auth unless it holds candy's Basic credentials.
+  - **Password:** `X-Auth-Token: <password>`, `X-Candy-Auth: <password>`, or HTTP Basic (any username).
+  - **JWT:** HS256/384/512, signed with the domain's secret, sent in `X-Auth-Token` or `X-Candy-Auth`. Set a secret with `candy auth set <domain> --jwt` (generated and shown once), or mint a test token with `candy auth token <domain> [--ttl s] [--once]`. Claims:
+    - `aud`: `"Candy API Authorization Service"`
+    - `sub`: `"<site>.candy"`
+    - `exp`: required, at most one hour away
+    - `nbf`: optional
+    - `iat`: required. Must be no earlier than 5s before the server started (or before now, when the request is what starts it), and after the server last went down.
+    - `jti`: optional. Makes the token single-use, using a per-site Bloom filter of `sha3-512(jti)` that is cleared when the server stops.
+- **Lockout:** 3 failed attempts lock a client out for Fibonacci hours (1, 1, 2, 3, 5…), per domain. Login pages count per IP + user agent; API sites count per IP, so one bad caller doesn't block others. Expired, replayed or wrong-`sub` tokens with a valid signature don't count. A success resets the count.
+- **Allowlist mode:** `candy domain allow <sub> <ip|cidr>...` (or `--on` / `--off` / `--rm`). Caddy drops every other address without a reply, before any auth check or upstream connection. Tailscale addresses and this machine are always allowed. Through the tunnel, the visitor's IP comes from `Cf-Connecting-Ip`, which is trusted only from loopback (cloudflared).
+
 ## UI Pages
 
 | Page | Purpose |

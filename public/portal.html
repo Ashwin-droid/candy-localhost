@@ -1265,19 +1265,33 @@
           return;
         }
         list.innerHTML = bindings.map(b => {
-          const locked = !!(b.hasPassword || (b.auth && b.auth.password));
+          const hasPw = !!(b.hasPassword || (b.auth && b.auth.password));
+          const hasJwt = !!b.hasJwtSecret;
+          const locked = hasPw || hasJwt;
           const fqdn = escapeJsSingle(b.fqdn);
+          const methods = [hasPw ? 'password' : '', hasJwt ? 'JWT' : ''].filter(Boolean).join(' or ');
+          const lockText = !locked ? 'Open to anyone'
+            : b.apiMode ? `Needs ${methods} on each request`
+            : hasPw ? 'Password protected' : 'JWT only (turn on API mode to use it)';
+          const al = b.allowlist || { enabled: false, ips: [] };
+          const alText = al.enabled ? `Only ${al.ips.length ? `${al.ips.length} address${al.ips.length === 1 ? '' : 'es'} + ` : ''}Tailscale` : '';
+          const alButton = `<button onclick="editAllowlist('${fqdn}', '${escapeJsSingle((al.enabled ? al.ips : []).join(', '))}')">${al.enabled ? 'Edit allowlist' : 'Limit to IPs…'}</button>`;
+          const pwButton = hasPw
+            ? `<button onclick="clearDomainPassword('${fqdn}', ${hasJwt ? "'password'" : "'all'"})">Remove password</button>`
+            : `<button onclick="showDomainPasswordForm('${fqdn}')">Add password</button>`;
+          const jwtButtons = b.apiMode || hasJwt
+            ? `<button onclick="newJwtSecret('${fqdn}', ${hasJwt})">${hasJwt ? 'New JWT secret' : 'Add JWT secret'}</button>${hasJwt ? `<button onclick="clearDomainPassword('${fqdn}', ${hasPw ? "'jwt'" : "'all'"})">Remove JWT</button>` : ''}`
+            : '';
           return `
             <div class="rail-item">
               <a class="fqdn" href="https://${escapeHtml(b.fqdn)}" target="_blank">${escapeHtml(b.fqdn)}</a>
               <div class="sub-line">
                 <span>Serves ${escapeHtml(b.serverName)}</span>
-                <span class="lock ${locked ? 'on' : ''}">${locked ? 'Password protected' : 'Open to anyone'}</span>
+                <span class="lock ${locked ? 'on' : ''}">${escapeHtml(lockText)}</span>
+                ${alText ? `<span class="lock on" title="${escapeHtml(al.ips.join(', '))}">${escapeHtml(alText)}</span>` : ''}
               </div>
               <div class="link-row">
-                ${locked
-                  ? `<button onclick="clearDomainPassword('${fqdn}')">Remove password</button>`
-                  : `<button onclick="showDomainPasswordForm('${fqdn}')">Add password</button>`}
+                ${pwButton}${jwtButtons}${alButton}
                 <button class="danger" onclick="unbindDomain('${escapeJsSingle(b.subdomain)}')">Unbind</button>
               </div>
             </div>`;
@@ -1465,15 +1479,69 @@
       }
     }
 
-    async function clearDomainPassword(fqdn) {
-      if (!confirm(`Remove password for ${fqdn}?`)) return;
+    // Allowlist mode: only these IPs/CIDRs, plus Tailscale and this machine. Empty turns it off.
+    function editAllowlist(fqdn, current) {
+      showPrompt({
+        title: `Who can reach ${fqdn}`,
+        label: 'Allowed IPs or CIDRs, comma separated',
+        value: current,
+        hint: 'Tailscale addresses and this machine always get in. Caddy drops everyone else without a reply, so it never reaches candy or counts as a failed login. Leave empty to allow everyone.',
+        submit: 'Save',
+        onSubmit: async (value) => {
+          const ips = value.split(/[\s,]+/).map(v => v.trim()).filter(Boolean);
+          const res = await apiCall('/domains/allowlist', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ domain: fqdn, ips, enabled: ips.length > 0 }),
+          });
+          const data = await res.json();
+          if (data.error) { toast(data.error, 'error'); return false; }
+          toast(data.message, 'success');
+          refreshAll();
+          return true;
+        },
+      });
+    }
+
+    // Server-to-server auth for API-mode sites: a generated HMAC secret, shown once
+    async function newJwtSecret(fqdn, replacing) {
+      if (replacing && !confirm(`Replace the JWT secret for ${fqdn}? Tokens signed with the old one stop working.`)) return;
+      try {
+        const res = await apiCall('/auth/set', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ domain: fqdn, jwtSecret: 'generate' })
+        });
+        const data = await res.json();
+        if (data.error) { toast(data.error, 'error'); return; }
+        refreshAll();
+        showPrompt({
+          title: `JWT secret for ${fqdn}`,
+          label: 'Secret (shown once)',
+          value: data.jwtSecret,
+          hint: 'Sign HS256 tokens with it: aud "Candy API Authorization Service", sub "<site>.candy", exp at most an hour away, iat now, and a jti to make a token single-use. Send them in X-Auth-Token.',
+          submit: 'Copy and close',
+          onSubmit: async (value) => {
+            try { await navigator.clipboard.writeText(value); toast('Secret copied', 'success'); }
+            catch { toast('Couldn’t copy. Select it and copy by hand.', 'error'); return false; }
+            return true;
+          },
+        });
+      } catch (e) {
+        toast('Failed to set the JWT secret', 'error');
+      }
+    }
+
+    async function clearDomainPassword(fqdn, which = 'all') {
+      const what = which === 'jwt' ? 'the JWT secret' : which === 'password' ? 'the password' : 'protection';
+      if (!confirm(`Remove ${what} for ${fqdn}?`)) return;
 
       try {
-        toast('Removing password...', 'info');
+        toast('Removing...', 'info');
         const res = await apiCall('/auth/clear', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ domain: fqdn })
+          body: JSON.stringify({ domain: fqdn, which })
         });
         const data = await res.json();
         if (data.error) {

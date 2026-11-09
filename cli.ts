@@ -624,6 +624,47 @@ async function cmdAuth(args: string[]) {
 
   const sub = args[0]
 
+  if ((sub === 'set' || sub === 's') && args.includes('--jwt')) {
+    // candy auth set <domain> --jwt [secret]   (no secret: the daemon generates one)
+    const rest = args.slice(1).filter(a => a !== '--jwt')
+    const subdomain = rest[0]
+    if (!subdomain) {
+      console.error(`${c.red}Usage: candy auth set <domain> --jwt [secret]${c.reset}`)
+      process.exit(1)
+    }
+    const res = await apiPost('/auth/set', { subdomain, jwtSecret: rest[1] || 'generate' })
+    if (res?.error) {
+      console.error(`${c.red}${res.error}${c.reset}`)
+      process.exit(1)
+    }
+    console.log(`${c.green}${res.message}${c.reset}`)
+    if (res.jwtSecret) {
+      console.log(`\n  ${c.bold}${res.jwtSecret}${c.reset}\n`)
+      console.log(`${c.dim}This is shown once. Sign HS256 JWTs with it: aud "Candy API Authorization Service",${c.reset}`)
+      console.log(`${c.dim}sub "<site>.candy", exp at most 1h away, iat now, optional jti for single use.${c.reset}`)
+      console.log(`${c.dim}Send them in X-Auth-Token. Try one with: candy auth token ${subdomain}${c.reset}`)
+    }
+    return
+  }
+
+  if (sub === 'token' || sub === 't') {
+    // candy auth token <domain> [--ttl <seconds>] [--once]
+    const subdomain = args[1]
+    if (!subdomain) {
+      console.error(`${c.red}Usage: candy auth token <domain> [--ttl <seconds>] [--once]${c.reset}`)
+      process.exit(1)
+    }
+    const ttlIdx = args.indexOf('--ttl')
+    const ttl = ttlIdx !== -1 ? Number(args[ttlIdx + 1]) : undefined
+    const res = await apiPost('/auth/token', { subdomain, ttl, jti: args.includes('--once') })
+    if (res?.error) {
+      console.error(`${c.red}${res.error}${c.reset}`)
+      process.exit(1)
+    }
+    console.log(res.token)
+    return
+  }
+
   if (sub === 'set' || sub === 's') {
     const subdomain = args[1]
     if (!subdomain) {
@@ -682,10 +723,11 @@ async function cmdAuth(args: string[]) {
   } else if (sub === 'clear' || sub === 'c') {
     const subdomain = args[1]
     if (!subdomain) {
-      console.error(`${c.red}Usage: candy auth clear <domain>${c.reset}`)
+      console.error(`${c.red}Usage: candy auth clear <domain> [--jwt|--password]${c.reset}`)
       process.exit(1)
     }
-    const res = await apiPost('/auth/clear', { subdomain })
+    const which = args.includes('--jwt') ? 'jwt' : args.includes('--password') ? 'password' : 'all'
+    const res = await apiPost('/auth/clear', { subdomain, which })
     if (res?.error) {
       console.error(`${c.red}${res.error}${c.reset}`)
     } else {
@@ -706,15 +748,18 @@ async function cmdAuth(args: string[]) {
     console.log()
     for (const [sub, info] of domains) {
       const i = info as any
-      const authStatus = i.authEnabled
-        ? `${c.green}protected${c.reset} (${i.activeSessions} active session${i.activeSessions !== 1 ? 's' : ''})`
-        : `${c.yellow}unprotected${c.reset}`
+      const methods = [i.hasPassword ? 'password' : '', i.hasJwtSecret ? 'JWT' : ''].filter(Boolean).join(' + ')
+      const authStatus = !i.authEnabled
+        ? `${c.yellow}unprotected${c.reset}`
+        : i.apiMode
+          ? `${c.green}protected${c.reset} (${methods}, checked on every request)`
+          : `${c.green}protected${c.reset} (${methods}, ${i.activeSessions} active session${i.activeSessions !== 1 ? 's' : ''})`
       console.log(`  ${c.white}${i.fqdn}${c.reset} -> ${c.cyan}${i.serverName}${c.reset}`)
       console.log(`    auth: ${authStatus}`)
     }
   } else {
     console.error(`${c.red}Unknown auth subcommand: ${sub}${c.reset}`)
-    console.error(`${c.dim}Usage: candy auth [set|clear|status]${c.reset}`)
+    console.error(`${c.dim}Usage: candy auth [set|token|clear|status]${c.reset}`)
     process.exit(1)
   }
 }
@@ -746,6 +791,34 @@ async function cmdDomain(args: string[]) {
         console.log(`  ${c.green}${b.fqdn}${c.reset} -> ${c.cyan}${b.serverName}${c.reset}`)
       }
     }
+  } else if (sub === 'allow' || sub === 'allowlist') {
+    // candy domain allow <sub> [ip|cidr ...] | --off | --on | --rm <ip ...>
+    const subdomain = args[1]
+    const rest = args.slice(2)
+    if (!subdomain) {
+      console.error(`${c.red}Usage: candy domain allow <subdomain> [ip|cidr ...] [--rm <ip ...>] [--on|--off]${c.reset}`)
+      process.exit(1)
+    }
+    const rmIdx = rest.indexOf('--rm')
+    const add = (rmIdx === -1 ? rest : rest.slice(0, rmIdx)).filter(a => !a.startsWith('--'))
+    const remove = rmIdx === -1 ? [] : rest.slice(rmIdx + 1).filter(a => !a.startsWith('--'))
+    const enabled = rest.includes('--off') ? false : rest.includes('--on') ? true : undefined
+    if (!add.length && !remove.length && enabled === undefined) {
+      const res = await apiGet('/domains')
+      const b = Object.values(res.bindings || {}).find((x: any) => x.subdomain === subdomain || x.fqdn === subdomain) as any
+      if (!b) { console.error(`${c.red}No binding found for '${subdomain}'${c.reset}`); process.exit(1) }
+      const al = b.allowlist || { enabled: false, ips: [] }
+      console.log(al.enabled
+        ? `${b.fqdn}: allowlist on. Allowed: ${[...al.ips, 'Tailscale', 'this machine'].join(', ')}`
+        : `${b.fqdn}: allowlist off (any address)${al.ips.length ? `. Saved: ${al.ips.join(', ')}` : ''}`)
+      return
+    }
+    const res = await apiPost('/domains/allowlist', { subdomain, add, remove, ...(enabled !== undefined ? { enabled } : {}) })
+    if (res?.error) {
+      console.error(`${c.red}${res.error}${c.reset}`)
+      process.exit(1)
+    }
+    console.log(`${c.green}${res.message}${c.reset}`)
   } else if (sub === 'bind' || sub === 'b') {
     const subdomain = args[1]
     let serverName: string | undefined
@@ -868,6 +941,9 @@ function printHelp() {
   console.log(`      ${c.dim}publish <name> --no-https      drop the ts.net HTTPS site, keep <name>.candy${c.reset}`)
   console.log(`  ${c.cyan}candy domain${c.reset} [list|bind|unbind|config]  Manage bound domains`)
   console.log(`  ${c.cyan}candy auth${c.reset} [set|clear|status] Manage bound domain authentication`)
+  console.log(`      ${c.dim}set <domain> --jwt [secret]  JWT secret for API-mode sites (generated if omitted)${c.reset}`)
+  console.log(`      ${c.dim}token <domain> [--ttl s] [--once]  mint a JWT to test with${c.reset}`)
+  console.log(`  ${c.cyan}candy domain allow${c.reset} <sub> [ip|cidr...] [--rm ip...] [--on|--off]  Allowlist mode (Tailscale always allowed)`)
   console.log(`  ${c.cyan}candy mcp${c.reset}                    Start MCP server (stdio) for AI integration`)
   console.log(`  ${c.cyan}candy daemon${c.reset}                 Run the daemon (use systemd for production)`)
   console.log()

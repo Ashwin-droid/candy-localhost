@@ -165,9 +165,22 @@ One port detected → auto-bind. Multiple → manual selection required via UI o
 
 A server name can have multiple configurations (different cwd/cmd). Only one variant runs at a time — starting a different variant stops the active one.
 
+### API Mode
+
+For servers called by programs rather than browsers. A request to a stopped API-mode server never gets the loading page: it is held while the server starts, then forwarded unchanged (method, path, query, headers, body), and the server's response comes back as-is. Requests that arrive together share one start. Once the port is detected, Caddy routes later requests straight to the server.
+
+If the server exits first, the request gets `502` with JSON `{ "error", "exitCode" }`. If no port is detected within the port-detection window, it gets `504`; if several ports are detected, it gets `502` listing them.
+
+```bash
+candy dev bun run api.ts --api   # register in API mode
+candy api <name> on|off          # toggle for an existing site
+```
+
+The portal has the same toggle in each site's menu.
+
 ### Reserved Names
 
-`portal`, `k`, `kill`, `p` — cannot be used as server names.
+`portal`, `k`, `kill`, `p` — cannot be used as server names. Names may only use letters, numbers, dashes, underscores and dots.
 
 ### Route Types
 
@@ -183,6 +196,8 @@ Routes map `<name>.localhost` to a target. There are three kinds:
 ```
 candy dev [cmd...]             Start dev server (uses saved config, or auto-detects from package.json)
 candy dev <cmd> --name <name>  Register and run with custom route name
+candy dev <cmd> --api          Register in API mode (hold the first request while starting, then forward it)
+candy api <name> [on|off]      Turn API mode on or off
 candy stop [name]              Stop server (current directory or by name)
 candy status                   Show daemon status and all servers
 candy logs [name]              Tail logs via SSE
@@ -279,7 +294,7 @@ Base URL: `http://localhost:9999`
 Two auth modes:
 
 - **Browser token** (`X-Candy-Token`): rolling token injected into rendered HTML, rotates on each request
-- **API key** (`X-Candy-API-Key`): obtained via `POST /mcp/auth` with bootstrap secret from `~/.config/candy/mcp-secret`
+- **API key** (`X-Candy-API-Key`): obtained via `POST /mcp/auth` with a bootstrap secret. Clients look in `$CANDY_SECRET_FILE`, `~/.config/candy/mcp-secret`, `/run/candy/users/<user>/secret`, then `/run/candy/secret`. Each API key belongs to the user whose secret it came from.
 
 ### Endpoints
 
@@ -485,7 +500,27 @@ bun run install-service
 sudo systemctl enable --now candy-localhost@$USER
 ```
 
-Template unit runs as the specified user, sets `cap_net_bind_service` on Caddy before start. `install-service.sh` fills in the repo, Bun and Caddy paths for your machine (`./install-service.sh daemon --print` to preview).
+The template unit runs the daemon as root, with the instance name as the **owner**: state lives in the owner's `~/.config/candy`, and the web portal acts as them. `install-service.sh` fills in the repo, Bun and Caddy paths for your machine (`./install-service.sh daemon --print` to preview).
+
+### Multiple Users
+
+Add people to the `candy` group to let them use the daemon:
+
+```bash
+sudo groupadd --system candy
+sudo usermod -aG candy alice
+```
+
+Each member gets a secret at `/run/candy/users/<user>/secret` that only they can read (checked every minute, so no restart is needed). Servers a user registers run as that user via `setpriv`, starting in their cwd with their `$HOME`. Nothing is ever started as root.
+
+- The owner can add a site that runs as any group member (the portal's **Run as** picker, or `user` on `POST /config`); `~` in its folder means that user's home. Other members can only add sites that run as themselves. Root is never offered.
+- Only a server's own user can type into its terminal, change its API mode, or remove it (the owner can also remove any).
+- Anyone in the group can start, stop and restart any server; it still runs as its own user.
+- Only the owner can change the Cloudflare domain config or shut the daemon down.
+- The web portal acts as the owner, and anyone who can reach `localhost:9999` can use it.
+- Process logs move to `/var/log/candy` (root-owned) and are readable by all local users.
+
+Run as a normal user instead (`bun run daemon`), everything runs as that user. If a `candy` group exists, the secret is also written to `/run/candy/secret` for the group.
 
 ### DNS Service
 
@@ -511,8 +546,10 @@ Runs as the installing user with `CAP_NET_BIND_SERVICE` for port 53 — not root
 | `~/.config/caddy/access.log` | Caddy access log |
 | `~/.config/caddy/caddy.log` | Caddy process stdout/stderr |
 | `~/.config/caddy/candy.pid` | Daemon PID |
-| `/tmp/candy-logs/<name>.log` | Process logs (cleared on daemon start) |
-| `/tmp/candy-logs/_audit.log` | Operation audit log |
+| `/run/candy/users/<user>/secret` | Per-user bootstrap secret (root mode) |
+| `/var/log/candy/<name>.log` | Process logs when run as root (cleared on daemon start) |
+| `/tmp/candy-logs/<name>.log` | Process logs when run as a normal user |
+| `/tmp/candy-logs/_audit.log` | Operation audit log (`/var/log/candy` as root) |
 | `/tmp/candy-logs/_dns.log` | DNS daemon log |
 
 ## Testing

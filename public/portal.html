@@ -250,11 +250,13 @@
       background: var(--sheet); border: 1px solid var(--line-2); border-radius: 14px;
       box-shadow: 0 24px 64px rgba(10, 12, 24, 0.28);
     }
+    .dialog:has(.dd.open) { overflow: visible; }
     .dialog-head { display: flex; align-items: center; gap: 12px; padding: 18px 22px 0; }
     .dialog-head h2 { font-size: 17px; font-weight: 700; flex: 1; min-width: 0; }
     .dialog-body { padding: 16px 22px 22px; }
     .dialog form { display: flex; flex-direction: column; gap: 16px; }
-    .dialog form[hidden] { display: none; }
+    .dialog form[hidden], .dialog .field[hidden], .dialog .hint[hidden] { display: none; }
+    .hint code { font-family: var(--font-host); font-size: 12px; color: var(--ink-2); }
     .field label, .modal-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
     .with-suffix { display: flex; align-items: center; gap: 8px; }
     .with-suffix span { color: var(--ink-3); font-family: var(--font-host); font-stretch: 87.5%; font-size: 13px; }
@@ -293,6 +295,37 @@
     .process-status.running { color: var(--mint); }
     .process-status.starting { color: var(--lemon); }
     .process-status.errored, .process-status.dead { color: var(--cherry); }
+
+
+    /* ---------- Dropdown ---------- */
+    .dd { position: relative; }
+    .dd-btn { display: flex; align-items: center; gap: 10px; text-align: left; cursor: pointer; }
+    .dd-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-host); font-stretch: 87.5%; font-size: 13px; }
+    .dd-value.is-placeholder { font-family: var(--font-ui); font-stretch: normal; font-size: 14px; color: var(--ink-3); }
+    .dd-chevron { width: 12px; height: 12px; color: var(--ink-3); flex-shrink: 0; transition: transform 0.15s; }
+    .dd.open .dd-btn { border-color: var(--cherry); box-shadow: 0 0 0 3px var(--cherry-soft); }
+    .dd.open .dd-chevron { transform: rotate(180deg); }
+    .dd-list {
+      display: none;
+      position: absolute; left: 0; right: 0; top: calc(100% + 6px); z-index: 30;
+      max-height: 248px; overflow-y: auto;
+      margin: 0; padding: 6px; list-style: none;
+      background: var(--sheet); border: 1px solid var(--line-2); border-radius: 10px;
+      box-shadow: 0 12px 32px rgba(10, 12, 24, 0.22);
+    }
+    .dd-list:focus { outline: none; }
+    .dd.open .dd-list { display: block; }
+    .dd-list li[role="option"] {
+      display: grid; grid-template-columns: 10px auto minmax(0, 1fr); align-items: center; gap: 10px;
+      padding: 8px 10px; border-radius: 7px; cursor: pointer;
+    }
+    .dd-list li[role="option"]:not(:has(.lamp)) { grid-template-columns: auto minmax(0, 1fr); }
+    .dd-list li.active { background: var(--sheet-2); }
+    .dd-list li[aria-selected="true"] .dd-name { color: var(--cherry); }
+    .dd-list .lamp { width: 8px; height: 8px; border-width: 1.5px; box-shadow: none; animation: none; }
+    .dd-name { font-family: var(--font-host); font-stretch: 87.5%; font-size: 13px; font-weight: 500; }
+    .dd-detail { font-family: var(--font-host); font-stretch: 87.5%; font-size: 11.5px; color: var(--ink-3); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dd-empty { padding: 10px; color: var(--ink-3); font-size: 13px; }
 
     /* ---------- Toasts ---------- */
     .toast-container { position: fixed; right: 20px; bottom: 20px; z-index: 200; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
@@ -413,9 +446,22 @@
               <span class="tld-suffix">.localhost</span>
             </div>
           </div>
+          <div class="field" id="config-user-field" hidden>
+            <label id="config-user-label">Run as</label>
+            <input type="hidden" id="config-user">
+            <div class="dd" id="config-user-dd">
+              <button type="button" class="input-field dd-btn" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="config-user-label config-user-value" onclick="ddToggle('config-user')" onkeydown="ddButtonKey(event, 'config-user')">
+                <span class="dd-value is-placeholder" id="config-user-value">Choose a user</span>
+                <svg class="dd-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <ul class="dd-list" role="listbox" tabindex="-1" aria-labelledby="config-user-label" onkeydown="ddListKey(event, 'config-user')"></ul>
+            </div>
+            <div class="hint">The command runs with this user's permissions. Root isn't an option.</div>
+          </div>
           <div class="field">
             <label for="config-cwd">Project folder</label>
             <input type="text" id="config-cwd" class="input-field" placeholder="~/projects/myapp" required spellcheck="false">
+            <div class="hint" id="config-cwd-hint" hidden></div>
           </div>
           <div class="field">
             <label for="config-cmd">Start command</label>
@@ -462,10 +508,15 @@
             </div>
           </div>
           <div class="field">
-            <label for="bind-server">Site</label>
-            <select id="bind-server" class="input-field" required>
-              <option value="">Choose a site</option>
-            </select>
+            <label id="bind-server-label">Site</label>
+            <input type="hidden" id="bind-server">
+            <div class="dd" id="bind-server-dd">
+              <button type="button" class="input-field dd-btn" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="bind-server-label bind-server-value" onclick="ddToggle('bind-server')" onkeydown="ddButtonKey(event, 'bind-server')">
+                <span class="dd-value is-placeholder" id="bind-server-value">Choose a site</span>
+                <svg class="dd-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <ul class="dd-list" role="listbox" tabindex="-1" aria-labelledby="bind-server-label" onkeydown="ddListKey(event, 'bind-server')"></ul>
+            </div>
           </div>
           <div class="dialog-actions">
             <button type="button" class="btn" onclick="hideBindDomain()">Cancel</button>
@@ -764,6 +815,35 @@
     function showAddRoute(mode = 'port') {
       document.getElementById('add-route-modal').style.display = 'flex';
       setAddMode(mode);
+      loadRunAsUsers();
+    }
+
+    // Who a new site can run as. "~" in the folder means that user's home.
+    let runAsInfo = null;
+    function showHomeHint(user) {
+      const hint = document.getElementById('config-cwd-hint');
+      if (!user) { hint.hidden = true; return; }
+      hint.hidden = false;
+      hint.innerHTML = `<code>~</code> is ${escapeHtml(user.name)}'s home, <code>${escapeHtml(user.home)}</code>.`;
+    }
+    async function loadRunAsUsers() {
+      try {
+        runAsInfo = await getJSON('/users');
+      } catch { runAsInfo = null; }
+      const field = document.getElementById('config-user-field');
+      const users = runAsInfo?.users || [];
+      const owner = users.find(u => u.name === runAsInfo?.owner) || users[0];
+      field.hidden = !(runAsInfo?.multiUser && users.length > 1);
+      ddSetOptions('config-user', users.map(u => ({
+        value: u.name,
+        detail: u.name === runAsInfo.owner ? `${u.home} · owner` : u.home,
+        home: u.home,
+        name: u.name,
+      })), 'Choose a user', owner?.name || '', {
+        empty: 'Nobody is in the candy group yet.',
+        onPick: o => showHomeHint({ name: o.name, home: o.home }),
+      });
+      showHomeHint(owner);
     }
 
     function hideAddRoute() {
@@ -948,6 +1028,24 @@
       }
     }
 
+    async function toggleApiMode(name, api) {
+      try {
+        const res = await apiCall('/config/api', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, api }),
+        });
+        const data = await res.json();
+        if (data.error) toast(data.error, 'error');
+        else {
+          toast(api ? `${name} will hold the first request while it starts` : `${name} shows the loading page again`, 'success');
+          refreshAll();
+        }
+      } catch (e) {
+        toast('Could not change API mode', 'error');
+      }
+    }
+
     async function restartProcess(name) {
       try {
         toast(`Restarting ${name}...`, 'info');
@@ -1113,12 +1211,13 @@
       const name = document.getElementById('config-name').value;
       const cwd = document.getElementById('config-cwd').value;
       const cmd = document.getElementById('config-cmd').value;
+      const user = document.getElementById('config-user-field').hidden ? '' : document.getElementById('config-user').value;
 
       try {
         const res = await apiCall('/config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, cwd, cmd })
+          body: JSON.stringify(user ? { name, cwd, cmd, user } : { name, cwd, cmd })
         });
         const data = await res.json();
         if (data.error) {
@@ -1188,28 +1287,24 @@
       }
     }
 
-    async function showBindDomain() {
+    async function showBindDomain(preselect = '') {
       // Reset state
       document.getElementById('bind-domain-warning').style.display = 'none';
       document.getElementById('bind-domain-form').style.display = 'flex';
-      document.getElementById('bind-subdomain').value = '';
+      document.getElementById('bind-subdomain').value = preselect;
       pendingBindSubdomain = null;
       pendingBindServer = null;
 
-      // Populate server dropdown from configs
-      try {
-        const res = await apiCall('/configs');
-        const data = await res.json();
-        const configs = data.configs || {};
-        const select = document.getElementById('bind-server');
-        select.innerHTML = '<option value="">Choose a site</option>';
-        for (const name of Object.keys(configs).filter(k => k !== 'success')) {
-          const opt = document.createElement('option');
-          opt.value = name;
-          opt.textContent = name;
-          select.appendChild(opt);
-        }
-      } catch {}
+      // Any site can be bound: one candy starts, or a plain route to a port or URL
+      const options = collectSites()
+        .filter(s => s.route || s.config)
+        .map(s => {
+          const [st, label] = siteStatus(s);
+          const v = variantsOf(s.config)[0];
+          const detail = s.route ? (s.route.isRestricted ? s.route.target : ':' + s.route.target) : v ? v.cmd : '';
+          return { value: s.name, state: st, label, detail };
+        });
+      ddSetOptions('bind-server', options, 'Choose a site', preselect);
 
       // Set domain suffix
       if (domainZone) {
@@ -1494,7 +1589,7 @@
       if (p === 'errored') return ['crashed', 'Crashed'];
       if (p === 'dead' || p === 'stopped') return ['stopped', 'Stopped'];
       if (p) return ['idle', p.charAt(0).toUpperCase() + p.slice(1)];
-      if (s.config) return ['idle', 'Starts when opened'];
+      if (s.config) return ['idle', s.config.api ? 'Starts on first request' : 'Starts when opened'];
       if (s.route?.isRestricted) return ['ext', 'External URL'];
       if (s.traffic?.alive) return ['running', 'Listening'];
       return ['idle', 'Forwarding'];
@@ -1536,6 +1631,9 @@
       const lanHttps = route ? route.lanHttps : s.config?.lanHttps;
       const chips = [];
       if (route?.persistent) chips.push('<span class="chip on" title="Kept across daemon restarts">Pinned</span>');
+      if (s.config?.api) chips.push('<span class="chip on" title="Requests wait while it starts and are passed straight through. No loading page.">API mode</span>');
+      const runsAs = s.config?.user;
+      if (state.status?.multiUser && runsAs && runsAs !== state.status.owner) chips.push(`<span class="chip" title="Started as this user">Runs as ${escapeHtml(runsAs)}</span>`);
       if (lan) chips.push(`<span class="chip on" title="${safe}.candy is reachable from the local network">On LAN</span>`);
       if (lanHttps) chips.push(`<a class="chip-link" href="${escapeHtml(lanHttps)}" target="_blank" title="LAN address with a trusted ts.net certificate">${escapeHtml(lanHttps.replace(/^https:\/\//, ''))}</a>`);
 
@@ -1556,11 +1654,13 @@
       if (s.proc) items.push(menuItem('Set port…', `setProcessPort('${js}', ${Number(s.proc.port) || 'null'})`));
       if (route) items.push(menuItem('Rename…', `renameRoute('${js}')`));
       if (route && !route.isRestricted && !s.portal) items.push(menuItem('Open public portal', `openPortal('${js}', ${Number(route.target)})`));
+      if (domainZone && (route || s.config)) items.push(menuItem('Bind public domain…', `showBindDomain('${js}')`));
       if (variants.length > 1) variants.forEach(v => items.push(menuItem(`Start ${v.id}`, `startProcess('${js}', '${escapeJsSingle(v.id)}')`)));
       const toggles = [];
       if (route) toggles.push(menuItem(route.persistent ? 'Unpin' : 'Pin across restarts', `togglePersistent('${js}', ${!route.persistent})`));
       if (route || s.config) toggles.push(menuItem(lan ? 'Remove from LAN' : 'Publish to LAN…', `toggleLan('${js}', ${!lan})`));
       if (lan) toggles.push(menuItem(lanHttps ? 'Turn off LAN HTTPS' : 'Serve LAN over HTTPS', `toggleLanHttps('${js}', ${!lanHttps})`));
+      if (s.config) toggles.push(menuItem(s.config.api ? 'Turn off API mode' : 'API mode', `toggleApiMode('${js}', ${!s.config.api})`));
       const danger = [];
       if (route) danger.push(menuItem('Delete route', `deleteRoute('${js}')`, true));
       if (s.config) variants.forEach(v => danger.push(menuItem(variants.length > 1 ? `Delete command ${v.id}` : 'Delete start command', `deleteConfig('${js}', '${escapeJsSingle(v.id)}')`, true)));
@@ -1694,6 +1794,124 @@
     // Click outside a dialog to close it
     document.getElementById('add-route-modal').addEventListener('click', (e) => {
       if (e.target.id === 'add-route-modal') hideAddRoute();
+    });
+
+
+    // ----- Dropdown: a listbox that matches the rest of the UI -----
+    const ddState = {};
+
+    function ddEls(id) {
+      const root = document.getElementById(id + '-dd');
+      return { root, btn: root.querySelector('.dd-btn'), list: root.querySelector('.dd-list'), input: document.getElementById(id), value: document.getElementById(id + '-value') };
+    }
+
+    function ddSetOptions(id, options, placeholder, selected = '', extra = {}) {
+      ddState[id] = { options, placeholder, active: -1, onPick: extra.onPick };
+      const { list } = ddEls(id);
+      list.innerHTML = options.length
+        ? options.map((o, i) => `
+            <li role="option" id="${id}-opt-${i}" data-i="${i}" aria-selected="false" onclick="ddPick('${id}', ${i})" onmousemove="ddActivate('${id}', ${i}, false)">
+              ${o.state ? `<span class="lamp ${escapeHtml(o.state)}" title="${escapeHtml(o.label)}"></span>` : ''}
+              <span class="dd-name">${escapeHtml(o.value)}</span>
+              <span class="dd-detail">${escapeHtml(o.detail || '')}</span>
+            </li>`).join('')
+        : `<li class="dd-empty">${escapeHtml(extra.empty || 'No sites yet. Add one first.')}</li>`;
+      const i = options.findIndex(o => o.value === selected);
+      if (i >= 0) ddPick(id, i, false); else ddClear(id);
+    }
+
+    function ddClear(id) {
+      const { input, value } = ddEls(id);
+      input.value = '';
+      value.textContent = ddState[id]?.placeholder || '';
+      value.classList.add('is-placeholder');
+      ddEls(id).list.querySelectorAll('[aria-selected="true"]').forEach(li => li.setAttribute('aria-selected', 'false'));
+    }
+
+    function ddOpen(id) {
+      const { root, btn, list, input } = ddEls(id);
+      root.classList.add('open');
+      btn.setAttribute('aria-expanded', 'true');
+      const opts = ddState[id]?.options || [];
+      const cur = opts.findIndex(o => o.value === input.value);
+      ddActivate(id, cur >= 0 ? cur : 0);
+      list.focus();
+    }
+
+    function ddClose(id, focusButton = true) {
+      const { root, btn } = ddEls(id);
+      if (!root.classList.contains('open')) return;
+      root.classList.remove('open');
+      btn.setAttribute('aria-expanded', 'false');
+      if (focusButton) btn.focus();
+    }
+
+    function ddToggle(id) {
+      ddEls(id).root.classList.contains('open') ? ddClose(id) : ddOpen(id);
+    }
+
+    function ddActivate(id, i, scroll = true) {
+      const st = ddState[id];
+      if (!st || !st.options.length) return;
+      i = Math.max(0, Math.min(st.options.length - 1, i));
+      st.active = i;
+      const { list } = ddEls(id);
+      list.querySelectorAll('li.active').forEach(li => li.classList.remove('active'));
+      const li = list.querySelector(`[data-i="${i}"]`);
+      if (!li) return;
+      li.classList.add('active');
+      list.setAttribute('aria-activedescendant', li.id);
+      if (scroll) li.scrollIntoView({ block: 'nearest' });
+    }
+
+    function ddPick(id, i, close = true) {
+      const st = ddState[id];
+      const o = st?.options[i];
+      if (!o) return;
+      const { input, value, list } = ddEls(id);
+      input.value = o.value;
+      value.textContent = o.value;
+      value.classList.remove('is-placeholder');
+      list.querySelectorAll('li[role="option"]').forEach(li => li.setAttribute('aria-selected', String(li.dataset.i === String(i))));
+      st.onPick?.(o);
+      if (close) ddClose(id);
+    }
+
+    function ddButtonKey(e, id) {
+      if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(e.key)) {
+        e.preventDefault();
+        ddOpen(id);
+      }
+    }
+
+    function ddListKey(e, id) {
+      const st = ddState[id];
+      if (!st) return;
+      const n = st.options.length;
+      if (e.key === 'Escape' || e.key === 'Tab') {
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); }
+        ddClose(id, e.key === 'Escape');
+        return;
+      }
+      if (e.key === 'ArrowDown') { e.preventDefault(); ddActivate(id, st.active + 1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); ddActivate(id, st.active - 1); }
+      else if (e.key === 'Home') { e.preventDefault(); ddActivate(id, 0); }
+      else if (e.key === 'End') { e.preventDefault(); ddActivate(id, n - 1); }
+      else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); ddPick(id, st.active); }
+      else if (e.key.length === 1 && /\S/.test(e.key)) {
+        // Type a letter to jump to the next site starting with it
+        const k = e.key.toLowerCase();
+        for (let step = 1; step <= n; step++) {
+          const i = (st.active + step) % n;
+          if (st.options[i].value.toLowerCase().startsWith(k)) { ddActivate(id, i); break; }
+        }
+      }
+    }
+
+    document.addEventListener('click', (e) => {
+      document.querySelectorAll('.dd.open').forEach(root => {
+        if (!root.contains(e.target)) ddClose(root.id.replace(/-dd$/, ''), false);
+      });
     });
 
   </script>

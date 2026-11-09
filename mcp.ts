@@ -4,6 +4,7 @@
  * Simple server management tools: list, start, stop, logs
  * Designed for autonomous agent use - no explicit user request needed.
  */
+import { exchangeSecret, readSecrets, secretHint } from "./secret.ts"
 
 
 // ============================================================================
@@ -542,7 +543,6 @@ This is a READ-ONLY operation - safe to call anytime without asking.`,
 // Daemon API Client
 // ============================================================================
 
-const MCP_SECRET_FILE = `${process.env.HOME}/.config/candy/mcp-secret`
 let apiKey: string | null = null
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
@@ -571,27 +571,10 @@ const sanitizeFetchErrorMessage = (message: string): string => {
 async function getApiKey(): Promise<string> {
   if (apiKey) return apiKey
 
-  // Read bootstrap secret from file
-  const secretFile = Bun.file(MCP_SECRET_FILE)
-  if (!await secretFile.exists()) {
-    throw new Error("MCP secret file not found. Is the candy daemon running?")
-  }
-  const secret = (await secretFile.text()).trim()
-
-  // Exchange secret for API key
-  const res = await fetch(`${DAEMON_URL}/mcp/auth`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ secret }),
-    signal: AbortSignal.timeout(5000),
-  })
-
-  if (!res.ok) {
-    throw new Error("Failed to authenticate with daemon. Secret may be stale - restart daemon?")
-  }
-
-  const data = await res.json() as { apiKey: string }
-  apiKey = data.apiKey
+  if ((await readSecrets()).length === 0) throw new Error(secretHint())
+  const key = await exchangeSecret(DAEMON_URL)
+  if (!key) throw new Error("Failed to authenticate with daemon. Secret may be stale - restart daemon?")
+  apiKey = key
   return apiKey
 }
 
@@ -606,7 +589,7 @@ async function daemonFetch(path: string, options: RequestInit = {}): Promise<any
     } catch (e) {
       return {
         error: String(e),
-        hint: "Ensure the candy daemon is running (port 9999) and ~/.config/candy/mcp-secret exists."
+        hint: "Ensure the candy daemon is running (port 9999) and ~/.config/candy/mcp-secret or /run/candy/secret is readable."
       }
     }
 

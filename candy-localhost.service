@@ -1,19 +1,27 @@
 # candy-localhost systemd service (template — rendered by install-service.sh)
 # Install with: bun run install-service
 # Enable with:  sudo systemctl enable --now candy-localhost@$USER
+#
+# Runs as root so servers registered by members of the `candy` group run as
+# those users. %i is the owner: their ~/.config/candy holds the state, and the
+# web portal acts as them. Nothing candy starts for a user runs as root.
 
 [Unit]
-Description=candy-localhost daemon
+Description=candy-localhost daemon (owner %i)
 After=network.target
 
 [Service]
 Type=simple
-User=%i
 Environment="HOME=/home/%i"
+Environment="CANDY_OWNER=%i"
 Environment="PATH=__BUN_DIR__:/home/%i/.bun/bin:/usr/local/bin:/usr/bin:/bin"
 WorkingDirectory=__CANDY_DIR__
-ExecStartPre=+/usr/sbin/setcap cap_net_bind_service=+ep __CADDY__
+# /run/candy/users/<user>/secret holds each candy group member's secret
+RuntimeDirectory=candy
+RuntimeDirectoryMode=0755
 ExecStart=__BUN__ run daemon.ts
+# The daemon writes state into the owner's home; hand it back to them
+ExecStopPost=-/bin/sh -c 'chown -R %i: /home/%i/.config/candy /home/%i/.config/caddy /home/%i/.local/share/caddy 2>/dev/null'
 Restart=on-failure
 RestartSec=5
 

@@ -56,8 +56,8 @@ Servers auto-kill after 1 hour of inactivity (no incoming traffic) unless they h
 | `~/.config/candy/servers.json` | Server configurations |
 | `~/.config/caddy/Caddyfile` | Generated reverse proxy config |
 | `~/.config/candy/mcp-secret` | MCP bootstrap secret (mode 600) |
-| `/tmp/candy-logs/<name>.log` | Per-process logs |
-| `/tmp/candy-logs/_audit.log` | Operation audit trail |
+| `/run/candy/users/<user>/secret` | Per-user secret when the daemon runs as root |
+| `/var/log/candy/` (root) or `/tmp/candy-logs/` | Per-process logs and `_audit.log` |
 
 ## HTTP API Authentication
 
@@ -68,6 +68,11 @@ Servers auto-kill after 1 hour of inactivity (no incoming traffic) unless they h
 ## MCP Tools
 
 The MCP server exposes: `candy_servers`, `candy_start`, `candy_restart`, `candy_stop`, `candy_logs`, `candy_register`, `candy_deregister`, `candy_portal_open`, `candy_portal_close`, `candy_portals`, `candy_input`
+
+## Multi-user and API mode
+
+- The systemd unit runs the daemon as root with `CANDY_OWNER=%i`. Members of the `candy` group get per-user secrets; servers run as the user who registered them (`ServerConfig.user`, launched with `setpriv`). Never start anything as root. See `launchSpec`, `requestUser`, `mayChangeConfig` in daemon.ts.
+- `ServerConfig.api`: requests to a stopped server are held and forwarded 1:1 (`forwardApiModeRequest`) instead of showing the loading page.
 
 ## Reserved Names
 

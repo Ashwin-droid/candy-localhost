@@ -7,6 +7,10 @@
 
 import { $, spawn, type Subprocess } from "bun"
 import { watch, type FSWatcher } from "node:fs"
+import { chmod, chown, mkdir, unlink, writeFile } from "node:fs/promises"
+import { dirname } from "node:path"
+import { userInfo } from "node:os"
+import { SHARED_GROUP, SHARED_SECRET_FILE } from "./secret.ts"
 
 import {
   buildActionSubdomain,
@@ -44,6 +48,8 @@ interface ServerConfig {
   id: string
   cwd: string
   cmd: string
+  user?: string  // account the server runs as (root mode); defaults to the owner
+  api?: boolean  // API mode: hold the first request while starting and forward it, no loading page
 }
 
 type ProcessStatus = 'starting' | 'running' | 'dead' | 'errored'
@@ -79,7 +85,8 @@ const ROUTES_FILE = `${CANDY_CONFIG_DIR}/routes.json`
 const MCP_SECRET_FILE = `${CANDY_CONFIG_DIR}/mcp-secret`
 const DOMAINS_CONFIG = `${CANDY_CONFIG_DIR}/domains.json`
 const GRUDGE_FILE = `${CANDY_CONFIG_DIR}/candy-grudge.lock`
-const LOGS_DIR = "/tmp/candy-logs"
+// As root, logs live in a root-owned dir: /tmp/candy-logs could be pre-created by any user
+const LOGS_DIR = process.getuid?.() === 0 ? "/var/log/candy" : "/tmp/candy-logs"
 const AUDIT_LOG = `${LOGS_DIR}/_audit.log`
 const DNS_CONFIG_FILE = `${CANDY_CONFIG_DIR}/candy-dns.json`
 const ADVERTISEMENTS_FILE = `${CANDY_CONFIG_DIR}/advertisements.json`
@@ -102,7 +109,12 @@ const LAN_IP_REFRESH_INTERVAL = 5 * 60 * 1000  // 5 minutes
 
 // Reserved domain names (cannot be used for servers/routes)
 const RESERVED_NAMES = new Set(['portal', 'k', 'kill', 'p', 'candy'])
-const isReserved = (name: string) => RESERVED_NAMES.has(name.toLowerCase())
+// Names become hostnames and file names (logs), so only DNS-safe labels are allowed.
+// Anything else is treated like a reserved name and rejected.
+const SAFE_NAME = /^[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?(\.[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?)*$/i
+const isSafeName = (name: unknown): name is string =>
+  typeof name === "string" && name.length > 0 && name.length <= 128 && SAFE_NAME.test(name)
+const isReserved = (name: string) => !isSafeName(name) || RESERVED_NAMES.has(name.toLowerCase())
 
 // Port detection patterns (run against process stdout/stderr)
 const PORT_PATTERNS = [
@@ -665,6 +677,27 @@ const restartCloudflared = async () => {
 // ============================================================================
 
 const routes = new Map<string, { target: number | string, persistent: boolean }>()
+
+// Where a bound public domain sends its traffic. A site candy starts itself goes to its
+// running process (or to the daemon, which starts it). A plain route goes straight to
+// its port or external URL.
+const bindingUpstream = (serverName: string): string | null => {
+  const managed = processes.get(serverName)
+  if (managed?.status === 'running' && managed.port) return `localhost:${managed.port}`
+  if (managed || serverConfigs.has(serverName)) return null
+  const route = routes.get(serverName)
+  if (!route) return null
+  const target = String(route.target)
+  return /^\d+$/.test(target) ? `localhost:${target}` : target
+}
+
+// Caddy needs the upstream's own Host header for an https URL target
+const caddyUpstream = (upstream: string): string =>
+  upstream.startsWith('https://')
+    ? `reverse_proxy ${upstream} {
+      header_up Host {upstream_hostport}
+    }`
+    : `reverse_proxy ${upstream}`
 const portals = new Map<string, { proc: Subprocess | null, port: number, url?: string | null, pid?: number }>()
 const processes = new Map<string, ManagedProcess>()
 const serverConfigs = new Map<string, ServerConfig[]>()
@@ -775,36 +808,175 @@ setInterval(async () => {
   await killIdleServers()
 }, 30 * 60 * 1000)
 
-// MCP Authentication - bootstrap secret + session API keys
-// The daemon writes a secret to MCP_SECRET_FILE on startup
-// MCP reads it, exchanges for a session API key via /mcp/auth
-// API key is valid for the daemon's lifetime (no rolling)
-let mcpBootstrapSecret: string | null = null
-const mcpApiKeys = new Set<string>()
+// MCP Authentication - bootstrap secrets + session API keys
+// Each user gets their own bootstrap secret; exchanging it via /mcp/auth gives
+// an API key tied to that user. API keys are valid for the daemon's lifetime.
+//
+// Run as a normal user, the daemon has one identity (itself): the secret goes
+// to ~/.config/candy/mcp-secret, plus /run/candy/secret for the `candy` group.
+// Run as root (CANDY_OWNER=<user>), every member of the `candy` group gets
+// /run/candy/users/<user>/secret readable only by them, and servers they
+// register run as them. Nothing is ever started as root.
+const RUNNING_AS_ROOT = process.getuid?.() === 0
+const OWNER = process.env.CANDY_OWNER || (RUNNING_AS_ROOT ? "" : userInfo().username)
+if (RUNNING_AS_ROOT && !OWNER) {
+  console.error("\x1b[31mRunning as root needs CANDY_OWNER=<user> (the user whose ~/.config/candy is used).\x1b[0m")
+  process.exit(1)
+}
+const USER_SECRETS_DIR = `${dirname(SHARED_SECRET_FILE)}/users`
+const secretUsers = new Map<string, string>()   // bootstrap secret -> user
+const mcpApiKeys = new Map<string, string>()    // API key -> user
 const TAILSCALE_STATUS_CACHE_MS = 15 * 1000
 let tailscaleSelf: TailscaleNodeIdentity | null = null
 let tailscaleStatusFetchedAt = 0
 const tailscalePeersByIp = new Map<string, TailscaleNodeIdentity>()
 
+interface UserAccount { name: string; uid: number; gid: number; home: string; shell: string }
+const lookupUser = async (name: string): Promise<UserAccount | null> => {
+  if (!/^[a-z_][a-z0-9_.-]*\$?$/i.test(name)) return null
+  const res = await $`getent passwd ${name}`.quiet().nothrow()
+  if (res.exitCode !== 0) return null
+  const [user, , uid, gid, , home, shell] = res.stdout.toString().trim().split(":")
+  return { name: user, uid: Number(uid), gid: Number(gid), home, shell: shell || "/bin/bash" }
+}
+
+const groupMembers = async (group: string): Promise<string[] | null> => {
+  const res = await $`getent group ${group}`.quiet().nothrow()
+  if (res.exitCode !== 0) return null
+  const members = res.stdout.toString().trim().split(":")[3] || ""
+  return members.split(",").map(m => m.trim()).filter(Boolean)
+}
+
+// Create the file with restrictive permissions before any secret is in it
+const writeSecretFile = async (path: string, secret: string, mode: number, owner?: UserAccount | null, gid?: number) => {
+  await unlink(path).catch(() => {})
+  await writeFile(path, secret, { mode: 0o600 })
+  if (owner || gid !== undefined) await chown(path, owner?.uid ?? process.getuid!(), gid ?? owner!.gid)
+  await chmod(path, mode)
+}
+
+const newSecretFor = (user: string): string => {
+  for (const [secret, u] of secretUsers) if (u === user) return secret
+  const secret = crypto.randomUUID()
+  secretUsers.set(secret, user)
+  return secret
+}
+
+const forgetUser = (user: string) => {
+  for (const [secret, u] of secretUsers) if (u === user) secretUsers.delete(secret)
+  for (const [key, u] of mcpApiKeys) if (u === user) mcpApiKeys.delete(key)
+}
+
+// Root mode: one secret per member of the candy group (plus the owner).
+// Re-run periodically so group changes apply without a restart.
+const syncUserSecrets = async () => {
+  const members = new Set(await groupMembers(SHARED_GROUP) ?? [])
+  members.add(OWNER)
+  await mkdir(USER_SECRETS_DIR, { recursive: true, mode: 0o755 })
+  for (const name of members) {
+    const account = await lookupUser(name)
+    if (!account || account.uid === 0) continue
+    const dir = `${USER_SECRETS_DIR}/${account.name}`
+    const file = `${dir}/secret`
+    const secret = newSecretFor(account.name)
+    const current = await Bun.file(file).text().catch(() => "")
+    if (current === secret) continue
+    await mkdir(dir, { recursive: true })
+    await chown(dir, account.uid, account.gid)
+    await chmod(dir, 0o700)
+    await writeSecretFile(file, secret, 0o600, account)
+  }
+  const users = new Set(secretUsers.values())
+  for (const user of users) {
+    if (members.has(user)) continue
+    forgetUser(user)
+    await $`rm -rf ${USER_SECRETS_DIR}/${user}`.quiet().nothrow()
+    auditLog('AUTH', `Revoked access for ${user} (left the ${SHARED_GROUP} group)`, 'System')
+  }
+}
+
 const initMcpAuth = async () => {
-  mcpBootstrapSecret = crypto.randomUUID()
   await $`mkdir -p ${CANDY_CONFIG_DIR}`.quiet().nothrow()
-  await Bun.write(MCP_SECRET_FILE, mcpBootstrapSecret)
-  // Restrict file permissions to owner only
-  await $`chmod 600 ${MCP_SECRET_FILE}`.quiet().nothrow()
+  if (RUNNING_AS_ROOT) {
+    const owner = await lookupUser(OWNER)
+    if (!owner || owner.uid === 0) {
+      console.error(`\x1b[31mCANDY_OWNER=${OWNER} is not a usable non-root account.\x1b[0m`)
+      process.exit(1)
+    }
+    await writeSecretFile(MCP_SECRET_FILE, newSecretFor(OWNER), 0o600, owner)
+    await unlink(SHARED_SECRET_FILE).catch(() => {})
+    try {
+      await syncUserSecrets()
+    } catch (e) {
+      console.error(`\x1b[33mCould not write per-user secrets under ${USER_SECRETS_DIR}: ${(e as Error).message}\x1b[0m`)
+    }
+    setInterval(() => syncUserSecrets().catch(() => {}), 60 * 1000)
+    console.log(`\x1b[90mMCP auth initialized (multi-user, owner ${OWNER})\x1b[0m`)
+    return
+  }
+  const secret = newSecretFor(OWNER)
+  await writeSecretFile(MCP_SECRET_FILE, secret, 0o600)
+  await publishSharedSecret(secret)
   console.log(`\x1b[90mMCP auth initialized\x1b[0m`)
+}
+
+// Single-user mode: if a `candy` group exists, also write the secret to
+// /run/candy/secret readable by that group. Everyone acts as the daemon's user.
+const publishSharedSecret = async (secret: string) => {
+  const group = await $`getent group ${SHARED_GROUP}`.quiet().nothrow()
+  if (group.exitCode !== 0) {
+    await unlink(SHARED_SECRET_FILE).catch(() => {})
+    return
+  }
+  const gid = Number(group.stdout.toString().split(":")[2])
+  try {
+    await mkdir(dirname(SHARED_SECRET_FILE), { recursive: true })
+    await writeSecretFile(SHARED_SECRET_FILE, secret, 0o640, null, gid)
+    console.log(`\x1b[90mShared secret at ${SHARED_SECRET_FILE} for group ${SHARED_GROUP}\x1b[0m`)
+  } catch (e) {
+    await unlink(SHARED_SECRET_FILE).catch(() => {})
+    console.error(`\x1b[33mCould not share the secret with group ${SHARED_GROUP}: ${(e as Error).message}. Is ${process.env.USER} in that group, and does ${dirname(SHARED_SECRET_FILE)} exist?\x1b[0m`)
+  }
 }
 
 const validateMcpApiKey = (apiKey: string): boolean => {
   return mcpApiKeys.has(apiKey)
 }
 
-const exchangeMcpSecret = (secret: string): string | null => {
-  if (secret !== mcpBootstrapSecret) return null
+const exchangeMcpSecret = (secret: string): { apiKey: string; user: string } | null => {
+  const user = typeof secret === "string" ? secretUsers.get(secret) : undefined
+  if (!user) return null
   const apiKey = `mcp_${crypto.randomUUID()}`
-  mcpApiKeys.add(apiKey)
-  return apiKey
+  mcpApiKeys.set(apiKey, user)
+  return { apiKey, user }
 }
+
+// Who a request acts as. API keys carry their user; the web portal acts as the owner.
+const requestUser = (req: Request): string => {
+  const key = req.headers.get("X-Candy-API-Key")
+  return (key && mcpApiKeys.get(key)) || OWNER
+}
+
+const configUser = (config: ServerConfig): string => config.user || OWNER
+
+// Accounts a site may run as: the owner plus members of the candy group, never root
+const runAsUsers = async (): Promise<UserAccount[]> => {
+  if (!RUNNING_AS_ROOT) {
+    const self = await lookupUser(OWNER)
+    return self ? [self] : []
+  }
+  const names = [OWNER, ...(await groupMembers(SHARED_GROUP) ?? []).filter(n => n !== OWNER)]
+  const accounts: UserAccount[] = []
+  for (const name of names) {
+    const account = await lookupUser(name)
+    if (account && account.uid !== 0) accounts.push(account)
+  }
+  return accounts
+}
+
+// Changing or removing a config is limited to the user it runs as (the owner may remove any).
+const mayChangeConfig = (requester: string, config: ServerConfig): boolean =>
+  !RUNNING_AS_ROOT || requester === configUser(config) || requester === OWNER
 
 const getTailscaleIpv4 = (ips: string[]): string | null =>
   ips.find(ip => /^\d+\.\d+\.\d+\.\d+$/.test(ip)) || null
@@ -1312,7 +1484,7 @@ const stripAnsi = (text: string): string => {
 
 // Write to process log file
 const processLog = async (name: string, data: string) => {
-  const logFile = `${LOGS_DIR}/${name}.log`
+  const logFile = getLogFile(name)
   try {
     const file = Bun.file(logFile)
     const existing = await file.exists() ? await file.text() : ""
@@ -1321,7 +1493,7 @@ const processLog = async (name: string, data: string) => {
 }
 
 // Get log file path for a process
-const getLogFile = (name: string) => `${LOGS_DIR}/${name}.log`
+const getLogFile = (name: string) => `${LOGS_DIR}/${name.replace(/[^\w.-]/g, '_').replace(/^\.+/, '_')}.log`
 
 // Clear logs for a process
 const clearLogs = async (name: string) => {
@@ -1393,7 +1565,11 @@ const loadServerConfigs = async () => {
           const id = typeof (item as any).id === "string" && (item as any).id.length > 0
             ? (item as any).id
             : makeConfigId()
-          normalized.push({ id, cwd, cmd })
+          const user = typeof (item as any).user === "string" && (item as any).user ? (item as any).user : undefined
+          const cfg: ServerConfig = { id, cwd, cmd }
+          if (user) cfg.user = user
+          if ((item as any).api === true) cfg.api = true
+          normalized.push(cfg)
         }
         if (normalized.length > 0) {
           serverConfigs.set(name, normalized)
@@ -1417,18 +1593,29 @@ const saveServerConfigs = async () => {
   await Bun.write(SERVERS_CONFIG, JSON.stringify(data, null, 2))
 }
 
+const setApiFlag = (config: ServerConfig, api: boolean) => {
+  if (api) config.api = true
+  else delete config.api
+}
+
 // Add a server config
-const addServerConfig = async (name: string, cwd: string, cmd: string, actor: Actor = 'Portal') => {
-  // Expand tilde in cwd
-  const expandedCwd = cwd.replace(/^~/, process.env.HOME || '')
+const addServerConfig = async (name: string, cwd: string, cmd: string, actor: Actor = 'Portal', user: string = OWNER, api?: boolean) => {
+  // Expand tilde in cwd against the home of the user it will run as
+  const home = RUNNING_AS_ROOT ? (await lookupUser(user))?.home : process.env.HOME
+  const expandedCwd = cwd.replace(/^~/, home || '')
   const configs = getConfigsForName(name)
-  const dupe = configs.find(cfg => cfg.cwd === expandedCwd && cfg.cmd === cmd)
-  if (!dupe) {
-    configs.push({ id: makeConfigId(), cwd: expandedCwd, cmd })
+  const dupe = configs.find(cfg => cfg.cwd === expandedCwd && cfg.cmd === cmd && configUser(cfg) === user)
+  if (dupe) {
+    if (api !== undefined) setApiFlag(dupe, api)
+  } else {
+    const cfg: ServerConfig = { id: makeConfigId(), cwd: expandedCwd, cmd }
+    if (user !== OWNER) cfg.user = user
+    if (api) cfg.api = true
+    configs.push(cfg)
     serverConfigs.set(name, configs)
   }
   await saveServerConfigs()
-  auditLog('CONFIG_ADD', `${name}: ${cmd} in ${expandedCwd}`, actor)
+  auditLog('CONFIG_ADD', `${name}: ${cmd} in ${expandedCwd}${RUNNING_AS_ROOT ? ` as ${user}` : ''}`, actor)
 }
 
 // Remove a server config
@@ -1481,12 +1668,119 @@ const extractPorts = (output: string): number[] => {
   return [...ports]
 }
 
+// ============================================================================
+// API mode
+// ============================================================================
+// For servers that are called by programs, not browsers: a request to a
+// stopped server is held (no loading page) while it starts, then forwarded
+// unchanged. Later requests go straight through Caddy once the route exists.
+
+// The config whose API mode applies to a name: the running one, else the first configured.
+const apiModeConfig = (name: string): ServerConfig | null => {
+  const managed = processes.get(name)
+  if (managed && (managed.status === 'running' || managed.status === 'starting')) {
+    return managed.config.api ? managed.config : null
+  }
+  const configs = getConfigsForName(name)
+  return configs.find(c => c.api) ?? null
+}
+
+const apiModeStarts = new Map<string, Promise<ManagedProcess>>()
+const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'te', 'trailer', 'upgrade']
+
+const apiModeError = (status: number, error: string, details: Record<string, unknown> = {}) =>
+  Response.json({ error, ...details }, { status, headers: { 'X-Candy': 'api-mode' } })
+
+const forwardApiModeRequest = async (req: Request, url: URL, name: string, config: ServerConfig): Promise<Response> => {
+  let managed = processes.get(name)
+  if (!managed || (managed.status !== 'running' && managed.status !== 'starting')) {
+    // One start per name, however many requests arrive together
+    let starting = apiModeStarts.get(name)
+    if (!starting) {
+      starting = spawnProcess(name, 'Network', config.id).finally(() => apiModeStarts.delete(name))
+      apiModeStarts.set(name, starting)
+    }
+    try {
+      managed = await starting
+    } catch (e) {
+      return apiModeError(502, `Could not start ${name}`, { reason: String((e as Error)?.message ?? e) })
+    }
+  }
+  managed.lastActivity = Date.now()
+
+  // Port detection gives up after PORT_DETECTION_TIMEOUT; wait for it or for the process to exit
+  const deadline = managed.startedAt.getTime() + PORT_DETECTION_TIMEOUT + 500
+  while (managed.status === 'starting' && Date.now() < deadline && !req.signal.aborted) {
+    await Bun.sleep(50)
+  }
+  if (managed.status === 'errored' || managed.status === 'dead') {
+    return apiModeError(502, `${name} exited before it was ready`, { exitCode: managed.exitCode })
+  }
+  if (managed.status !== 'running' || !managed.port) {
+    const ports = managed.detectedPorts
+    return ports.length > 1
+      ? apiModeError(502, `${name} listens on several ports. Pick one in the portal (Set port…)`, { ports })
+      : apiModeError(504, `${name} started but no port was detected`)
+  }
+
+  const headers = new Headers(req.headers)
+  for (const h of HOP_BY_HOP) headers.delete(h)
+  const hasBody = req.method !== 'GET' && req.method !== 'HEAD'
+  try {
+    const upstream = await fetch(`http://localhost:${managed.port}${url.pathname}${url.search}`, {
+      method: req.method,
+      headers,
+      body: hasBody ? req.body : undefined,
+      redirect: 'manual',
+      decompress: false,
+      signal: req.signal,
+      // @ts-ignore Bun/undici option for streaming request bodies
+      duplex: 'half',
+    } as RequestInit)
+    const out = new Headers(upstream.headers)
+    for (const h of HOP_BY_HOP) out.delete(h)
+    return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: out })
+  } catch (e) {
+    return apiModeError(502, `${name} did not answer`, { reason: String((e as Error)?.message ?? e) })
+  }
+}
+
+// How to run a config. As root, drop to the config's user with setpriv and
+// cd as that user (so a cwd they couldn't reach on their own fails).
+const launchSpec = async (config: ServerConfig): Promise<{ cmd: string[]; cwd: string; env: Record<string, string | undefined> }> => {
+  const extra = { FORCE_COLOR: '1', TERM: 'xterm-256color', [CANDY_RUNTIME_MAGIC_ENV]: config.id }
+  if (!RUNNING_AS_ROOT) {
+    return { cmd: ['bash', '-ic', config.cmd], cwd: config.cwd, env: { ...process.env, ...extra } }
+  }
+  const account = await lookupUser(configUser(config))
+  if (!account || account.uid === 0) {
+    throw new Error(`Refusing to start: '${configUser(config)}' is not a usable non-root account`)
+  }
+  return {
+    cmd: [
+      'setpriv', `--reuid=${account.uid}`, `--regid=${account.gid}`, '--init-groups', '--',
+      'bash', '-c', 'cd -- "$1" || exit 126; exec bash -ic "$2"', 'candy', config.cwd, config.cmd,
+    ],
+    cwd: '/',
+    env: {
+      HOME: account.home,
+      USER: account.name,
+      LOGNAME: account.name,
+      SHELL: account.shell,
+      PATH: `${account.home}/.bun/bin:${account.home}/.local/bin:/opt/bun/bin:/usr/local/bin:/usr/bin:/bin`,
+      LANG: process.env.LANG,
+      ...extra,
+    },
+  }
+}
+
 // Spawn a dev server process using Bun.Terminal for proper PTY support
 const spawnProcess = async (name: string, actor: Actor = 'System', configId?: string): Promise<ManagedProcess> => {
   const config = getConfigById(name, configId)
   if (!config) {
     throw new Error(`No config found for server: ${name}`)
   }
+  const launch = await launchSpec(config)
 
   const logFile = getLogFile(name)
   // Add restart separator to log file (don't clear)
@@ -1553,14 +1847,9 @@ const spawnProcess = async (name: string, actor: Actor = 'System', configId?: st
   // - .bashrc loads (interactive)
   // - the bash process exits when the command exits (so we can mark status dead/errored)
   const proc = spawn({
-    cmd: ['bash', '-ic', config.cmd],
-    cwd: config.cwd,
-    env: {
-      ...process.env,
-      FORCE_COLOR: '1',
-      TERM: 'xterm-256color',
-      [CANDY_RUNTIME_MAGIC_ENV]: config.id,
-    },
+    cmd: launch.cmd,
+    cwd: launch.cwd,
+    env: launch.env,
     terminal: {
       cols: 120,
       rows: 30,
@@ -2252,13 +2541,11 @@ const syncCaddy = async () => {
   // Unprotected domains: proxy through daemon for rate limiting + nag banner injection
   if (domainConfig) {
     for (const binding of Object.values(domainConfig.bindings || {})) {
-      const managed = processes.get(binding.serverName)
+      const upstream = bindingUpstream(binding.serverName)
       const hasAuth = hasBindingAuth(binding)
 
       if (hasAuth) {
-        const proxyTarget = managed?.status === 'running' && managed.port
-          ? `localhost:${managed.port}`
-          : "localhost:9999"
+        const proxyTarget = upstream ?? "localhost:9999"
 
         // Protected domains must authenticate before either proxying to a running
         // app or touching the daemon's lazy-start/log UI for a stopped app.
@@ -2273,16 +2560,16 @@ const syncCaddy = async () => {
       uri /candy-auth/check
       header_up X-Forwarded-Host {host}
     }
-    reverse_proxy ${proxyTarget}
+    ${caddyUpstream(proxyTarget)}
   }
   log
 }
 
 `
-      } else if (managed?.status === 'running' && managed.port) {
-        // Unprotected + running: caddy proxies directly to server, no daemon in the middle
+      } else if (upstream) {
+        // Unprotected + reachable: caddy proxies directly to the server, no daemon in the middle
         content += `http://${binding.fqdn} {
-  reverse_proxy localhost:${managed.port}
+  ${caddyUpstream(upstream)}
   log
 }
 
@@ -2707,13 +2994,13 @@ const controlServer = Bun.serve({
 
     // === MCP Auth Endpoint (exchange bootstrap secret for API key) ===
     if (req.method === "POST" && url.pathname === "/mcp/auth") {
-      const body = await req.json() as { secret: string }
-      const apiKey = exchangeMcpSecret(body.secret)
-      if (!apiKey) {
+      const body = await req.json().catch(() => ({})) as { secret?: string }
+      const auth = exchangeMcpSecret(body.secret ?? "")
+      if (!auth) {
         return Response.json({ error: "Invalid secret" }, { status: 401, headers: corsHeaders })
       }
-      auditLog('MCP_AUTH', 'MCP client authenticated', 'AI')
-      return Response.json({ apiKey }, { headers: corsHeaders })
+      auditLog('MCP_AUTH', `Client authenticated as ${auth.user}`, 'AI')
+      return Response.json({ apiKey: auth.apiKey, user: auth.user }, { headers: corsHeaders })
     }
 
     // === Web UI Routes (no token required, token is SSR'd) ===
@@ -2737,6 +3024,13 @@ const controlServer = Bun.serve({
     if (isBoundDomain && boundDomainMatch && !url.pathname.startsWith("/candy-auth/")) {
       const authResponse = await requireBoundDomainAuth(req, controlServer, boundDomainMatch.binding)
       if (authResponse) return authResponse
+    }
+
+    // === API mode: any method, held until the server is up, then forwarded as-is ===
+    if (isLocalhostDomain && !url.pathname.startsWith("/candy-auth/")) {
+      const apiName = boundDomainMatch ? boundDomainMatch.serverName : resolveLocalCandyDomain(hostHeader)
+      const apiConfig = apiName && apiName !== "portal" ? apiModeConfig(apiName) : null
+      if (apiConfig) return await forwardApiModeRequest(req, url, apiName, apiConfig)
     }
 
     // === Network Discovery API (unauthenticated, Tailscale-protected) ===
@@ -2910,7 +3204,7 @@ const controlServer = Bun.serve({
       }
 
       if (isReserved(name)) {
-        return Response.json({ error: "That name is reserved.", details: name }, { status: 403, headers: corsHeaders })
+        return Response.json({ error: isSafeName(name) ? "That name is reserved." : "Names can only use letters, numbers, dashes, underscores and dots.", details: name }, { status: isSafeName(name) ? 403 : 400, headers: corsHeaders })
       }
 
       if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -2999,7 +3293,7 @@ const controlServer = Bun.serve({
 
       // Reserved names
       if (isReserved(name)) {
-        return Response.json({ error: "That name is reserved.", details: name }, { status: 403, headers: corsHeaders })
+        return Response.json({ error: isSafeName(name) ? "That name is reserved." : "Names can only use letters, numbers, dashes, underscores and dots.", details: name }, { status: isSafeName(name) ? 403 : 400, headers: corsHeaders })
       }
 
       const isRestricted = body.target && (body.target.startsWith("http://") || body.target.startsWith("https://"))
@@ -3026,7 +3320,7 @@ const controlServer = Bun.serve({
     if (req.method === "DELETE" && url.pathname.startsWith("/register/")) {
       const name = url.pathname.split("/")[2]
       if (isReserved(name)) {
-        return Response.json({ error: "That name is reserved.", details: name }, { status: 403, headers: corsHeaders })
+        return Response.json({ error: isSafeName(name) ? "That name is reserved." : "Names can only use letters, numbers, dashes, underscores and dots.", details: name }, { status: isSafeName(name) ? 403 : 400, headers: corsHeaders })
       }
       if (!routes.has(name)) {
         return Response.json({ error: msg.notFound, details: name }, { status: 404, headers: corsHeaders })
@@ -3138,7 +3432,7 @@ const controlServer = Bun.serve({
       const key = name.toLowerCase()
 
       if (!name || isReserved(name)) {
-        return Response.json({ error: "That name is reserved.", details: name }, { status: 403, headers: corsHeaders })
+        return Response.json({ error: isSafeName(name) ? "That name is reserved." : "Names can only use letters, numbers, dashes, underscores and dots.", details: name }, { status: isSafeName(name) ? 403 : 400, headers: corsHeaders })
       }
       if (publish && !routes.has(name) && !serverConfigs.has(name)) {
         return Response.json({ error: msg.notFound, details: name }, { status: 404, headers: corsHeaders })
@@ -3454,6 +3748,16 @@ const controlServer = Bun.serve({
 
     // === Status & Control ===
 
+    if (req.method === "GET" && url.pathname === "/users") {
+      const accounts = await runAsUsers()
+      return Response.json({
+        owner: OWNER,
+        you: requestUser(req),
+        multiUser: RUNNING_AS_ROOT,
+        users: accounts.map(a => ({ name: a.name, home: a.home })),
+      }, { headers: corsHeaders })
+    }
+
     if (req.method === "GET" && url.pathname === "/status") {
       return Response.json({
         status: "running",
@@ -3461,11 +3765,16 @@ const controlServer = Bun.serve({
         routeCount: routes.size,
         portalCount: portals.size,
         uptime: process.uptime(),
-        pid: process.pid
+        pid: process.pid,
+        owner: OWNER,
+        multiUser: RUNNING_AS_ROOT,
       }, { headers: corsHeaders })
     }
 
     if (req.method === "POST" && url.pathname === "/shutdown") {
+      if (RUNNING_AS_ROOT && requestUser(req) !== OWNER) {
+        return Response.json({ error: `Only ${OWNER} can do that.` }, { status: 403, headers: corsHeaders })
+      }
       const m = msg.exit
       setTimeout(async () => {
         await cleanup()
@@ -3597,6 +3906,10 @@ const controlServer = Bun.serve({
       if (!managed.terminal) {
         return Response.json({ success: false, error: `Process has no active terminal: ${name}` }, { status: 400, headers: corsHeaders })
       }
+      // Typing into a terminal runs commands as its user, so only that user may
+      if (RUNNING_AS_ROOT && requestUser(req) !== configUser(managed.config)) {
+        return Response.json({ success: false, error: `${name} runs as ${configUser(managed.config)}. Only they can type into it.` }, { status: 403, headers: corsHeaders })
+      }
 
       const { input, key } = await req.json() as { input?: string, key?: string }
 
@@ -3649,8 +3962,10 @@ const controlServer = Bun.serve({
           id: first.id,
           cwd: first.cwd,
           cmd: first.cmd,
+          user: configUser(first),
+          api: !!first.api,
           count: entries.length,
-          variants: entries.map(c => ({ id: c.id, cwd: c.cwd, cmd: c.cmd })),
+          variants: entries.map(c => ({ id: c.id, cwd: c.cwd, cmd: c.cmd, user: configUser(c), api: !!c.api })),
           lan: isLanPublished(name),
           lanHttps: isLanPublished(name) ? lanHttpsUrl(name) : null,
         }
@@ -3659,14 +3974,47 @@ const controlServer = Bun.serve({
     }
 
     if (req.method === "POST" && url.pathname === "/config") {
-      const { name, cwd, cmd } = await req.json() as { name: string, cwd: string, cmd: string }
+      const { name, cwd, cmd, api, user: runAs } = await req.json() as { name: string, cwd: string, cmd: string, api?: boolean, user?: string }
       if (isReserved(name)) {
-        return Response.json({ error: "That name is reserved.", details: name }, { status: 403, headers: corsHeaders })
+        return Response.json({ error: isSafeName(name) ? "That name is reserved." : "Names can only use letters, numbers, dashes, underscores and dots.", details: name }, { status: isSafeName(name) ? 403 : 400, headers: corsHeaders })
       }
       const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
-      await addServerConfig(name, cwd, cmd, actor)
+      // Run as yourself, or (owner only) as another member of the candy group
+      const requester = requestUser(req)
+      let user = requester
+      if (runAs && runAs !== requester) {
+        if (!RUNNING_AS_ROOT || requester !== OWNER) {
+          return Response.json({ error: `You can only add sites that run as ${requester}.` }, { status: 403, headers: corsHeaders })
+        }
+        if (!(await runAsUsers()).some(u => u.name === runAs)) {
+          return Response.json({ error: `${runAs} isn't in the ${SHARED_GROUP} group, so sites can't run as them.` }, { status: 400, headers: corsHeaders })
+        }
+        user = runAs
+      }
+      await addServerConfig(name, cwd, cmd, actor, user, typeof api === "boolean" ? api : undefined)
       const added = getConfigsForName(name).slice(-1)[0]
       return Response.json({ success: true, config: added }, { headers: corsHeaders })
+    }
+
+    if (req.method === "POST" && url.pathname === "/config/api") {
+      const { name, configId, api } = await req.json().catch(() => ({})) as { name?: string, configId?: string, api?: boolean }
+      if (!name || typeof api !== "boolean") {
+        return Response.json({ error: "name and api (true or false) are required" }, { status: 400, headers: corsHeaders })
+      }
+      const targets = getConfigsForName(name).filter(cfg => !configId || cfg.id === configId)
+      if (targets.length === 0) {
+        return Response.json({ error: `No site named '${name}' with a start command.` }, { status: 404, headers: corsHeaders })
+      }
+      const requester = requestUser(req)
+      const denied = targets.find(cfg => !mayChangeConfig(requester, cfg))
+      if (denied) {
+        return Response.json({ error: `${name} runs as ${configUser(denied)}. Only they can change it.` }, { status: 403, headers: corsHeaders })
+      }
+      for (const cfg of targets) setApiFlag(cfg, api)
+      await saveServerConfigs()
+      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      auditLog('CONFIG_API', `${name}: API mode ${api ? 'on' : 'off'}`, actor)
+      return Response.json({ success: true, api, message: `API mode ${api ? 'on' : 'off'} for ${name}` }, { headers: corsHeaders })
     }
 
     if (req.method === "DELETE" && url.pathname.startsWith("/config/")) {
@@ -3674,6 +4022,12 @@ const controlServer = Bun.serve({
       const name = parts[2]
       const configId = parts[3]
       const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      const requester = requestUser(req)
+      const affected = getConfigsForName(name).filter(cfg => !configId || cfg.id === configId)
+      const denied = affected.find(cfg => !mayChangeConfig(requester, cfg))
+      if (denied) {
+        return Response.json({ error: `${name} runs as ${configUser(denied)}. Only they can remove it.` }, { status: 403, headers: corsHeaders })
+      }
       await removeServerConfig(name, actor, configId)
       return Response.json({ success: true }, { headers: corsHeaders })
     }
@@ -3715,9 +4069,9 @@ const controlServer = Bun.serve({
 
       const fqdn = `${subdomain}.${domainConfig.zone.domain}`
 
-      // Check if serverName has a config registered
-      if (!serverConfigs.has(serverName)) {
-        return Response.json({ error: `No server config found for '${serverName}'. Register it first.` }, { status: 404, headers: corsHeaders })
+      // Bind any site: one candy starts, or a plain route to a port or URL
+      if (!serverConfigs.has(serverName) && !routes.has(serverName)) {
+        return Response.json({ error: `No site named '${serverName}'. Add it first.` }, { status: 404, headers: corsHeaders })
       }
 
       // Check for existing DNS records via CF API
@@ -3736,7 +4090,7 @@ const controlServer = Bun.serve({
             if (foreignRecords.length > 0) {
               return Response.json({
                 warning: true,
-                message: `Oh? Someone's already living at ${fqdn}... I could remove this record for you, just say the word.`,
+                message: `${fqdn} already has DNS records. Replace them to point it at candy?`,
                 existingRecords: foreignRecords.map((r: any) => ({ type: r.type, content: r.content, id: r.id })),
                 fqdn,
               }, { headers: corsHeaders })
@@ -3770,7 +4124,7 @@ const controlServer = Bun.serve({
 
       auditLog('DOMAIN_BIND', `${fqdn} -> ${serverName}`, isMCP ? 'AI' : 'Portal')
       return Response.json({
-        message: `Welcome home, ${fqdn}~`,
+        message: `${fqdn} now serves ${serverName}`,
         binding: domainConfig.bindings[subdomain],
       }, { headers: corsHeaders })
     }
@@ -3817,13 +4171,16 @@ const controlServer = Bun.serve({
 
       auditLog('DOMAIN_UNBIND', `${binding.fqdn}`, isMCP ? 'AI' : 'Portal')
       return Response.json({
-        message: `You want me to let them go? ...fine. But they were mine first.`,
+        message: `Unbound ${binding.fqdn}`,
         subdomain,
         fqdn: binding.fqdn,
       }, { headers: corsHeaders })
     }
 
     if (req.method === "POST" && url.pathname === "/domains/config") {
+      if (RUNNING_AS_ROOT && requestUser(req) !== OWNER) {
+        return Response.json({ error: `Only ${OWNER} can do that.` }, { status: 403, headers: corsHeaders })
+      }
       const body = await req.json() as { zone?: { id: string; domain: string }; tunnel?: { id: string; name: string; credentialsFile: string }; cfApiToken?: string }
 
       if (!domainConfig) {
@@ -4150,7 +4507,7 @@ const controlServer = Bun.serve({
           const domainConfig = await loadDomainConfig()
           const hasUnprotected = domainConfig?.bindings && Object.values(domainConfig.bindings).some((b: any) => !b.auth?.password || !b.auth?.enabled)
           if (hasUnprotected) {
-            const nagScript = `<script data-candy-nag>(function(){if(document.querySelector('[data-candy-nag-banner]'))return;var b=document.createElement('div');b.setAttribute('data-candy-nag-banner','1');b.innerHTML='<span style="margin-right:8px">&#127852;</span> you have unprotected bound domains <button onclick="this.parentElement.style.display=\\'none\\'" style="background:none;border:none;color:#fff;cursor:pointer;margin-left:12px;font-size:14px">&#10005;</button>';b.style.cssText='position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:rgba(255,0,170,0.9);color:#fff;padding:10px 20px;border-radius:8px;font-family:system-ui,sans-serif;font-size:13px;z-index:999999;backdrop-filter:blur(8px);box-shadow:0 4px 20px rgba(255,0,170,0.3);display:flex;align-items:center;white-space:nowrap';document.body.appendChild(b);setTimeout(function(){b.style.display='none';setTimeout(function(){b.style.display='flex'},10000)},5000)})()</script>`
+            const nagScript = `<script data-candy-nag>(function(){if(document.querySelector('[data-candy-nag-banner]'))return;var b=document.createElement('div');b.setAttribute('data-candy-nag-banner','1');b.setAttribute('role','status');b.innerHTML='<span>A public domain has no password. Anyone with the link can open it.</span><button aria-label="Dismiss" style="background:none;border:0;color:inherit;opacity:.7;cursor:pointer;font-size:16px;line-height:1;padding:0 0 0 14px">&times;</button>';b.querySelector('button').onclick=function(){b.remove()};b.style.cssText='position:fixed;left:50%;bottom:20px;transform:translateX(-50%);max-width:calc(100% - 32px);display:flex;align-items:center;background:#1a1d33;color:#fff;padding:10px 14px 10px 16px;border-radius:10px;font:500 13px/1.4 \\'Schibsted Grotesk\\',system-ui,sans-serif;box-shadow:0 10px 30px rgba(10,12,24,.25);z-index:999999';document.body.appendChild(b)})()</script>`
             html = html.replace('</body>', nagScript + '</body>')
           }
           return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
@@ -4273,12 +4630,13 @@ const controlServer = Bun.serve({
           }
         }
 
-        // For bound domains with no server config, show an error
+        // A bound domain whose site no longer exists
         if (isBoundDomain) {
+          const safeName = String(domain).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`)
           return new Response(`<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>Server Not Found</title>
-<style>body{font-family:system-ui;background:#0a0a0f;color:#e0e0e8;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.box{text-align:center;padding:2rem}h1{font-size:1.2rem;margin-bottom:1rem;color:#ff3366}</style>
-</head><body><div class="box"><h1>No server config for '${domain}'</h1><p>This domain is bound but the server '${domain}' has no config registered.</p></div></body></html>`, {
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Nothing here</title>
+<style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px 16px;box-sizing:border-box;background:#eceef2;color:#1a1d33;font:15px/1.5 system-ui,sans-serif}h1{font-size:20px;margin:0 0 6px}p{margin:0;color:#555b75}code{font-family:ui-monospace,monospace}@media (prefers-color-scheme:dark){body{background:#10121a;color:#e7e9f2}p{color:#a3a8c0}}</style>
+</head><body><main><h1>Nothing is served here</h1><p>This domain points at <code>${safeName}</code>, which isn’t set up in candy any more.</p></main></body></html>`, {
             headers: { "Content-Type": "text/html; charset=utf-8" },
             status: 404
           })

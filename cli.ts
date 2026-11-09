@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { exchangeSecret, secretHint } from "./secret.ts"
 /**
  * candy-localhost CLI v0.5.0
  * 
@@ -44,22 +45,10 @@ const getFolderName = (): string => {
 // Get current working directory
 const getCwd = (): string => process.cwd()
 
-// API helpers - use MCP auth (reads secret from ~/.config/candy/mcp-secret)
-const MCP_SECRET_FILE = `${process.env.HOME}/.config/candy/mcp-secret`
-
+// API helpers - use MCP auth (secret from ~/.config/candy/mcp-secret or /run/candy/secret)
 async function getApiKey(): Promise<string | null> {
   try {
-    const secret = await Bun.file(MCP_SECRET_FILE).text()
-    // Bootstrap: get API key using secret
-    const res = await fetch(`${API}/mcp/auth`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ secret: secret.trim() })
-    })
-    if (res.ok) {
-      const data = await res.json()
-      return data.apiKey
-    }
+    return await exchangeSecret(API)
   } catch {}
   return null
 }
@@ -72,7 +61,7 @@ async function getHeaders(): Promise<Record<string, string>> {
   }
   if (!cachedApiKey) {
     console.error(`${c.red}Error: Could not authenticate with daemon${c.reset}`)
-    console.error(`${c.dim}Make sure the daemon is running and ${MCP_SECRET_FILE} exists${c.reset}`)
+    console.error(`${c.dim}${secretHint()}${c.reset}`)
     process.exit(1)
   }
   return { 'X-Candy-API-Key': cachedApiKey }
@@ -262,12 +251,12 @@ async function streamLogs(name: string, onData: (data: string) => void, onStatus
 }
 
 // Interactive dev mode
-async function devMode(name: string, cmd: string | null, isNew: boolean, configId?: string) {
+async function devMode(name: string, cmd: string | null, isNew: boolean, configId?: string, api = false) {
   let resolvedConfigId = configId
   // Register config if new
   if (cmd && isNew) {
-    console.log(`${c.dim}Registering ${name}...${c.reset}`)
-    const registered = await apiPost('/config', { name, cwd: getCwd(), cmd })
+    console.log(`${c.dim}Registering ${name}${api ? ' (API mode)' : ''}...${c.reset}`)
+    const registered = await apiPost('/config', { name, cwd: getCwd(), cmd, ...(api ? { api: true } : {}) })
     if (registered?.config?.id) {
       resolvedConfigId = registered.config.id
     }
@@ -414,6 +403,10 @@ async function cmdDev(args: string[]) {
     customName = args[nameIdx + 1]
     args.splice(nameIdx, 2)
   }
+  // --api: hold requests while the server starts and forward them (no loading page)
+  const apiIdx = args.indexOf('--api')
+  const api = apiIdx !== -1
+  if (api) args.splice(apiIdx, 1)
   
   // Rest is the command
   const cmd = args.length > 0 ? args.join(' ') : null
@@ -432,10 +425,11 @@ async function cmdDev(args: string[]) {
   
   if (cmd) {
     // New command provided - register/update and run
-    await devMode(name, cmd, true)
+    await devMode(name, cmd, true, undefined, api)
   } else if (existingConfig) {
     // No command but we have saved config - use it
     console.log(`${c.dim}Using saved config: ${existingConfig.cmd}${c.reset}`)
+    if (api) await apiPost('/config/api', { name: existingConfig.name, configId: existingConfig.configId, api: true })
     await devMode(existingConfig.name, null, false, existingConfig.configId)
   } else {
     // No command and no saved config - try to detect from package.json
@@ -444,7 +438,7 @@ async function cmdDev(args: string[]) {
       if (pkg.scripts?.dev) {
         const detectedCmd = `npm run dev`
         console.log(`${c.dim}Detected: ${detectedCmd}${c.reset}`)
-        await devMode(name, detectedCmd, true)
+        await devMode(name, detectedCmd, true, undefined, api)
       } else {
         console.error(`${c.red}No command specified and no saved config found${c.reset}`)
         console.error(`${c.dim}Usage: candy dev <command>${c.reset}`)
@@ -861,6 +855,8 @@ function printHelp() {
   console.log(`${c.white}Usage:${c.reset}`)
   console.log(`  ${c.cyan}candy dev${c.reset} [cmd...]           Run dev server (uses saved config or auto-detects)`)
   console.log(`  ${c.cyan}candy dev${c.reset} <cmd> --name foo   Register and run with custom route name`)
+  console.log(`  ${c.cyan}candy dev${c.reset} <cmd> --api        API mode: hold the first request while starting, then forward it`)
+  console.log(`  ${c.cyan}candy api${c.reset} <name> [on|off]     Turn API mode on or off for a site`)
   console.log(`  ${c.cyan}candy stop${c.reset} [name]            Stop server (current folder or by name)`)
   console.log(`  ${c.cyan}candy status${c.reset}                 Show all running servers`)
   console.log(`  ${c.cyan}candy logs${c.reset} [name]            Tail logs (current folder or by name)`)
@@ -937,6 +933,22 @@ switch (command) {
   case 'auth':
     cmdAuth(args.slice(1))
     break
+  case 'api': {
+    const [name, state] = args.slice(1)
+    if (!name || (state && !['on', 'off'].includes(state))) {
+      console.error(`${c.red}Usage: candy api <name> [on|off]${c.reset}`)
+      process.exit(1)
+    }
+    const res = await apiPost('/config/api', { name, api: state !== 'off' })
+    if (res?.error) {
+      console.error(`${c.red}${res.error}${c.reset}`)
+      process.exit(1)
+    }
+    console.log(state === 'off'
+      ? `${name}: API mode off. Browsers get the loading page again.`
+      : `${name}: API mode on. The first request waits for the server and is forwarded to it.`)
+    break
+  }
   case 'domain':
   case 'domains':
     cmdDomain(args.slice(1))

@@ -1,5 +1,5 @@
 const API = process.env.CANDY_DAEMON_URL || "http://localhost:9999"
-const MCP_SECRET_FILE = `${process.env.HOME}/.config/candy/mcp-secret`
+import { exchangeSecret, readSecrets, secretHint } from "./secret.ts"
 
 export const CANDY_RUNTIME_MAGIC_ENV = "X_CANDY_RUNTIME_MAGIC_STRING"
 
@@ -100,25 +100,10 @@ const parseErrorMessage = (body: unknown, fallback: string) => {
 async function getApiKey(): Promise<string> {
   if (cachedApiKey) return cachedApiKey
 
-  let secret: string
-  try {
-    secret = (await Bun.file(MCP_SECRET_FILE).text()).trim()
-  } catch {
-    throw new Error(`Could not read ${MCP_SECRET_FILE}. Is candy-localhost running?`)
-  }
-
-  const res = await fetch(`${API}/mcp/auth`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ secret })
-  })
-
-  const body = await res.json().catch(() => null) as { apiKey?: string; error?: string } | null
-  if (!res.ok || !body?.apiKey) {
-    throw new Error(parseErrorMessage(body, "Could not authenticate with the candy daemon."))
-  }
-
-  cachedApiKey = body.apiKey
+  if ((await readSecrets()).length === 0) throw new Error(secretHint())
+  const key = await exchangeSecret(API)
+  if (!key) throw new Error("The candy daemon rejected every secret. Restart it, or check your group membership.")
+  cachedApiKey = key
   return cachedApiKey
 }
 

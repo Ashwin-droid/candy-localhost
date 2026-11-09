@@ -20,8 +20,11 @@ describe("bound domain authentication", () => {
   it("keeps Caddy forward_auth in front of stopped protected bound domains", async () => {
     const daemonText = await daemonSource()
 
-    expect(daemonText).toContain("const proxyTarget = managed?.status === 'running' && managed.port")
-    expect(daemonText).toContain(': "localhost:9999"')
-    expect(daemonText).toContain("reverse_proxy ${proxyTarget}")
+    // Stopped sites (no upstream) fall back to the daemon, still behind forward_auth
+    expect(daemonText).toContain('const proxyTarget = upstream ?? "localhost:9999"')
+    const authIndex = daemonText.indexOf("forward_auth localhost:9999")
+    const proxyIndex = daemonText.indexOf("${caddyUpstream(proxyTarget)}")
+    expect(authIndex).toBeGreaterThan(0)
+    expect(proxyIndex).toBeGreaterThan(authIndex)
   })
 })

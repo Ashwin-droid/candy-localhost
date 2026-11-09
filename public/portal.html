@@ -233,6 +233,18 @@
     .link-row button:hover { color: var(--ink); text-decoration: underline; }
     .link-row button.danger { color: var(--cherry); }
     .lock.on { color: var(--mint); }
+    .domain-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+    .domain-head .unbind { border: 0; background: none; padding: 0; font: inherit; font-size: 12px; font-weight: 600; color: var(--ink-3); cursor: pointer; flex: none; }
+    .domain-head .unbind:hover { color: var(--cherry); text-decoration: underline; }
+    .settings { margin-top: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--sheet-2); }
+    .setting { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 8px 10px; }
+    .setting + .setting { border-top: 1px solid var(--line); }
+    .setting-label { color: var(--ink-3); font-size: 12px; }
+    .setting-value { color: var(--ink-2); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .setting-value.on { color: var(--mint); font-weight: 500; }
+    .setting-actions { display: flex; gap: 12px; justify-content: flex-end; }
+    .setting-actions button { border: 0; background: none; padding: 0; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--ink); cursor: pointer; white-space: nowrap; }
+    .setting-actions button:hover { color: var(--cherry); text-decoration: underline; }
     .activity-item { display: grid; grid-template-columns: 46px minmax(0, 1fr); gap: 1px 10px; }
     .activity-time { font-family: var(--font-host); font-stretch: 87.5%; font-size: 11.5px; color: var(--ink-3); padding-top: 2px; font-variant-numeric: tabular-nums; }
     .activity-action { font-weight: 600; }
@@ -884,7 +896,7 @@
     // ----- Single-field prompt (rename route, set port) -----
     let promptHandler = null;
 
-    function showPrompt({ title, label, value = '', suffix = '', hint = '', submit = 'Save', type = 'text', onSubmit }) {
+    function showPrompt({ title, label, value = '', suffix = '', hint = '', submit = 'Save', type = 'text', required = true, onSubmit }) {
       document.getElementById('prompt-title').textContent = title;
       document.getElementById('prompt-label').textContent = label;
       document.getElementById('prompt-suffix').textContent = suffix;
@@ -893,6 +905,7 @@
       const input = document.getElementById('prompt-input');
       input.type = type;
       input.value = value;
+      input.required = required;
       promptHandler = onSubmit;
       document.getElementById('prompt-modal').style.display = 'flex';
       input.focus();
@@ -1267,32 +1280,37 @@
         list.innerHTML = bindings.map(b => {
           const hasPw = !!(b.hasPassword || (b.auth && b.auth.password));
           const hasJwt = !!b.hasJwtSecret;
-          const locked = hasPw || hasJwt;
           const fqdn = escapeJsSingle(b.fqdn);
-          const methods = [hasPw ? 'password' : '', hasJwt ? 'JWT' : ''].filter(Boolean).join(' or ');
-          const lockText = !locked ? 'Open to anyone'
-            : b.apiMode ? `Needs ${methods} on each request`
-            : hasPw ? 'Password protected' : 'JWT only (turn on API mode to use it)';
           const al = b.allowlist || { enabled: false, ips: [] };
-          const alText = al.enabled ? `Only ${al.ips.length ? `${al.ips.length} address${al.ips.length === 1 ? '' : 'es'} + ` : ''}Tailscale` : '';
-          const alButton = `<button onclick="editAllowlist('${fqdn}', '${escapeJsSingle((al.enabled ? al.ips : []).join(', '))}')">${al.enabled ? 'Edit allowlist' : 'Limit to IPs…'}</button>`;
-          const pwButton = hasPw
-            ? `<button onclick="clearDomainPassword('${fqdn}', ${hasJwt ? "'password'" : "'all'"})">Remove password</button>`
-            : `<button onclick="showDomainPasswordForm('${fqdn}')">Add password</button>`;
-          const jwtButtons = b.apiMode || hasJwt
-            ? `<button onclick="newJwtSecret('${fqdn}', ${hasJwt})">${hasJwt ? 'New JWT secret' : 'Add JWT secret'}</button>${hasJwt ? `<button onclick="clearDomainPassword('${fqdn}', ${hasPw ? "'jwt'" : "'all'"})">Remove JWT</button>` : ''}`
-            : '';
+          const act = (label, onclick, danger = false) => `<button class="${danger ? 'danger' : ''}" onclick="${onclick}">${label}</button>`;
+          const row = (label, value, on, actions, title = '') => `
+                <div class="setting">
+                  <span class="setting-label">${label}</span>
+                  <span class="setting-value ${on ? 'on' : ''}" ${title ? `title="${escapeHtml(title)}"` : ''}>${escapeHtml(value)}</span>
+                  <span class="setting-actions">${actions.join('')}</span>
+                </div>`;
+          const rows = [];
+          rows.push(row('Password',
+            hasPw ? (b.apiMode ? 'Every request' : 'Login page') : 'Not set', hasPw,
+            hasPw ? [act('Remove', `clearDomainPassword('${fqdn}', ${hasJwt ? "'password'" : "'all'"})`)]
+                  : [act('Add', `showDomainPasswordForm('${fqdn}')`)]));
+          if (b.apiMode || hasJwt) rows.push(row('JWT',
+            hasJwt ? (b.apiMode ? 'Set' : 'Needs API mode') : 'Not set', hasJwt && b.apiMode,
+            hasJwt ? [act('Rotate', `newJwtSecret('${fqdn}', true)`), act('Remove', `clearDomainPassword('${fqdn}', ${hasPw ? "'jwt'" : "'all'"})`)]
+                   : [act('Add', `newJwtSecret('${fqdn}', false)`)]));
+          rows.push(row('Allowed',
+            al.enabled ? `${al.ips.length ? `${al.ips.length} IP${al.ips.length === 1 ? '' : 's'} + ` : ''}Tailscale` : 'Anyone', al.enabled,
+            al.enabled ? [act('Edit', `editAllowlist('${fqdn}', '${escapeJsSingle(al.ips.join(', '))}')`), act('Allow all', `allowEveryone('${fqdn}')`)]
+                       : [act('Limit', `editAllowlist('${fqdn}', '')`)],
+            al.ips.join(', ')));
           return `
-            <div class="rail-item">
-              <a class="fqdn" href="https://${escapeHtml(b.fqdn)}" target="_blank">${escapeHtml(b.fqdn)}</a>
-              <div class="sub-line">
-                <span>Serves ${escapeHtml(b.serverName)}</span>
-                <span class="lock ${locked ? 'on' : ''}">${escapeHtml(lockText)}</span>
-                ${alText ? `<span class="lock on" title="${escapeHtml(al.ips.join(', '))}">${escapeHtml(alText)}</span>` : ''}
+            <div class="rail-item domain-item">
+              <div class="domain-head">
+                <a class="fqdn" href="https://${escapeHtml(b.fqdn)}" target="_blank">${escapeHtml(b.fqdn)}</a>
+                <button class="unbind" onclick="unbindDomain('${escapeJsSingle(b.subdomain)}')">Unbind</button>
               </div>
-              <div class="link-row">
-                ${pwButton}${jwtButtons}${alButton}
-                <button class="danger" onclick="unbindDomain('${escapeJsSingle(b.subdomain)}')">Unbind</button>
+              <div class="sub-line"><span>Serves ${escapeHtml(b.serverName)}${b.apiMode ? ' · API mode' : ''}</span></div>
+              <div class="settings">${rows.join('')}
               </div>
             </div>`;
         }).join('');
@@ -1479,6 +1497,21 @@
       }
     }
 
+    async function allowEveryone(fqdn) {
+      try {
+        const res = await apiCall('/domains/allowlist', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ domain: fqdn, ips: [], enabled: false }),
+        });
+        const data = await res.json();
+        if (data.error) toast(data.error, 'error');
+        else { toast(data.message, 'success'); refreshAll(); }
+      } catch (e) {
+        toast('Could not turn off the allowlist', 'error');
+      }
+    }
+
     // Allowlist mode: only these IPs/CIDRs, plus Tailscale and this machine. Empty turns it off.
     function editAllowlist(fqdn, current) {
       showPrompt({
@@ -1487,6 +1520,7 @@
         value: current,
         hint: 'Tailscale addresses and this machine always get in. Caddy drops everyone else without a reply, so it never reaches candy or counts as a failed login. Leave empty to allow everyone.',
         submit: 'Save',
+        required: false,
         onSubmit: async (value) => {
           const ips = value.split(/[\s,]+/).map(v => v.trim()).filter(Boolean);
           const res = await apiCall('/domains/allowlist', {

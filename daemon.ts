@@ -657,6 +657,7 @@ const syncCloudflaredIngress = async () => {
     console.log(`\x1b[33mFailed to write user cloudflared config: ${e}\x1b[0m`)
   }
   try {
+    await $`sudo mkdir -p ${dirname(CLOUDFLARED_SYSTEM_CONFIG)}`.quiet().nothrow()
     await $`sudo cp ${CLOUDFLARED_USER_CONFIG} ${CLOUDFLARED_SYSTEM_CONFIG}`.quiet().nothrow()
   } catch (e) {
     console.log(`\x1b[33mFailed to write system cloudflared config: ${e}\x1b[0m`)
@@ -4118,6 +4119,8 @@ const controlServer = Bun.serve({
       }
       await saveDomainConfig()
 
+      // Regenerate Caddy's http://fqdn blocks (without one, Caddy redirects the tunnel's plain HTTP to HTTPS forever)
+      await syncCaddy()
       // Sync ingress and restart cloudflared
       await syncCloudflaredIngress()
       await restartCloudflared()
@@ -4165,6 +4168,8 @@ const controlServer = Bun.serve({
       delete domainConfig.bindings[subdomain]
       await saveDomainConfig()
 
+      // Regenerate Caddy's http://fqdn blocks (without one, Caddy redirects the tunnel's plain HTTP to HTTPS forever)
+      await syncCaddy()
       // Sync ingress and restart cloudflared
       await syncCloudflaredIngress()
       await restartCloudflared()

@@ -970,6 +970,7 @@ function printHelp() {
   console.log(`  ${c.cyan}candy dev${c.reset} <cmd> --name foo   Register and run with custom route name`)
   console.log(`  ${c.cyan}candy dev${c.reset} <cmd> --api        API mode: hold the first request while starting, then forward it`)
   console.log(`  ${c.cyan}candy api${c.reset} <name> [on|off]     Turn API mode on or off for a site`)
+  console.log(`  ${c.cyan}candy ttl${c.reset} <name> <minutes|off>  Stop a site after that many idle minutes (default 60)`)
   console.log(`  ${c.cyan}candy env${c.reset} <name> <path|off>     Give a site its environment from a KEY=VALUE file`)
   console.log(`  ${c.cyan}candy route serve${c.reset} <name> <port|off>  https://<host>.ts.net:<port> on the tailnet (tailscale serve, run by candy)`)
   console.log(`  ${c.cyan}candy route entry${c.reset} <name> <port|off>  A local port that always reaches the site through candy`)
@@ -1070,6 +1071,22 @@ switch (command) {
     console.log(state === 'off'
       ? `${name}: API mode off. Browsers get the loading page again.`
       : `${name}: API mode on. The first request waits for the server and is forwarded to it.`)
+    break
+  }
+  case 'ttl': {
+    // candy ttl <name> <minutes|off>: stop this site after that many idle minutes
+    const [name, value] = args.slice(1)
+    const minutes = value === 'off' ? null : Number((value || '').replace(/m(in)?$/, ''))
+    if (!name || !value || (minutes !== null && !Number.isInteger(minutes))) {
+      console.error(`${c.red}Usage: candy ttl <name> <minutes|off>${c.reset}`)
+      process.exit(1)
+    }
+    const res = await apiPost('/config/ttl', { name, minutes })
+    if (!res || res.error) {
+      console.error(`${c.red}${res?.error || 'Daemon not running'}${c.reset}`)
+      process.exit(1)
+    }
+    console.log(`${name}: stops after ${c.cyan}${res.minutes ?? res.defaultMinutes} min${c.reset} without activity${res.minutes ? '' : ' (the default)'}`)
     break
   }
   case 'env': {

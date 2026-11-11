@@ -671,13 +671,15 @@ Renaming a route is candy_route rename. Removing one variant is candy_deregister
 
 - set_env_file: Hand a KEY=VALUE file to the server as its environment at launch (envFile: absolute path; omit to remove). Only the path passes through here, never the contents. The file must be readable by the server's user, or placed by root in /etc/candy/env/<user>/
 
-set_api, set_port, set_sandbox and set_env_file MODIFY CONFIGURATION - confirm with user if they haven't asked.`,
+- set_ttl: How long a server may sit idle before candy stops it. minutes: 1-10080 (default 60); omit or null to go back to the default. An open connection still counts as activity
+
+set_api, set_port, set_sandbox, set_env_file and set_ttl MODIFY CONFIGURATION - confirm with user if they haven't asked.`,
     inputSchema: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["list", "users", "set_api", "set_port", "set_sandbox", "set_env_file"],
+          enum: ["list", "users", "set_api", "set_port", "set_sandbox", "set_env_file", "set_ttl"],
           description: "Action to perform"
         },
         name: {
@@ -691,6 +693,10 @@ set_api, set_port, set_sandbox and set_env_file MODIFY CONFIGURATION - confirm w
         api: {
           type: "boolean",
           description: "set_api: true for on, false for off"
+        },
+        minutes: {
+          type: ["number", "null"],
+          description: "set_ttl: idle minutes before the server stops (null for the default hour)"
         },
         envFile: {
           type: "string",
@@ -983,8 +989,15 @@ async function handleDeregister(params: any): Promise<any> {
 }
 
 async function handleConfig(params: any): Promise<any> {
-  const { action, name, configId, api, port, sandbox, addRw, removeRw, envFile } = params
+  const { action, name, configId, api, port, sandbox, addRw, removeRw, envFile, minutes } = params
   switch (action) {
+    case "set_ttl":
+      if (!name) return { error: "name is required for set_ttl" }
+      return await post("/config/ttl", {
+        name,
+        ...(configId ? { configId } : {}),
+        minutes: minutes === null || minutes === undefined ? null : Number(minutes),
+      })
     case "set_env_file":
       if (!name) return { error: "name is required for set_env_file" }
       return await post("/config/env", { name, ...(configId ? { configId } : {}), envFile: envFile ? String(envFile) : null })
@@ -1012,7 +1025,7 @@ async function handleConfig(params: any): Promise<any> {
       return res
     }
     default:
-      return { error: "Unknown action. Use: list, users, set_api, set_port, set_sandbox, set_env_file" }
+      return { error: "Unknown action. Use: list, users, set_api, set_port, set_sandbox, set_env_file, set_ttl" }
   }
 }
 

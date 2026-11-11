@@ -154,12 +154,18 @@ export interface IdleInput {
   openConnections: number
   idling: boolean          // the server said (via the SDK) it is waiting for events
   memory: MemoryState
-  timeoutMs?: number
+  timeoutMs?: number       // this server's own idle limit (default: one hour)
 }
 
 export type IdleVerdict =
   | { kill: false; reason: "connected" | "portal" | "recent" | "idling" }
   | { kill: true; idleMinutes: number; detail: string }
+
+// A server's own idle limit, in minutes
+export const MAX_TTL_MINUTES = 7 * 24 * 60
+
+export const validateTtlMinutes = (value: unknown): number | null =>
+  typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MAX_TTL_MINUTES ? value : null
 
 export const idleVerdict = (i: IdleInput): IdleVerdict => {
   if (i.openConnections > 0) return { kill: false, reason: "connected" }

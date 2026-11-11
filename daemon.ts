@@ -11,7 +11,7 @@ import { appendFile, chmod, chown, mkdir, stat, unlink, writeFile } from "node:f
 import { dirname } from "node:path"
 import { userInfo } from "node:os"
 import { SHARED_GROUP, SHARED_SECRET_FILE } from "./secret.ts"
-import { AccessLogTail, activityFromAccessLog, countEstablished, idleVerdict, IDLE_TIMEOUT_MS, listeningPortsOf, localNameCandidates, readMemoryState, tailscaleServeTargets, type MemoryState } from "./activity.ts"
+import { AccessLogTail, activityFromAccessLog, countEstablished, idleVerdict, IDLE_TIMEOUT_MS, listeningPortsOf, localNameCandidates, readMemoryState, tailscaleServeTargets, validateTtlMinutes, type MemoryState } from "./activity.ts"
 import { findCodeDir, parseEnvFile, stateDirPath, systemdRunCommand, unitName, unitOfCgroup, userEnvDir, validateEnvFilePath, validateRwPath, MAX_RW_PATHS, SANDBOX_SLICE } from "./sandbox.ts"
 import { OAuthServer, type OAuthPersisted } from "./mcp-oauth.ts"
 import { handleRequest as handleMcpRequest } from "./mcp.ts"
@@ -61,6 +61,7 @@ interface ServerConfig {
   sandbox?: false   // opt out of the systemd sandbox (root mode); on unless false
   rw?: string[]     // extra writable paths inside the sandbox
   envFile?: string  // KEY=VALUE file handed to the server as environment at launch
+  ttl?: number      // its own idle limit in minutes (default: one hour)
 }
 
 type ProcessStatus = 'starting' | 'running' | 'dead' | 'errored'
@@ -1118,6 +1119,7 @@ const bindingUpstream = (serverName: string): string | null => {
 }
 
 // Caddy needs the upstream's own Host header for an https URL target
+const UPSTREAM_KEEPALIVE = "5s"
 const caddyUpstream = (upstream: string): string =>
   upstream.startsWith('https://')
     ? `reverse_proxy ${upstream} {
@@ -1187,8 +1189,8 @@ setInterval(() => {
 // A server that told candy it is idling (SDK setIdling) is kept past the timeout
 // unless memory is tight (>= 80% used, or high PSI memory pressure).
 const IDLE_TIMEOUT = IDLE_TIMEOUT_MS
-const ACTIVITY_SAMPLE_INTERVAL = 60 * 1000
-const IDLE_CHECK_INTERVAL = 5 * 60 * 1000
+const ACTIVITY_SAMPLE_INTERVAL = 30 * 1000
+const IDLE_CHECK_INTERVAL = 30 * 1000  // short, so per-server limits of a few minutes are kept
 const accessLogTail = new AccessLogTail(CADDY_LOG)
 
 const serverNameForHost = (host: string): string | null => {
@@ -1233,7 +1235,9 @@ const killIdleServers = async () => {
   for (const [name, proc] of processes) {
     if (proc.status !== 'running') continue
     const now = Date.now()
-    if (now - proc.lastActivity <= IDLE_TIMEOUT) continue
+    // The server's own idle limit, if it has one (candy ttl)
+    const timeoutMs = proc.config.ttl ? proc.config.ttl * 60 * 1000 : IDLE_TIMEOUT
+    if (now - proc.lastActivity <= timeoutMs) continue
     // Re-check connections right before deciding; this is the one that matters
     const openConnections = await countEstablished(serverPorts(proc))
     memory ??= await readMemoryState()
@@ -1244,6 +1248,7 @@ const killIdleServers = async () => {
       openConnections,
       idling: proc.idling,
       memory,
+      timeoutMs,
     })
     if (!verdict.kill) {
       if (verdict.reason === 'connected') proc.lastActivity = now
@@ -2245,6 +2250,9 @@ const loadServerConfigs = async () => {
             const rw = (item as any).rw.map(validateRwPath).filter((v: string | null): v is string => !!v).slice(0, MAX_RW_PATHS)
             if (rw.length > 0) cfg.rw = rw
           }
+          const rawTtl = (item as any).ttl
+          const ttl = validateTtlMinutes(typeof rawTtl === "object" && rawTtl ? rawTtl.idleMin : rawTtl)
+          if (ttl) cfg.ttl = ttl
           const envFile = validateEnvFilePath((item as any).envFile)
           if (envFile) cfg.envFile = envFile
           if (Array.isArray((item as any).cron)) {
@@ -2379,7 +2387,9 @@ const fetchWithHeaderTimeout = async (target: string, init: RequestInit, req: Re
     PROXY_HEADER_TIMEOUT,
   )
   try {
-    const res = await fetch(target, { ...init, signal: AbortSignal.any([req.signal, headerTimeout.signal]) })
+    // keepalive: false closes the upstream connection when the response ends.
+    // A pooled idle connection would look like activity to the idle check.
+    const res = await fetch(target, { ...init, keepalive: false, signal: AbortSignal.any([req.signal, headerTimeout.signal]) })
     try { controlServer.timeout(req, 0) } catch {}
     return res
   } finally {
@@ -3739,6 +3749,13 @@ ${body}
     }
   }
 
+  // Caddy keeps an idle connection to each upstream for two minutes by default.
+  // Idle detection counts open connections as activity, so keep those short:
+  // then only connections that are really in use (streams, websockets) count.
+  content = content.replace(
+    /^([ \t]*)reverse_proxy (localhost:(?!9999\b)\d+)[ \t]*$/gm,
+    (_line, pad: string, target: string) => `${pad}reverse_proxy ${target} {\n${pad}  transport http {\n${pad}    keepalive ${UPSTREAM_KEEPALIVE}\n${pad}  }\n${pad}}`,
+  )
   await Bun.write(CADDYFILE, content)
 
   try {
@@ -5400,6 +5417,7 @@ const controlServer = Bun.serve({
           api: !!first.api,
           sandbox: SANDBOX_AVAILABLE && first.sandbox !== false,
           envFile: first.envFile ?? null,
+          ttl: first.ttl ?? null,
           rw: first.rw ?? [],
           count: entries.length,
           variants: entries.map(c => ({ id: c.id, cwd: c.cwd, cmd: c.cmd, user: configUser(c), api: !!c.api })),
@@ -5467,6 +5485,33 @@ const controlServer = Bun.serve({
       const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
       auditLog('CONFIG_API', `${name}: API mode ${api ? 'on' : 'off'}`, actor)
       return Response.json({ success: true, api, message: `API mode ${api ? 'on' : 'off'} for ${name}` }, { headers: corsHeaders })
+    }
+
+    if (req.method === "POST" && url.pathname === "/config/ttl") {
+      const body = await req.json().catch(() => ({})) as { name?: string, configId?: string, minutes?: number | null }
+      const { name, configId } = body
+      if (!name) return Response.json({ error: "name is required" }, { status: 400, headers: corsHeaders })
+      const targets = getConfigsForName(name).filter(cfg => !configId || cfg.id === configId)
+      if (targets.length === 0) {
+        return Response.json({ error: `No site named '${name}' with a start command.` }, { status: 404, headers: corsHeaders })
+      }
+      const requester = requestUser(req)
+      const denied = targets.find(cfg => !mayChangeConfig(requester, cfg))
+      if (denied) {
+        return Response.json({ error: `${name} runs as ${configUser(denied)}. Only they can change it.` }, { status: 403, headers: corsHeaders })
+      }
+      const minutes = body.minutes === null || body.minutes === undefined ? null : validateTtlMinutes(body.minutes)
+      if (body.minutes !== null && body.minutes !== undefined && !minutes) {
+        return Response.json({ error: "minutes must be a whole number from 1 to 10080 (a week)." }, { status: 400, headers: corsHeaders })
+      }
+      for (const cfg of targets) {
+        if (minutes) cfg.ttl = minutes
+        else delete cfg.ttl
+      }
+      await saveServerConfigs()
+      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      auditLog('CONFIG_TTL', `${name}: stops after ${minutes ?? IDLE_TIMEOUT / 60000}min idle${minutes ? '' : ' (default)'}`, actor)
+      return Response.json({ success: true, minutes, defaultMinutes: IDLE_TIMEOUT / 60000 }, { headers: corsHeaders })
     }
 
     if (req.method === "POST" && url.pathname === "/config/env") {

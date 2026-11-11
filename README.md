@@ -171,13 +171,22 @@ All patterns have `.candy` equivalents when Tailscale is active.
 | `dead` | Process exited with code 0 |
 | `errored` | Process crashed (non-zero exit) |
 
-Auto-kill: a running server with no activity for more than 1 hour is stopped (checked every 5 minutes, recorded as `AUTO_KILL` in the audit log). Activity is any of:
+Auto-kill: a running server with no activity for more than 1 hour is stopped (checked every 30 seconds, recorded as `AUTO_KILL` in the audit log). Activity is any of:
 
 - a finished request in Caddy's access log for `<name>.localhost`, `<name>.candy` or a bound domain
 - an open TCP connection to the server's port, so SSE streams, WebSockets and long polls keep it alive however quiet they are
 - a request the daemon proxies itself
 
-Servers with an open portal are never stopped. A server that called `setIdling()` is kept past the hour until memory is tight (80% of RAM in use, or PSI memory pressure `some avg10` at 10 or more).
+A server can have its own idle limit, for something you only need up briefly (a password vault, an admin tool):
+
+```bash
+candy ttl vault 10    # stop after 10 minutes without activity
+candy ttl vault off   # back to the default hour
+```
+
+Activity is counted the same way, so an open connection still keeps it up. The check runs every 30 seconds.
+
+Servers with an open portal are never stopped for idleness. A server that called `setIdling()` is kept past the hour until memory is tight (80% of RAM in use, or PSI memory pressure `some avg10` at 10 or more).
 
 The daemon's own proxies (unprotected bound domains, API mode, first request to a stopped bound server) wait up to 30 seconds for response headers; after that the body can stream indefinitely.
 
@@ -331,7 +340,7 @@ candy version | -v             Show version
 | `candy_start` / `candy_restart` / `candy_stop` | Control a server. `candy_start` takes `configId` when a name has several variants |
 | `candy_logs` / `candy_input` | Read a server's output (tail, head, search) and type into its terminal |
 | `candy_register` / `candy_deregister` | Add or remove a config. Register accepts `api` (API mode) and `user` (run-as account, owner only); deregister accepts `configId` to remove one variant |
-| `candy_config` | `list` configs and variants, `users` (run-as accounts), `set_api` (API mode on/off), `set_port` (pick one of several detected ports), `set_sandbox` (sandbox on/off, extra writable folders), `set_env_file` |
+| `candy_config` | `list` configs and variants, `users` (run-as accounts), `set_api` (API mode on/off), `set_port` (pick one of several detected ports), `set_sandbox` (sandbox on/off, extra writable folders), `set_env_file`, `set_ttl` (idle minutes before it stops) |
 | `candy_route` | `list`, `add` (port or URL `target`, `persistent`), `remove`, `rename`; LAN: `lan_list`, `lan_publish` (`https`: `true`, `false`, `"domain"` or `"tailscale"`, optional `port`), `lan_unpublish`; `entry` / `entry_list` (loopback entry ports), `serve` / `serve_list` (tailscale serve); AdGuard Home: `adguard_status`, `adguard_unlink` |
 | `candy_domain` | Bound domains: `list`, `bind`, `unbind`, `config`; protection: `auth_status`, `auth_generate_jwt`, `auth_token` (`ttl`, `once`), `auth_clear` (`which`: password, jwt or all), `allowlist` (`add`, `remove`, `ips`, `enabled`); the public MCP endpoint: `public_mcp_status`, `public_mcp_on`, `public_mcp_off`, `public_mcp_revoke` |
 | `candy_portal_open` / `candy_portal_close` / `candy_portals` | Cloudflare quick tunnels |

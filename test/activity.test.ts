@@ -113,6 +113,13 @@ describe("the idle rule", () => {
     expect(idleVerdict({ ...idle, now: 30 * MIN, memory: TIGHT }).kill).toBe(false)
   })
 
+  it("uses a server's own idle limit", () => {
+    const five = { ...base, lastActivity: 0, timeoutMs: 5 * MIN }
+    expect(idleVerdict({ ...five, now: 4 * MIN }).kill).toBe(false)
+    expect(idleVerdict({ ...five, now: 6 * MIN })).toMatchObject({ kill: true, detail: "idle 6min" })
+    expect(idleVerdict({ ...five, now: 6 * MIN, openConnections: 1 })).toEqual({ kill: false, reason: "connected" })
+  })
+
   it("reads memory use and pressure", () => {
     expect(parseMeminfo("MemTotal:       16000000 kB\nMemFree: 1 kB\nMemAvailable:    8000000 kB\n")).toBe(0.5)
     expect(parseMeminfo("garbage")).toBeNull()

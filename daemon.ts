@@ -12,6 +12,7 @@ import { dirname } from "node:path"
 import { userInfo } from "node:os"
 import { SHARED_GROUP, SHARED_SECRET_FILE } from "./secret.ts"
 import { AccessLogTail, activityFromAccessLog, countEstablished, idleVerdict, IDLE_TIMEOUT_MS, localNameCandidates, readMemoryState, type MemoryState } from "./activity.ts"
+import { applyAdguardUpstreams, upstreamRule, type AdguardConfig } from "./adguard.ts"
 import { CRON_JOB_ENV, LAUNCH_WRAPPER, cronMatches, cronScript, DEFAULT_CRON_TIMEOUT_S, MAX_CRON_JOBS, parseCron, validateCronJob, type CronJob } from "./cron.ts"
 import { JtiBloom, readCredential, signJwt, stripCandyCredentials, verifyJwt, JWT_AUDIENCE, MAX_TOKEN_LIFETIME_S, type AuthResult, ipAllowed, isLoopback, parseCidr, TAILSCALE_RANGES } from "./server-auth.ts"
 
@@ -96,6 +97,7 @@ const AUDIT_LOG = `${LOGS_DIR}/_audit.log`
 const DNS_CONFIG_FILE = `${CANDY_CONFIG_DIR}/candy-dns.json`
 const ADVERTISEMENTS_FILE = `${CANDY_CONFIG_DIR}/advertisements.json`
 const LAN_FILE = `${CANDY_CONFIG_DIR}/lan.json`
+const ADGUARD_FILE = `${CANDY_CONFIG_DIR}/adguard.json`
 const CLOUDFLARED_SYSTEM_CONFIG = `/etc/cloudflared/config.yml`
 const CLOUDFLARED_USER_CONFIG = `${process.env.HOME}/.cloudflared/config.yml`
 const CANDY_RUNTIME_MAGIC_ENV = "X_CANDY_RUNTIME_MAGIC_STRING"
@@ -110,6 +112,10 @@ const lanPublished = new Set<string>()
 // Published names that are also served over HTTPS on this machine's ts.net
 // hostname: name -> port. Always a subset of lanPublished.
 const lanHttps = new Map<string, number>()
+// Published names served over HTTPS on the LAN under their bound domain
+// (https://<fqdn>, Let's Encrypt certificate). A name is in at most one of
+// lanHttps / lanDomainHttps.
+const lanDomainHttps = new Set<string>()
 const LAN_IP_REFRESH_INTERVAL = 5 * 60 * 1000  // 5 minutes
 
 // Reserved domain names (cannot be used for servers/routes)
@@ -494,6 +500,9 @@ const checkAllowlist = (req: Request, server: any, binding: DomainBinding): Resp
   if (!hasAllowlist(binding)) return null
   const { ip } = getFingerprint(req, server)
   if (ipAllowed(ip, binding.allowlist!.ips)) return null
+  // The allowlist is for the public side. A name served on the LAN under this
+  // domain is open to LAN devices (Caddy's LAN site only admits private addresses).
+  if (isPrivateLanIp(ip) && lanDomainHttpsBinding(binding.serverName)?.fqdn === binding.fqdn) return null
   if (isApiSite(binding)) {
     return Response.json({ error: `${binding.fqdn} only accepts requests from allowlisted IPs.` }, { status: 403, headers: { "X-Candy": "allowlist" } })
   }
@@ -1327,6 +1336,7 @@ const loadLanPublished = async () => {
     const data = await file.json() as { published?: unknown, https?: unknown }
     lanPublished.clear()
     lanHttps.clear()
+    lanDomainHttps.clear()
     if (Array.isArray(data.published)) {
       for (const name of data.published) {
         if (typeof name === "string" && name && !isReserved(name)) lanPublished.add(name.toLowerCase())
@@ -1335,7 +1345,9 @@ const loadLanPublished = async () => {
     if (data.https && typeof data.https === "object") {
       for (const [name, port] of Object.entries(data.https as Record<string, unknown>)) {
         const key = name.toLowerCase()
-        if (lanPublished.has(key) && isValidLanHttpsPort(port)) lanHttps.set(key, port)
+        if (!lanPublished.has(key)) continue
+        if (port === "domain") lanDomainHttps.add(key)
+        else if (isValidLanHttpsPort(port)) lanHttps.set(key, port)
       }
     }
   } catch {}
@@ -1343,7 +1355,11 @@ const loadLanPublished = async () => {
 
 const saveLanPublished = async () => {
   await $`mkdir -p ${CANDY_CONFIG_DIR}`.quiet().nothrow()
-  const https = Object.fromEntries([...lanHttps].sort(([a], [b]) => a.localeCompare(b)))
+  // name -> port (ts.net hostname) or "domain" (bound domain)
+  const https = Object.fromEntries([
+    ...lanHttps,
+    ...[...lanDomainHttps].map(name => [name, "domain"] as [string, string]),
+  ].sort(([a], [b]) => a.localeCompare(b)))
   await Bun.write(LAN_FILE, JSON.stringify({ published: [...lanPublished].sort(), https }, null, 2))
 }
 
@@ -1373,8 +1389,35 @@ function isValidLanHttpsPort(port: unknown): port is number {
 // This machine's MagicDNS name (e.g. "homeserver.example.ts.net"), if known.
 const getTailnetHostname = (): string | null => normalizeTailscaleDnsName(tailscaleSelf?.dnsName)
 
+// The bound domain of a server, if it has one (the first, by name, when several)
+const bindingForServer = (name: string): DomainBinding | null => {
+  const key = name.toLowerCase()
+  const found = Object.values(domainConfig?.bindings || {})
+    .filter(b => b.serverName.toLowerCase() === key)
+    .sort((a, b) => a.fqdn.localeCompare(b.fqdn))
+  return found[0] ?? null
+}
+
+type LanHttpsMode = "domain" | "tailscale"
+
+const lanHttpsMode = (name: string): LanHttpsMode | null => {
+  const key = name.toLowerCase()
+  return lanDomainHttps.has(key) ? "domain" : lanHttps.has(key) ? "tailscale" : null
+}
+
+// Bound-domain mode: the LAN gets https://<fqdn> on the LAN IP, with a Let's
+// Encrypt certificate Caddy obtains over the tunnel (HTTP-01), and candy-dns's
+// LAN view answers the fqdn with the LAN IP. Same URL at home and away.
+const lanDomainHttpsBinding = (name: string): DomainBinding | null =>
+  lanDomainHttps.has(name.toLowerCase()) ? bindingForServer(name) : null
+
 const lanHttpsUrl = (name: string): string | null => {
-  const port = lanHttps.get(name.toLowerCase())
+  const key = name.toLowerCase()
+  if (lanDomainHttps.has(key)) {
+    const binding = bindingForServer(key)
+    return binding ? `https://${binding.fqdn}` : null
+  }
+  const port = lanHttps.get(key)
   const host = getTailnetHostname()
   return port && host ? `https://${host}:${port}` : null
 }
@@ -1424,6 +1467,7 @@ const setLanPublished = async (name: string, publish: boolean, actor: Actor = 'P
   else {
     lanPublished.delete(key)
     lanHttps.delete(key)
+    lanDomainHttps.delete(key)
   }
   await saveLanPublished()
   auditLog(publish ? 'LAN_PUBLISH' : 'LAN_UNPUBLISH', `${key}.candy${publish && lanIp ? ` -> ${lanIp}` : ''}`, actor)
@@ -1437,6 +1481,7 @@ const forgetLanPublishedIfGone = async (name: string): Promise<boolean> => {
   if (!lanPublished.has(key) || routes.has(name) || serverConfigs.has(name)) return false
   lanPublished.delete(key)
   lanHttps.delete(key)
+  lanDomainHttps.delete(key)
   await saveLanPublished()
   auditLog('LAN_UNPUBLISH', `${key}.candy (name removed)`, 'System')
   return true
@@ -1478,11 +1523,104 @@ const syncDnsConfig = async () => {
   const tailnetHost = normalizeTailscaleDnsName(localIdentity?.dnsName)
   const lanHostRecords: Record<string, string> = {}
   if (tailnetHost && lanIp && lanHttps.size > 0) lanHostRecords[tailnetHost] = lanIp
+  // ...and the bound domain of every name served over HTTPS under it.
+  if (lanIp) {
+    for (const name of lanDomainHttps) {
+      const binding = bindingForServer(name)
+      if (binding) lanHostRecords[binding.fqdn.toLowerCase()] = lanIp
+    }
+  }
+
+  // candy-dns passes other names in these zones to a public resolver, so the
+  // front resolver can send the whole zone to the LAN listener once.
+  const lanForwardZones = lanDomainZones()
 
   await Bun.write(DNS_CONFIG_FILE, JSON.stringify({
-    tailscaleIp, tld: "candy", servers, records, lanIp, lanRecords, lanHostRecords
+    tailscaleIp, tld: "candy", servers, records, lanIp, lanRecords, lanHostRecords, lanForwardZones
   }, null, 2))
+
+  syncAdguard().catch(() => {})
 }
+
+// Zones that have a bound domain served on the LAN
+const lanDomainZones = (): string[] => {
+  const zone = domainConfig?.zone?.domain?.toLowerCase()
+  if (!zone || !lanIp) return []
+  return [...lanDomainHttps].some(name => bindingForServer(name)) ? [zone] : []
+}
+
+// ---------------------------------------------------------------------------
+// AdGuard Home: keep the LAN client's upstreams pointing the right names at
+// candy-dns's LAN listener (see adguard.ts). Optional; set up with
+// `candy lan adguard setup`.
+// ---------------------------------------------------------------------------
+
+let adguardConfig: AdguardConfig | null = null
+let adguardApplied: string | null = null  // last desired set that was applied
+let adguardError: string | null = null
+
+const loadAdguardConfig = async () => {
+  try {
+    const file = Bun.file(ADGUARD_FILE)
+    if (!await file.exists()) return
+    const data = await file.json() as Partial<AdguardConfig>
+    if (data.url && data.username && data.password && data.client && data.dnsTarget) {
+      adguardConfig = { ...data, managed: Array.isArray(data.managed) ? data.managed : [] } as AdguardConfig
+    }
+  } catch {}
+}
+
+const saveAdguardConfig = async () => {
+  if (!adguardConfig) {
+    await unlink(ADGUARD_FILE).catch(() => {})
+    return
+  }
+  await $`mkdir -p ${CANDY_CONFIG_DIR}`.quiet().nothrow()
+  await Bun.write(ADGUARD_FILE, JSON.stringify(adguardConfig, null, 2))
+  await chmod(ADGUARD_FILE, 0o600).catch(() => {})  // holds the AdGuard Home password
+}
+
+// Names LAN clients must resolve through candy-dns's LAN view, beyond .candy
+const adguardDesiredRules = (cfg: AdguardConfig): string[] => {
+  const rules: string[] = []
+  const tailnetHost = getTailnetHostname()
+  if (tailnetHost && lanIp && lanHttps.size > 0) rules.push(upstreamRule(tailnetHost, cfg.dnsTarget))
+  for (const zone of lanDomainZones()) rules.push(upstreamRule(zone, cfg.dnsTarget))
+  return rules
+}
+
+const syncAdguard = async (force = false): Promise<void> => {
+  const cfg = adguardConfig
+  if (!cfg) return
+  const desired = adguardDesiredRules(cfg)
+  const key = JSON.stringify(desired)
+  if (!force && key === adguardApplied) return
+  try {
+    const result = await applyAdguardUpstreams(cfg, desired)
+    adguardApplied = key
+    adguardError = null
+    if (result.changed || JSON.stringify(result.managed) !== JSON.stringify(cfg.managed)) {
+      cfg.managed = result.managed
+      await saveAdguardConfig()
+    }
+    if (result.changed) auditLog('ADGUARD_SYNC', `${cfg.client}: ${desired.join(' ') || 'no extra names'}`, 'System')
+  } catch (e) {
+    adguardError = String((e as Error)?.message ?? e)
+    auditLog('ADGUARD_FAIL', adguardError, 'System')
+    if (force) throw e
+  }
+}
+
+const adguardStatus = () => adguardConfig ? {
+  configured: true,
+  url: adguardConfig.url,
+  username: adguardConfig.username,
+  client: adguardConfig.client,
+  dnsTarget: adguardConfig.dnsTarget,
+  rules: adguardDesiredRules(adguardConfig),
+  managed: adguardConfig.managed,
+  error: adguardError,
+} : { configured: false }
 
 // Advertisement persistence
 const loadAdvertisements = async () => {
@@ -2843,6 +2981,29 @@ const syncCaddy = async () => {
         body = `  reverse_proxy localhost:9999`
       }
 
+      // LAN HTTPS under the bound domain: the same site (and the same auth) on
+      // the LAN IP, port 443, with a Let's Encrypt certificate. The HTTP-01
+      // challenge arrives through the tunnel on port 80. Only private and
+      // Tailscale addresses are served; anyone else is dropped.
+      if (lanIp && lanIp !== tailscaleIp && lanDomainHttpsBinding(binding.serverName)?.fqdn === binding.fqdn) {
+        content += `https://${binding.fqdn} {
+  bind ${lanIp}
+  tls {
+    issuer acme {
+      disable_tlsalpn_challenge
+    }
+  }
+  @candy_outside not client_ip private_ranges ${TAILSCALE_RANGES.join(" ")}
+  route {
+    abort @candy_outside
+${body.split("\n").map(line => line ? `  ${line}` : line).join("\n")}
+  }
+  log
+}
+
+`
+      }
+
       if (hasAllowlist(binding)) {
         // Allowlist mode: Caddy closes the connection without a reply for anyone
         // else, before any auth check or upstream connection. The client IP comes
@@ -3822,6 +3983,7 @@ const controlServer = Bun.serve({
         if (!serverConfigs.has(oldName)) {
           lanPublished.delete(oldKey)
           lanHttps.delete(oldKey)
+          lanDomainHttps.delete(oldKey)  // the bound domain stays with the old name
         }
         lanPublished.add(newKey)
         // A port can only belong to one name, so HTTPS moves only with the whole opt-in.
@@ -3867,12 +4029,62 @@ const controlServer = Bun.serve({
         tailnetHost: getTailnetHostname(),
         published: [...lanPublished].sort(),
         names: Object.fromEntries(names.map(name => [name, isLanPublished(name)])),
-        https: Object.fromEntries([...lanHttps].map(([name, port]) => [name, { port, url: lanHttpsUrl(name) }])),
+        https: Object.fromEntries([
+          ...[...lanHttps].map(([name, port]) => [name, { mode: "tailscale", port, url: lanHttpsUrl(name) }]),
+          ...[...lanDomainHttps].map(name => [name, { mode: "domain", port: null, url: lanHttpsUrl(name) }]),
+        ]),
       }, { headers: corsHeaders })
     }
 
+    if (url.pathname === "/lan/adguard") {
+      if (requestUser(req) !== OWNER) {
+        return Response.json({ error: "Only the owner can change the AdGuard Home link." }, { status: 403, headers: corsHeaders })
+      }
+      if (req.method === "GET") return Response.json(adguardStatus(), { headers: corsHeaders })
+      if (req.method === "POST") {
+        const body = await req.json().catch(() => ({})) as Record<string, unknown>
+        if (body.remove === true) {
+          if (adguardConfig) {
+            // Take back the lines candy added, then forget the login
+            await applyAdguardUpstreams(adguardConfig, []).catch(() => {})
+            adguardConfig = null
+            adguardApplied = null
+            adguardError = null
+            await saveAdguardConfig()
+            auditLog('ADGUARD_UNLINK', 'AdGuard Home link removed')
+          }
+          return Response.json(adguardStatus(), { headers: corsHeaders })
+        }
+        const str = (v: unknown) => typeof v === "string" ? v.trim() : ""
+        const next: AdguardConfig = {
+          url: str(body.url) || adguardConfig?.url || "http://127.0.0.1:3000",
+          username: str(body.username) || adguardConfig?.username || "",
+          password: typeof body.password === "string" && body.password ? body.password : adguardConfig?.password || "",
+          client: str(body.client) || adguardConfig?.client || "",
+          dnsTarget: str(body.dnsTarget) || adguardConfig?.dnsTarget || "127.0.0.1:5336",
+          managed: adguardConfig?.managed ?? [],
+        }
+        if (!/^https?:\/\/[^\s]+$/.test(next.url)) return Response.json({ error: "url must be an http(s) address." }, { status: 400, headers: corsHeaders })
+        if (!/^[\w.:\[\]-]+:\d+$/.test(next.dnsTarget)) return Response.json({ error: "dnsTarget must be host:port." }, { status: 400, headers: corsHeaders })
+        if (!next.username || !next.password || !next.client) {
+          return Response.json({ error: "username, password and client are required." }, { status: 400, headers: corsHeaders })
+        }
+        const previous = adguardConfig
+        adguardConfig = next
+        try {
+          await syncAdguard(true)
+        } catch (e) {
+          adguardConfig = previous
+          return Response.json({ error: String((e as Error)?.message ?? e) }, { status: 502, headers: corsHeaders })
+        }
+        await saveAdguardConfig()
+        auditLog('ADGUARD_LINK', `${next.url} client "${next.client}"`)
+        return Response.json(adguardStatus(), { headers: corsHeaders })
+      }
+    }
+
     if (req.method === "POST" && url.pathname === "/lan") {
-      const body = await req.json() as { name?: string; publish?: boolean; https?: boolean; port?: number }
+      const body = await req.json() as { name?: string; publish?: boolean; https?: boolean | "domain" | "tailscale"; port?: number }
       const name = typeof body.name === "string" ? body.name.trim() : ""
       const publish = body.publish !== false
       const key = name.toLowerCase()
@@ -3884,24 +4096,48 @@ const controlServer = Bun.serve({
         return Response.json({ error: msg.notFound, details: name }, { status: 404, headers: corsHeaders })
       }
 
-      // Optional HTTPS on the tailnet hostname (https: true/false; omitted = unchanged)
+      // Optional HTTPS with a trusted certificate (omitted = unchanged):
+      //   true        the bound domain if the name has one, else the ts.net hostname
+      //   "domain"    https://<bound domain>
+      //   "tailscale" https://<host>.ts.net:<port> (also chosen when a port is given)
+      //   false       off
       let httpsChange: "on" | "off" | null = null
-      if (publish && body.https === true) {
-        if (!getTailnetHostname()) {
-          return Response.json({ error: "HTTPS needs this machine's Tailscale hostname, and Tailscale isn't reporting one." }, { status: 409, headers: corsHeaders })
+      const wantHttps = body.https === true || body.https === "domain" || body.https === "tailscale"
+      if (publish && wantHttps) {
+        const mode: LanHttpsMode = body.https === true
+          ? (body.port === undefined && bindingForServer(key) ? "domain" : "tailscale")
+          : body.https as LanHttpsMode
+        if (mode === "domain") {
+          if (body.port !== undefined) {
+            return Response.json({ error: "A bound domain is served on port 443. Ports are for Tailscale mode." }, { status: 400, headers: corsHeaders })
+          }
+          if (!bindingForServer(key)) {
+            return Response.json({ error: `${name} has no bound domain. Bind one (candy domain bind), or use Tailscale mode.` }, { status: 409, headers: corsHeaders })
+          }
+          if (!lanDomainHttps.has(key)) {
+            lanHttps.delete(key)
+            lanDomainHttps.add(key)
+            httpsChange = "on"
+          }
+        } else {
+          if (!getTailnetHostname()) {
+            return Response.json({ error: "Tailscale mode needs this machine's Tailscale hostname, and Tailscale isn't reporting one." }, { status: 409, headers: corsHeaders })
+          }
+          const port = body.port !== undefined ? Number(body.port) : (lanHttps.get(key) ?? await pickLanHttpsPort(key))
+          if (port === null) {
+            return Response.json({ error: "No free port found for HTTPS. Pass one explicitly." }, { status: 409, headers: corsHeaders })
+          }
+          const problem = await lanHttpsPortProblem(key, port)
+          if (problem) return Response.json({ error: problem, details: String(port) }, { status: 409, headers: corsHeaders })
+          if (lanHttps.get(key) !== port || lanDomainHttps.has(key)) {
+            lanDomainHttps.delete(key)
+            lanHttps.set(key, port)
+            httpsChange = "on"
+          }
         }
-        const port = body.port !== undefined ? Number(body.port) : (lanHttps.get(key) ?? await pickLanHttpsPort(key))
-        if (port === null) {
-          return Response.json({ error: "No free port found for HTTPS. Pass one explicitly." }, { status: 409, headers: corsHeaders })
-        }
-        const problem = await lanHttpsPortProblem(key, port)
-        if (problem) return Response.json({ error: problem, details: String(port) }, { status: 409, headers: corsHeaders })
-        if (lanHttps.get(key) !== port) {
-          lanHttps.set(key, port)
-          httpsChange = "on"
-        }
-      } else if (body.https === false && lanHttps.has(key)) {
+      } else if (body.https === false && lanHttpsMode(key)) {
         lanHttps.delete(key)
+        lanDomainHttps.delete(key)
         httpsChange = "off"
       }
 
@@ -3924,6 +4160,8 @@ const controlServer = Bun.serve({
         published: isLanPublished(name),
         lanIp,
         httpsUrl,
+        httpsMode: lanHttpsMode(key),
+        dnsManaged: !!adguardConfig,  // AdGuard Home's LAN upstreams are kept in sync
         httpsPort: lanHttps.get(key) ?? null,
         ...(publish && !lanIp ? { warning: "No LAN address detected. Set CANDY_LAN_IP to publish." } : {}),
       }, { headers: corsHeaders })
@@ -5148,6 +5386,7 @@ await loadAdvertisements()
 
 // LAN publishing: opted-in names and this machine's LAN address
 await loadLanPublished()
+await loadAdguardConfig()
 lanIp = await discoverLanIp()
 
 // Create fresh Caddyfile (includes persistent routes)
@@ -5170,7 +5409,7 @@ const tailscaleStatus = tailscaleIp
   ? `\x1b[33mTailscale:\x1b[0m   ${tailscaleIp} (*.candy domains active)`
   : `\x1b[90mTailscale:\x1b[0m   not detected (*.candy domains disabled)`
 const lanStatus = lanIp
-  ? `\x1b[33mLAN:\x1b[0m         ${lanIp} (${lanPublished.size} published${lanHttps.size ? `, ${lanHttps.size} with HTTPS` : ''})`
+  ? `\x1b[33mLAN:\x1b[0m         ${lanIp} (${lanPublished.size} published${lanHttps.size + lanDomainHttps.size ? `, ${lanHttps.size + lanDomainHttps.size} with HTTPS` : ''})`
   : `\x1b[90mLAN:\x1b[0m         not detected (LAN publishing disabled)`
 
 console.log(`

@@ -5,7 +5,9 @@
  * Names published to the LAN answer with the LAN IP instead, but only for
  * queries in the LAN view (see pickCandyDnsView). The LAN view also answers
  * this machine's ts.net hostname with the LAN IP while a published name is
- * served over HTTPS on it (lanHostRecords).
+ * served over HTTPS on it (lanHostRecords), and the bound domains served on
+ * the LAN. Other names in those domains' zone (lanForwardZones) are passed to
+ * a public resolver, so a front resolver can send the whole zone here.
  * Watches ~/.config/candy/candy-dns.json for the list of known server names.
  * Zero npm dependencies - pure Bun stdlib.
  */
@@ -13,7 +15,7 @@
 import { $ } from "bun"
 import { watch } from "fs"
 
-import { pickCandyDnsView, resolveCandyDnsRecord } from "./tailnet"
+import { nameInZones, pickCandyDnsView, resolveCandyDnsRecord } from "./tailnet"
 
 const CANDY_CONFIG_DIR = `${process.env.HOME}/.config/candy`
 const DNS_CONFIG_FILE = `${CANDY_CONFIG_DIR}/candy-dns.json`
@@ -46,6 +48,7 @@ interface DnsConfig {
   lanIp?: string | null
   lanRecords?: Record<string, string>  // published name -> LAN IP (LAN view only)
   lanHostRecords?: Record<string, string>  // full hostname -> LAN IP (LAN view only)
+  lanForwardZones?: string[]  // zones whose other names are forwarded upstream (LAN view only)
 }
 
 let config: DnsConfig | null = null
@@ -125,7 +128,7 @@ const buildResponse = (
   queryId: number,
   name: string,
   ip: string | null, // null = no answer
-  rcode: 0 | 3 = ip ? 0 : 3, // NOERROR + no answer = NODATA (name exists, other type)
+  rcode: 0 | 2 | 3 = ip ? 0 : 3, // NOERROR + no answer = NODATA (name exists, other type); 2 = SERVFAIL
 ): Buffer => {
   // Header: 12 bytes
   const header = Buffer.alloc(12)
@@ -180,6 +183,60 @@ const buildResponse = (
   answer[15] = parts[3]
 
   return Buffer.concat([header, question, answer])
+}
+
+// ============================================================================
+// Forwarding (names candy-dns doesn't own, inside a forwarded zone)
+// ============================================================================
+
+const UPSTREAMS = (process.env.CANDY_DNS_UPSTREAM || "1.1.1.1,8.8.8.8")
+  .split(",").map(s => s.trim()).filter(Boolean)
+const UPSTREAM_RETRY_MS = 1500
+const UPSTREAM_GIVE_UP_MS = 4000
+
+interface PendingForward {
+  originalId: number
+  reply: (response: Buffer | null) => void
+  timers: ReturnType<typeof setTimeout>[]
+}
+const pendingForwards = new Map<number, PendingForward>()
+let upstreamSocket: Awaited<ReturnType<typeof Bun.udpSocket>> | null = null
+
+const openUpstreamSocket = async () => {
+  upstreamSocket = await Bun.udpSocket({
+    socket: {
+      data(_socket, buf) {
+        if (buf.length < 12) return
+        const id = (buf[0] << 8) | buf[1]
+        const pending = pendingForwards.get(id)
+        if (!pending) return
+        pendingForwards.delete(id)
+        pending.timers.forEach(clearTimeout)
+        const out = Buffer.from(buf)
+        out.writeUInt16BE(pending.originalId, 0)
+        pending.reply(out)
+      },
+    },
+  })
+}
+
+// Relay a query as-is to the first upstream, try the second if it stays quiet,
+// and give up (reply(null)) after a few seconds. IDs are remapped so two
+// clients using the same ID can't get each other's answers.
+const forwardQuery = (query: Buffer, reply: (response: Buffer | null) => void) => {
+  if (!upstreamSocket || UPSTREAMS.length === 0 || pendingForwards.size >= 0xffff) return reply(null)
+  let id = Math.floor(Math.random() * 0x10000)
+  while (pendingForwards.has(id)) id = (id + 1) & 0xffff
+  const out = Buffer.from(query)
+  const originalId = out.readUInt16BE(0)
+  out.writeUInt16BE(id, 0)
+  const send = (upstream: string) => { try { upstreamSocket!.send(out, 53, upstream) } catch {} }
+  const timers = [
+    setTimeout(() => send(UPSTREAMS[1] ?? UPSTREAMS[0]), UPSTREAM_RETRY_MS),
+    setTimeout(() => { pendingForwards.delete(id); reply(null) }, UPSTREAM_GIVE_UP_MS),
+  ]
+  pendingForwards.set(id, { originalId, reply, timers })
+  send(UPSTREAMS[0])
 }
 
 // ============================================================================
@@ -260,6 +317,17 @@ const main = async () => {
             return
           }
 
+          // Another name in a zone that has bound domains on the LAN: not ours,
+          // ask a public resolver and pass its answer back untouched.
+          if (view === "lan" && nameInZones(nameLower, config?.lanForwardZones)) {
+            const query = Buffer.from(buf)
+            forwardQuery(query, (response) => {
+              socket.send(response ?? buildResponse(query, queryId, name, null, 2), port, addr)
+              if (!response) log(`SERVFAIL ${nameLower} [lan] (upstream did not answer)`)
+            })
+            return
+          }
+
           // Only handle queries ending in .candy
           if (!nameLower.endsWith(suffix)) {
             const response = buildResponse(Buffer.from(buf), queryId, name, null)
@@ -299,6 +367,8 @@ const main = async () => {
         },
       },
     })
+
+  await openUpstreamSocket()
 
   // Start UDP DNS server(s)
   await listen(bindHost, bindPort, "default")

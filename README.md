@@ -467,22 +467,43 @@ LAN devices see Caddy's internal CA, same as tailnet devices: trust the Caddy ro
 
 #### HTTPS with a trusted certificate (`--https`)
 
-Apps that refuse self-signed certificates (password managers, mobile apps) can use this machine's Tailscale hostname instead:
+Apps that refuse self-signed certificates (password managers, mobile apps) need a real one. There are two modes:
 
 ```bash
-candy lan publish vault --https=9443   # -> https://<host>.<tailnet>.ts.net:9443
+candy lan publish vault --https            # bound domain if vault has one, else Tailscale
+candy lan publish vault --https=domain     # https://vault.example.com
+candy lan publish vault --https=tailscale  # https://<host>.<tailnet>.ts.net:<port>
+candy lan publish vault --https=9443       # Tailscale mode on that port
 candy lan publish vault --no-https
 ```
+
+**Bound domain mode** (the default when the name has a [bound domain](#domain-binding-cloudflare)):
+
+- Caddy serves `https://<fqdn>` on the **LAN IP only** (port 443), with a Let's Encrypt certificate. The HTTP-01 challenge reaches Caddy through the Cloudflare tunnel, so no DNS plugin or API token is involved.
+- `candy-dns`'s LAN view answers the fqdn with the LAN IP. Everywhere else the name resolves to Cloudflare as before, so the same URL works at home and away.
+- The LAN site has the same password/JWT protection as the public one. The IP allowlist doesn't apply to LAN devices; the LAN site only serves private and Tailscale addresses and drops everyone else.
+- The front resolver must send LAN clients' queries for the domain's zone to the LAN listener (once per zone, e.g. `[/example.com/]127.0.0.1:5336`). `candy-dns` answers the bound names it serves and passes every other name in the zone to a public resolver (`CANDY_DNS_UPSTREAM`, default `1.1.1.1,8.8.8.8`), so the rest of the zone keeps working. See [AdGuard Home](#adguard-home) to have candy add the line itself.
+
+**Tailscale mode** (the default otherwise):
 
 - Caddy serves `https://<host>.<tailnet>.ts.net:<port>` on the **LAN IP only**, with a Let's Encrypt certificate fetched from `tailscaled` (`get_certificate tailscale`).
 - `candy-dns`'s LAN view answers the ts.net hostname with the LAN IP (A record; other types get NODATA). The tailnet view doesn't answer it.
 - The Tailscale IP is left alone. On the tailnet, MagicDNS resolves the hostname to the Tailscale IP, so to give tailnet devices the same URL, serve the same port there with `tailscale serve --https=<port> http://127.0.0.1:<app port>`. The same URL then works at home and on the tailnet, and nothing is exposed to the internet.
+- One-time setup: Caddy needs `tailscaled` access for certificates (`sudo tailscale set --operator=$USER`), and the front resolver must send LAN clients' queries for the hostname to the LAN listener (`[/<host>.<tailnet>.ts.net/]127.0.0.1:5336`, or let candy add it, below).
 
-One-time setup:
+In both modes, devices with their own DNS (Android Private DNS, DoH in the browser) skip the LAN resolver: in Tailscale mode they won't see the LAN address, in bound domain mode they simply go out through Cloudflare.
 
-- Caddy runs as your user, so it needs `tailscaled` access for certificates: `sudo tailscale set --operator=$USER`.
-- The front resolver must send LAN clients' queries for the hostname to the LAN listener. With AdGuard Home, add `[/<host>.<tailnet>.ts.net/]127.0.0.1:5336` to the LAN persistent client's upstreams, next to the `.candy` one.
-- Devices with their own DNS (Android Private DNS, DoH in the browser) skip the LAN resolver and won't see the LAN address.
+#### AdGuard Home
+
+A resolver in front of candy-dns can't simply be bypassed: it hides the client address, and putting candy-dns in front of it would hide every device from the resolver instead. So the split happens in AdGuard Home's per-client upstreams, and candy can keep those lines in place for you:
+
+```bash
+candy lan adguard setup --url http://127.0.0.1:3000 --user admin --client "LAN"
+candy lan adguard          # status
+candy lan adguard off      # removes the lines candy added and forgets the login
+```
+
+`setup` asks for the password and checks it. From then on, whenever LAN HTTPS is turned on or off, candy makes sure the named persistent client forwards the ts.net hostname (Tailscale mode) and the bound domains' zone (bound domain mode) to the LAN listener (`--dns`, default `127.0.0.1:5336`). It only removes lines it added itself. The login is stored in `~/.config/candy/adguard.json` (mode 600).
 
 ## Domain Binding (Cloudflare)
 
@@ -581,7 +602,8 @@ Runs as the installing user with `CAP_NET_BIND_SERVICE` for port 53 — not root
 |------|---------|
 | `~/.config/candy/servers.json` | Server configurations (name → variants) |
 | `~/.config/candy/routes.json` | Persistent routes |
-| `~/.config/candy/lan.json` | Names published to the LAN, and their ts.net HTTPS ports |
+| `~/.config/candy/lan.json` | Names published to the LAN, and their HTTPS mode (ts.net port or `"domain"`) |
+| `~/.config/candy/adguard.json` | AdGuard Home login and the upstream lines candy manages (mode 600) |
 | `~/.config/candy/domains.json` | Domain binding config (zone, tunnel, bindings) |
 | `~/.config/candy/candy-grudge.lock` | Bound-domain auth grudge state |
 | `~/.config/candy/mcp-secret` | MCP auth bootstrap secret |

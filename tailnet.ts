@@ -329,3 +329,13 @@ export const buildNetworkSnapshot = ({
 
   return { local, remote, dnsRecords }
 }
+
+// Is `name` inside one of `zones` (the zone itself or any name under it)?
+export const nameInZones = (name: string, zones: Iterable<string> | undefined | null): boolean => {
+  const n = name.toLowerCase().replace(/\.$/, "")
+  for (const zone of zones ?? []) {
+    const z = zone.toLowerCase().replace(/\.$/, "")
+    if (z && (n === z || n.endsWith(`.${z}`))) return true
+  }
+  return false
+}

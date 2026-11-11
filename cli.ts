@@ -937,8 +937,10 @@ function printHelp() {
   console.log(`  ${c.cyan}candy list${c.reset}                   List all registered configs`)
   console.log(`  ${c.cyan}candy route${c.reset} [add|rm]          Manage domain routes (--persistent|-p)`)
   console.log(`  ${c.cyan}candy lan${c.reset} [publish|unpublish] <name>  Make <name>.candy reachable from the LAN (opt-in)`)
-  console.log(`      ${c.dim}publish <name> --https[=port]  also serve https://<host>.ts.net:<port> on the LAN (real cert)${c.reset}`)
-  console.log(`      ${c.dim}publish <name> --no-https      drop the ts.net HTTPS site, keep <name>.candy${c.reset}`)
+  console.log(`      ${c.dim}publish <name> --https         trusted HTTPS on the LAN: the bound domain if any, else ts.net${c.reset}`)
+  console.log(`      ${c.dim}publish <name> --https=domain|tailscale|<port>   pick the mode (a port means ts.net)${c.reset}`)
+  console.log(`      ${c.dim}publish <name> --no-https      turn LAN HTTPS off, keep <name>.candy${c.reset}`)
+  console.log(`      ${c.dim}adguard setup|status|off       let candy keep AdGuard Home's LAN upstreams in sync${c.reset}`)
   console.log(`  ${c.cyan}candy domain${c.reset} [list|bind|unbind|config]  Manage bound domains`)
   console.log(`  ${c.cyan}candy auth${c.reset} [set|clear|status] Manage bound domain authentication`)
   console.log(`      ${c.dim}set <domain> --jwt [secret]  JWT secret for API-mode sites (generated if omitted)${c.reset}`)
@@ -1091,10 +1093,14 @@ switch (command) {
       const publish = sub === 'publish'
       const body: Record<string, unknown> = { name, publish }
       for (const flag of largs.slice(2)) {
-        const httpsFlag = flag.match(/^--https(?:=(\d+))?$/)
+        // --https (bound domain if there is one, else ts.net), --https=domain,
+        // --https=tailscale, --https=<port> (ts.net on that port)
+        const httpsFlag = flag.match(/^--https(?:=(\d+|domain|tailscale))?$/)
         if (httpsFlag && publish) {
-          body.https = true
-          if (httpsFlag[1]) body.port = Number(httpsFlag[1])
+          const value = httpsFlag[1]
+          if (!value) body.https = true
+          else if (/^\d+$/.test(value)) { body.https = "tailscale"; body.port = Number(value) }
+          else body.https = value
         } else if (flag === '--no-https' && publish) {
           body.https = false
         } else {
@@ -1114,10 +1120,58 @@ switch (command) {
       if (publish) {
         console.log(`${c.green}+ ${name}.candy published to LAN${res.lanIp ? ` -> ${res.lanIp}` : ''}${c.reset}`)
         if (res.httpsUrl) console.log(`${c.green}+ ${res.httpsUrl}${c.reset} ${c.dim}(LAN, trusted cert)${c.reset}`)
-        else if (body.https === false) console.log(`${c.dim}  HTTPS on the tailnet hostname is off${c.reset}`)
+        else if (body.https === false) console.log(`${c.dim}  LAN HTTPS is off${c.reset}`)
+        if (res.httpsUrl && !res.dnsManaged) {
+          console.log(`${c.dim}  LAN DNS must send this name to candy-dns's LAN listener. Run 'candy lan adguard setup' once to have candy keep AdGuard Home in sync.${c.reset}`)
+        }
         if (res.warning) console.log(`${c.yellow}${res.warning}${c.reset}`)
       } else {
         console.log(`${c.red}- ${name}.candy no longer published to LAN${c.reset}`)
+      }
+    } else if (sub === 'adguard') {
+      // candy lan adguard [status] | setup [--url U] [--user NAME] [--client NAME] [--dns host:port] | off
+      const action = largs[1] || 'status'
+      const show = (res: any) => {
+        if (!res?.configured) {
+          console.log(`${c.dim}AdGuard Home is not linked. Run: candy lan adguard setup${c.reset}`)
+          return
+        }
+        console.log(`${c.green}AdGuard Home linked${c.reset} ${c.dim}${res.url}, client "${res.client}", as ${res.username}${c.reset}`)
+        console.log(`  ${c.dim}LAN names go to ${res.dnsTarget}:${c.reset} ${res.rules.length ? res.rules.join('  ') : 'none right now'}`)
+        if (res.error) console.log(`  ${c.red}Last sync failed: ${res.error}${c.reset}`)
+      }
+      const fail = (res: any) => {
+        if (!res) { console.error(`${c.red}Daemon not running${c.reset}`); process.exit(1) }
+        if (res.error) { console.error(`${c.red}${res.error}${c.reset}`); process.exit(1) }
+      }
+      if (action === 'status') {
+        const res = await apiGet('/lan/adguard'); fail(res); show(res)
+      } else if (action === 'off') {
+        const res = await apiPost('/lan/adguard', { remove: true }); fail(res)
+        console.log(`${c.red}- AdGuard Home link removed${c.reset} ${c.dim}(lines candy added were taken out)${c.reset}`)
+      } else if (action === 'setup') {
+        const opts: Record<string, string> = {}
+        const rest = largs.slice(2)
+        for (let i = 0; i < rest.length; i++) {
+          const m = rest[i].match(/^--(url|user|client|dns)(?:=(.*))?$/)
+          if (!m) { console.error(`${c.red}Unknown option: ${rest[i]}${c.reset}`); process.exit(1) }
+          opts[m[1]] = m[2] ?? rest[++i] ?? ''
+        }
+        const rl = await import('readline')
+        const ask = (q: string, hidden = false): Promise<string> => new Promise(resolve => {
+          const iface = rl.createInterface({ input: process.stdin, output: process.stdout, terminal: true })
+          if (hidden) (iface as any)._writeToOutput = (text: string) => { if (text.includes(q)) process.stdout.write(q) }
+          iface.question(q, answer => { iface.close(); if (hidden) process.stdout.write('\n'); resolve(answer.trim()) })
+        })
+        const url = opts.url || await ask('AdGuard Home address [http://127.0.0.1:3000]: ') || 'http://127.0.0.1:3000'
+        const username = opts.user || await ask('Username: ')
+        const client = opts.client || await ask('Name of the persistent client that covers the LAN: ')
+        const password = await ask('Password (not shown): ', true)
+        const res = await apiPost('/lan/adguard', { url, username, password, client, ...(opts.dns ? { dnsTarget: opts.dns } : {}) })
+        fail(res); show(res)
+      } else {
+        console.error(`${c.red}Usage: candy lan adguard [status|setup|off]${c.reset}`)
+        process.exit(1)
       }
     } else if (!sub || sub === 'list' || sub === 'ls') {
       const res = await apiGet('/lan')

@@ -47,7 +47,11 @@ Two main files:
 
 `starting` → `running` → `dead` or `errored`
 
-Servers auto-kill after 1 hour of inactivity (no incoming traffic) unless they have active tunnels.
+Servers auto-kill after 1 hour of inactivity unless they have active tunnels. Activity = Caddy access-log lines (including bound domains), open TCP connections to the server's port, or daemon-proxied requests. Servers that called SDK `setIdling()` survive until memory is tight. Logic lives in `activity.ts` (`idleVerdict`), wired up in daemon.ts `killIdleServers`.
+
+### Cron
+
+`ServerConfig.cron` holds jobs set via SDK `setCron` (`/sdk/cron`). A run is `config.cmd "$@"` with the job's args as argv (see `cron.ts`, `launchSpec(config, cron)`); never build shell text from args.
 
 ## File Locations
 

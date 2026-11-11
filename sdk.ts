@@ -1,5 +1,8 @@
 const API = process.env.CANDY_DAEMON_URL || "http://localhost:9999"
 import { exchangeSecret, readSecrets, secretHint } from "./secret.ts"
+import { CRON_JOB_ENV, validateCronJob, type CronJob } from "./cron.ts"
+
+export type { CronJob } from "./cron.ts"
 
 export const CANDY_RUNTIME_MAGIC_ENV = "X_CANDY_RUNTIME_MAGIC_STRING"
 
@@ -241,12 +244,83 @@ export async function openPortal(options: OpenPortalOptions = {}): Promise<Porta
   })
 }
 
+// Calls that only make sense from inside a server candy started
+async function runtimeCall<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  const runtime = checkRuntime()
+  if (!runtime.isCandyRuntime || !runtime.magicString) {
+    throw new Error("This only works inside a server started by candy.")
+  }
+  return await daemonFetch<T>(path, {
+    method: "POST",
+    body: JSON.stringify({ configId: runtime.magicString, pid: process.pid, ...body }),
+  })
+}
+
+export interface IdlingResult {
+  name: string
+  idling: boolean
+}
+
+/**
+ * Tell candy whether this server is idling: handling no requests right now,
+ * only waiting for events to arrive. An idling server is not stopped for
+ * inactivity until memory gets tight (80% of RAM in use, or high memory
+ * pressure). Call `setIdling(false)` to go back to the normal 1-hour rule.
+ * The flag lasts until the server stops.
+ */
+export async function setIdling(idling = true): Promise<IdlingResult> {
+  const res = await runtimeCall<IdlingResult>("/sdk/idle", { idling })
+  return { name: res.name, idling: res.idling }
+}
+
+export interface CronJobInput {
+  /** Unique per server: setting a job with an existing name replaces it. */
+  name: string
+  /** 5-field cron (minute hour day-of-month month day-of-week) or @hourly, @daily, @weekly, @monthly, @yearly. Local time. */
+  schedule: string
+  /** Appended to the server's own command as separate arguments. Never parsed by a shell. */
+  args?: string[]
+  /** Stop a run after this many seconds. Default 3600, max 86400. */
+  timeoutSec?: number
+}
+
+/**
+ * Run this server's command on a schedule, with extra arguments of your
+ * choice. The base command can't be changed, and the arguments are passed as
+ * plain argv entries: `;`, `&&`, `|` or `$(...)` in them are just text.
+ * A run gets CANDY_CRON_JOB=<name> in its environment (see `cronJob()`).
+ * Jobs are saved with the server's config and run whether or not it is running.
+ */
+export async function setCron(job: CronJobInput): Promise<CronJob[]> {
+  const v = validateCronJob(job)
+  if (!v.ok) throw new Error(v.error)
+  return (await runtimeCall<{ jobs: CronJob[] }>("/sdk/cron", { action: "set", job: v.job })).jobs
+}
+
+export async function removeCron(name: string): Promise<CronJob[]> {
+  return (await runtimeCall<{ jobs: CronJob[] }>("/sdk/cron", { action: "remove", name })).jobs
+}
+
+export async function listCrons(): Promise<CronJob[]> {
+  return (await runtimeCall<{ jobs: CronJob[] }>("/sdk/cron", { action: "list" })).jobs
+}
+
+/** The cron job that started this process, or null when it wasn't started by cron. */
+export function cronJob(): string | null {
+  return process.env[CRON_JOB_ENV]?.trim() || null
+}
+
 const candySdk = {
   checkRuntime,
   registerServer,
   getLocalhostUrl,
   openPortal,
   registerPort,
+  setIdling,
+  setCron,
+  removeCron,
+  listCrons,
+  cronJob,
 }
 
 export default candySdk

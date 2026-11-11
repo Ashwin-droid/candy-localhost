@@ -105,6 +105,27 @@ SDK behavior:
 - `registerPort({ namespace, port })` registers an unmanaged route owned by the current PID.
 - `openPortal()` only works for the calling runtime's managed config, or for a PID-owned route that the same process registered via `registerPort`.
 
+From inside a server candy started, two more calls are available:
+
+```ts
+import { cronJob, setCron, setIdling } from "candy-localhost"
+
+// Waiting for events, not serving anything: don't stop me for inactivity
+// unless memory gets tight (>= 80% of RAM used, or high memory pressure).
+await setIdling(true)
+
+// Run this server's own command with extra args on a schedule (local time).
+await setCron({ name: "sync", schedule: "*/15 * * * *", args: ["--sync"] })
+
+if (cronJob() === "sync") {
+  // this process was started by the "sync" job
+}
+```
+
+- `setIdling(on = true)` marks the running server as idling until it stops or calls `setIdling(false)`. Open connections and recent requests still count as activity as usual.
+- `setCron({ name, schedule, args?, timeoutSec? })` adds or replaces a job; `removeCron(name)` and `listCrons()` manage them. Schedules are 5-field cron or `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`.
+- A cron run is the server's command plus `args`, as the server's user, in its directory, whether or not the server is running. The base command can't be changed, and `args` are passed as separate argv entries (`"$@"`), so `;`, `&&`, `|` or `$(...)` in them are plain text. A run that is still going when the next one is due is skipped, and runs are stopped after `timeoutSec` (default 1 hour). Output goes to `<logs>/cron/<name>.log`, and runs are recorded in the audit log (`CRON_RUN`, `CRON_EXIT`).
+
 ### Use It
 
 Open `https://myapp.localhost` in your browser. candy spawns the process, detects the port, and starts proxying. To stop: visit `https://myapp.kill.localhost` or run `candy stop myapp`.
@@ -150,7 +171,15 @@ All patterns have `.candy` equivalents when Tailscale is active.
 | `dead` | Process exited with code 0 |
 | `errored` | Process crashed (non-zero exit) |
 
-Auto-kill: daemon parses Caddy access logs every 30 minutes and stops processes idle for >1 hour (unless they have an active portal).
+Auto-kill: a running server with no activity for more than 1 hour is stopped (checked every 5 minutes, recorded as `AUTO_KILL` in the audit log). Activity is any of:
+
+- a finished request in Caddy's access log for `<name>.localhost`, `<name>.candy` or a bound domain
+- an open TCP connection to the server's port, so SSE streams, WebSockets and long polls keep it alive however quiet they are
+- a request the daemon proxies itself
+
+Servers with an open portal are never stopped. A server that called `setIdling()` is kept past the hour until memory is tight (80% of RAM in use, or PSI memory pressure `some avg10` at 10 or more).
+
+The daemon's own proxies (unprotected bound domains, API mode, first request to a stopped bound server) wait up to 30 seconds for response headers; after that the body can stream indefinitely.
 
 ### Port Detection
 
@@ -565,6 +594,7 @@ Runs as the installing user with `CAP_NET_BIND_SERVICE` for port 53 — not root
 | `/var/log/candy/<name>.log` | Process logs when run as root (cleared on daemon start) |
 | `/tmp/candy-logs/<name>.log` | Process logs when run as a normal user |
 | `/tmp/candy-logs/_audit.log` | Operation audit log (`/var/log/candy` as root) |
+| `/tmp/candy-logs/cron/<name>.log` | Cron run output (`/var/log/candy/cron` as root) |
 | `/tmp/candy-logs/_dns.log` | DNS daemon log |
 
 ## Testing

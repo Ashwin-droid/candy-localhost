@@ -7,10 +7,12 @@
 
 import { $, spawn, type Subprocess } from "bun"
 import { watch, type FSWatcher } from "node:fs"
-import { chmod, chown, mkdir, unlink, writeFile } from "node:fs/promises"
+import { appendFile, chmod, chown, mkdir, unlink, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
 import { userInfo } from "node:os"
 import { SHARED_GROUP, SHARED_SECRET_FILE } from "./secret.ts"
+import { AccessLogTail, activityFromAccessLog, countEstablished, idleVerdict, IDLE_TIMEOUT_MS, localNameCandidates, readMemoryState, type MemoryState } from "./activity.ts"
+import { CRON_JOB_ENV, LAUNCH_WRAPPER, cronMatches, cronScript, DEFAULT_CRON_TIMEOUT_S, MAX_CRON_JOBS, parseCron, validateCronJob, type CronJob } from "./cron.ts"
 import { JtiBloom, readCredential, signJwt, stripCandyCredentials, verifyJwt, JWT_AUDIENCE, MAX_TOKEN_LIFETIME_S, type AuthResult, ipAllowed, isLoopback, parseCidr, TAILSCALE_RANGES } from "./server-auth.ts"
 
 import {
@@ -51,6 +53,7 @@ interface ServerConfig {
   cmd: string
   user?: string  // account the server runs as (root mode); defaults to the owner
   api?: boolean  // API mode: hold the first request while starting and forward it, no loading page
+  cron?: CronJob[]  // scheduled runs of cmd with extra args, set by the app via the SDK
 }
 
 type ProcessStatus = 'starting' | 'running' | 'dead' | 'errored'
@@ -68,6 +71,7 @@ interface ManagedProcess {
   logFile: string
   detectedPorts: number[]  // All ports detected during startup
   terminal: any | null  // Bun.Terminal reference for PTY input
+  idling: boolean  // the app said it is only waiting for events (SDK setIdling)
 }
 
 // ============================================================================
@@ -890,60 +894,143 @@ setInterval(() => {
   }
 }, 60 * 60 * 1000) // every hour
 
-// Auto-kill idle servers (1hr no activity, no portal)
-const IDLE_TIMEOUT = 60 * 60 * 1000 // 1 hour
-let lastLogPosition = 0
+// Auto-kill idle servers (1hr no activity, no portal). Activity is:
+// - a finished request in Caddy's access log, for *.localhost, *.candy and bound domains
+// - any open TCP connection to the server's port (SSE, WebSockets and other
+//   long-lived streams never produce a log line while they stay open)
+// - requests the daemon proxies itself
+// A server that told candy it is idling (SDK setIdling) is kept past the timeout
+// unless memory is tight (>= 80% used, or high PSI memory pressure).
+const IDLE_TIMEOUT = IDLE_TIMEOUT_MS
+const ACTIVITY_SAMPLE_INTERVAL = 60 * 1000
+const IDLE_CHECK_INTERVAL = 5 * 60 * 1000
+const accessLogTail = new AccessLogTail(CADDY_LOG)
+
+const serverNameForHost = (host: string): string | null => {
+  for (const name of localNameCandidates(host)) {
+    if (processes.has(name)) return name
+  }
+  return resolveBindingFromHost(host.toLowerCase())?.serverName ?? null
+}
 
 const updateActivityFromCaddyLogs = async () => {
   try {
-    const file = Bun.file(CADDY_LOG)
-    if (!await file.exists()) return
-
-    const content = await file.text()
-    const newContent = content.slice(lastLogPosition)
-    lastLogPosition = content.length
-
-    // Parse Caddy JSON logs for requests to *.localhost and *.candy
-    for (const line of newContent.split('\n')) {
-      if (!line.trim()) continue
-      try {
-        const log = JSON.parse(line)
-        const host = log.request?.host || ''
-        const match = host.match(/^([a-z0-9-]+)\.(localhost|candy)/)
-        if (match) {
-          const serverName = match[1]
-          const proc = processes.get(serverName)
-          if (proc && proc.status === 'running') {
-            proc.lastActivity = Date.now()
-          }
-        }
-      } catch {}
+    const text = await accessLogTail.readNew()
+    if (!text) return
+    for (const [name, ts] of activityFromAccessLog(text, serverNameForHost)) {
+      const proc = processes.get(name)
+      if (proc && (proc.status === 'running' || proc.status === 'starting') && ts > proc.lastActivity) {
+        proc.lastActivity = ts
+      }
     }
   } catch {}
 }
 
-const killIdleServers = async () => {
+const serverPorts = (proc: ManagedProcess): number[] =>
+  [...new Set([proc.port, ...proc.detectedPorts].filter((p): p is number => typeof p === 'number'))]
+
+// An open connection is activity right now
+const updateActivityFromConnections = async () => {
   const now = Date.now()
+  for (const proc of processes.values()) {
+    if (proc.status !== 'running') continue
+    if (await countEstablished(serverPorts(proc)) > 0) proc.lastActivity = now
+  }
+}
+
+const sampleActivity = async () => {
+  await updateActivityFromCaddyLogs()
+  await updateActivityFromConnections()
+}
+
+const killIdleServers = async () => {
+  let memory: MemoryState | null = null
   for (const [name, proc] of processes) {
     if (proc.status !== 'running') continue
+    const now = Date.now()
+    if (now - proc.lastActivity <= IDLE_TIMEOUT) continue
+    // Re-check connections right before deciding; this is the one that matters
+    const openConnections = await countEstablished(serverPorts(proc))
+    memory ??= await readMemoryState()
+    const verdict = idleVerdict({
+      now,
+      lastActivity: proc.lastActivity,
+      hasPortal: portals.has(name),
+      openConnections,
+      idling: proc.idling,
+      memory,
+    })
+    if (!verdict.kill) {
+      if (verdict.reason === 'connected') proc.lastActivity = now
+      continue
+    }
+    console.log(`\x1b[33m[auto-kill] ${name} ${verdict.detail}\x1b[0m`)
+    await stopProcess(name, 'System')
+    auditLog('AUTO_KILL', `${name} (${verdict.detail})`, 'System')
+  }
+}
 
-    const idleTime = now - proc.lastActivity
-    const hasPortal = portals.has(name)
+setInterval(() => { sampleActivity().catch(() => {}) }, ACTIVITY_SAMPLE_INTERVAL)
+setInterval(async () => {
+  await sampleActivity().catch(() => {})
+  await killIdleServers().catch(e => console.error('[auto-kill]', e))
+}, IDLE_CHECK_INTERVAL)
 
-    // Kill if idle for 1hr+ and no portal
-    if (idleTime > IDLE_TIMEOUT && !hasPortal) {
-      console.log(`\x1b[33m[auto-kill] ${name} idle for ${Math.round(idleTime / 60000)}min\x1b[0m`)
-      await stopProcess(name, 'System')
-      auditLog('AUTO_KILL', `${name} (idle ${Math.round(idleTime / 60000)}min)`, 'System')
+// Cron: once a minute, run every job whose schedule matches (local time).
+// A run is the server's command plus the job's args, as the server's user, in
+// its cwd. A job still running from last time is skipped, and runs past their
+// timeout are stopped. Output goes to <logs>/cron/<name>.log.
+const CRON_LOG_DIR = `${LOGS_DIR}/cron`
+const cronRunning = new Map<string, number>()  // `${configId}:${job}` -> pid
+let lastCronMinute = -1
+
+const runCronJob = async (name: string, config: ServerConfig, job: CronJob) => {
+  const key = `${config.id}:${job.name}`
+  if (cronRunning.has(key)) {
+    auditLog('CRON_SKIP', `${name}:${job.name} (previous run still going)`, 'System')
+    return
+  }
+  const launch = await launchSpec(config, { job: job.name, args: job.args })
+  await mkdir(CRON_LOG_DIR, { recursive: true }).catch(() => {})
+  const logFile = `${CRON_LOG_DIR}/${name.replace(/[^\w.-]/g, '_').replace(/^\.+/, '_')}.log`
+  const write = (text: string) => appendFile(logFile, text).catch(() => {})
+  await write(`\n--- ${job.name} ${new Date().toISOString()} ---\n`)
+  const proc = spawn({ cmd: launch.cmd, cwd: launch.cwd, env: launch.env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' })
+  cronRunning.set(key, proc.pid)
+  auditLog('CRON_RUN', `${name}:${job.name} ${JSON.stringify(job.args)} (pid ${proc.pid})`, 'System')
+  const pump = async (stream: ReadableStream<Uint8Array>) => {
+    const decoder = new TextDecoder()
+    for await (const chunk of stream) await write(stripAnsi(decoder.decode(chunk, { stream: true })))
+  }
+  const timeoutS = job.timeoutSec ?? DEFAULT_CRON_TIMEOUT_S
+  let timedOut = false
+  const timer = setTimeout(() => { timedOut = true; terminateProcessTree(proc.pid, 5000).catch(() => {}) }, timeoutS * 1000)
+  await Promise.all([pump(proc.stdout), pump(proc.stderr)]).catch(() => {})
+  const code = await proc.exited
+  clearTimeout(timer)
+  cronRunning.delete(key)
+  await write(`--- exit ${code}${timedOut ? ` (stopped after ${timeoutS}s)` : ''} ---\n`)
+  auditLog('CRON_EXIT', `${name}:${job.name} code ${code}${timedOut ? ' (timeout)' : ''}`, 'System')
+}
+
+const cronTick = () => {
+  const now = new Date()
+  const minute = Math.floor(now.getTime() / 60000)
+  if (minute === lastCronMinute) return
+  lastCronMinute = minute
+  for (const [name, configs] of serverConfigs) {
+    for (const config of configs) {
+      for (const job of config.cron ?? []) {
+        let due = false
+        try { due = cronMatches(parseCron(job.schedule), now) } catch {}
+        if (due) runCronJob(name, config, job).catch(e => auditLog('CRON_FAIL', `${name}:${job.name} ${e?.message ?? e}`, 'System'))
+      }
     }
   }
 }
 
-// Run every 30 minutes (idle timeout is 1hr, so ±30min is fine)
-setInterval(async () => {
-  await updateActivityFromCaddyLogs()
-  await killIdleServers()
-}, 30 * 60 * 1000)
+// Tick a couple of seconds into each minute
+setTimeout(() => { cronTick(); setInterval(cronTick, 60 * 1000) }, 60 * 1000 - (Date.now() % 60000) + 2000)
 
 // MCP Authentication - bootstrap secrets + session API keys
 // Each user gets their own bootstrap secret; exchanging it via /mcp/auth gives
@@ -1584,7 +1671,7 @@ const initLogs = async () => {
 }
 
 // Actor types for audit logging
-type Actor = 'AI' | 'Page' | 'Portal' | 'System' | 'Network'
+type Actor = 'AI' | 'Page' | 'Portal' | 'System' | 'Network' | 'SDK'
 
 // Write to audit log with actor tracking
 const auditLog = async (action: string, details: string, actor: Actor = 'System') => {
@@ -1706,6 +1793,10 @@ const loadServerConfigs = async () => {
           const cfg: ServerConfig = { id, cwd, cmd }
           if (user) cfg.user = user
           if ((item as any).api === true) cfg.api = true
+          if (Array.isArray((item as any).cron)) {
+            const jobs = (item as any).cron.map(validateCronJob).filter((v: any) => v.ok).map((v: any) => v.job as CronJob)
+            if (jobs.length > 0) cfg.cron = jobs.slice(0, MAX_CRON_JOBS)
+          }
           normalized.push(cfg)
         }
         if (normalized.length > 0) {
@@ -1822,6 +1913,26 @@ const apiModeConfig = (name: string): ServerConfig | null => {
   return configs.find(c => c.api) ?? null
 }
 
+// The daemon's own proxies wait up to 30s for an upstream's response headers.
+// After that the body streams for as long as it lasts (SSE, long polls), and
+// the client connection's idle timeout is lifted so quiet streams aren't cut.
+const PROXY_HEADER_TIMEOUT = 30 * 1000
+
+const fetchWithHeaderTimeout = async (target: string, init: RequestInit, req: Request): Promise<Response> => {
+  const headerTimeout = new AbortController()
+  const timer = setTimeout(
+    () => headerTimeout.abort(new DOMException(`No response headers within ${PROXY_HEADER_TIMEOUT / 1000}s`, 'TimeoutError')),
+    PROXY_HEADER_TIMEOUT,
+  )
+  try {
+    const res = await fetch(target, { ...init, signal: AbortSignal.any([req.signal, headerTimeout.signal]) })
+    try { controlServer.timeout(req, 0) } catch {}
+    return res
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 const apiModeStarts = new Map<string, Promise<ManagedProcess>>()
 const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'te', 'trailer', 'upgrade']
 
@@ -1847,6 +1958,7 @@ const forwardApiModeRequest = async (req: Request, url: URL, name: string, confi
 
   // Port detection gives up after PORT_DETECTION_TIMEOUT; wait for it or for the process to exit
   const deadline = managed.startedAt.getTime() + PORT_DETECTION_TIMEOUT + 500
+  if (managed.status === 'starting') { try { controlServer.timeout(req, 30) } catch {} }  // the default 10s idle limit is shorter than a start
   while (managed.status === 'starting' && Date.now() < deadline && !req.signal.aborted) {
     await Bun.sleep(50)
   }
@@ -1866,16 +1978,15 @@ const forwardApiModeRequest = async (req: Request, url: URL, name: string, confi
   if (protectedDomain) stripCandyCredentials(headers)
   const hasBody = req.method !== 'GET' && req.method !== 'HEAD'
   try {
-    const upstream = await fetch(`http://localhost:${managed.port}${url.pathname}${url.search}`, {
+    const upstream = await fetchWithHeaderTimeout(`http://localhost:${managed.port}${url.pathname}${url.search}`, {
       method: req.method,
       headers,
       body: hasBody ? req.body : undefined,
       redirect: 'manual',
       decompress: false,
-      signal: req.signal,
       // @ts-ignore Bun/undici option for streaming request bodies
       duplex: 'half',
-    } as RequestInit)
+    } as RequestInit, req)
     const out = new Headers(upstream.headers)
     for (const h of HOP_BY_HOP) out.delete(h)
     return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: out })
@@ -1886,10 +1997,16 @@ const forwardApiModeRequest = async (req: Request, url: URL, name: string, confi
 
 // How to run a config. As root, drop to the config's user with setpriv and
 // cd as that user (so a cwd they couldn't reach on their own fails).
-const launchSpec = async (config: ServerConfig): Promise<{ cmd: string[]; cwd: string; env: Record<string, string | undefined> }> => {
-  const extra = { FORCE_COLOR: '1', TERM: 'xterm-256color', [CANDY_RUNTIME_MAGIC_ENV]: config.id }
+// A cron run passes `cron`: its args reach the command as "$@" (positional
+// parameters), never as shell text, so they can't add commands.
+const launchSpec = async (config: ServerConfig, cron?: { job: string; args: string[] }): Promise<{ cmd: string[]; cwd: string; env: Record<string, string | undefined> }> => {
+  const extra: Record<string, string> = cron
+    ? { TERM: 'dumb', [CRON_JOB_ENV]: cron.job }
+    : { FORCE_COLOR: '1', TERM: 'xterm-256color', [CANDY_RUNTIME_MAGIC_ENV]: config.id }
+  const script = cron ? cronScript(config.cmd) : config.cmd
+  const args = cron ? ['candy', ...cron.args] : []
   if (!RUNNING_AS_ROOT) {
-    return { cmd: ['bash', '-ic', config.cmd], cwd: config.cwd, env: { ...process.env, ...extra } }
+    return { cmd: ['bash', '-ic', script, ...args], cwd: config.cwd, env: { ...process.env, ...extra } }
   }
   const account = await lookupUser(configUser(config))
   if (!account || account.uid === 0) {
@@ -1898,7 +2015,7 @@ const launchSpec = async (config: ServerConfig): Promise<{ cmd: string[]; cwd: s
   return {
     cmd: [
       'setpriv', `--reuid=${account.uid}`, `--regid=${account.gid}`, '--init-groups', '--',
-      'bash', '-c', 'cd -- "$1" || exit 126; exec bash -ic "$2"', 'candy', config.cwd, config.cmd,
+      'bash', '-c', LAUNCH_WRAPPER, 'candy', config.cwd, script, ...args,
     ],
     cwd: '/',
     env: {
@@ -1938,6 +2055,7 @@ const spawnProcess = async (name: string, actor: Actor = 'System', configId?: st
     logFile,
     detectedPorts: [],
     terminal: null,
+    idling: false,
   }
 
   processes.set(name, managed)
@@ -3419,12 +3537,11 @@ const controlServer = Bun.serve({
             try {
               const proxyHeaders = new Headers(req.headers)
               proxyHeaders.set('host', `localhost:${managed.port}`)
-              const proxyRes = await fetch(`http://localhost:${managed.port}${url.pathname}${url.search}`, {
+              const proxyRes = await fetchWithHeaderTimeout(`http://localhost:${managed.port}${url.pathname}${url.search}`, {
                 method: req.method,
                 headers: proxyHeaders,
                 body: req.body,
-                signal: AbortSignal.timeout(30000),
-              })
+              }, req)
               return new Response(proxyRes.body, { status: proxyRes.status, headers: proxyRes.headers })
             } catch (e) {
               return new Response(`Proxy error: ${e}`, { status: 502 })
@@ -3435,6 +3552,11 @@ const controlServer = Bun.serve({
     }
 
     // === SDK API ===
+    // Always needs an API key: requests on a bound domain's host skip the
+    // token check above, and must not reach these from the internet.
+    if (url.pathname.startsWith("/sdk/") && !isMCP) {
+      return unauthorizedResponse(corsHeaders)
+    }
 
     if (req.method === "POST" && url.pathname === "/sdk/runtime") {
       const { configId, pid } = await req.json() as { configId?: string; pid?: number }
@@ -3549,6 +3671,64 @@ const controlServer = Bun.serve({
 
       const result = await openPortalForName({ name, port })
       return Response.json(result.body, { status: result.ok ? 200 : result.status, headers: corsHeaders })
+    }
+
+    // Idling and cron come from inside a running server only: the caller's PID
+    // must be in that server's process tree, and the API key's user must be
+    // allowed to change its config.
+    if (req.method === "POST" && (url.pathname === "/sdk/idle" || url.pathname === "/sdk/cron")) {
+      const body = await req.json().catch(() => null) as Record<string, unknown> | null
+      const configId = typeof body?.configId === "string" ? body.configId : ""
+      const pid = typeof body?.pid === "number" ? body.pid : 0
+      if (!configId || !pid) {
+        return Response.json({ error: "configId and pid are required. Call this from inside a server candy started." }, { status: 400, headers: corsHeaders })
+      }
+      const managed = await resolveManagedRuntime(configId, pid)
+      if (!managed) {
+        return Response.json({ error: "No running candy server owns that process." }, { status: 404, headers: corsHeaders })
+      }
+      if (!mayChangeConfig(requestUser(req), managed.config)) {
+        return Response.json({ error: "That server belongs to another user." }, { status: 403, headers: corsHeaders })
+      }
+
+      if (url.pathname === "/sdk/idle") {
+        const idling = body?.idling !== false
+        if (managed.idling !== idling) {
+          managed.idling = idling
+          auditLog('IDLING', `${managed.name}: ${idling ? 'on' : 'off'}`, 'SDK')
+        }
+        return Response.json({ success: true, name: managed.name, idling }, { headers: corsHeaders })
+      }
+
+      // /sdk/cron: list | set | remove
+      const config = getConfigById(managed.name, managed.config.id) ?? managed.config
+      const action = body?.action ?? "list"
+      let jobs = [...(config.cron ?? [])]
+      if (action === "set") {
+        const v = validateCronJob(body?.job)
+        if (!v.ok) return Response.json({ error: v.error }, { status: 400, headers: corsHeaders })
+        const i = jobs.findIndex(j => j.name === v.job.name)
+        if (i >= 0) jobs[i] = v.job
+        else if (jobs.length >= MAX_CRON_JOBS) {
+          return Response.json({ error: `A server can have at most ${MAX_CRON_JOBS} cron jobs.` }, { status: 400, headers: corsHeaders })
+        } else jobs.push(v.job)
+        auditLog('CRON_SET', `${managed.name}:${v.job.name} "${v.job.schedule}" ${JSON.stringify(v.job.args)}`, 'SDK')
+      } else if (action === "remove") {
+        const name = body?.name
+        const before = jobs.length
+        jobs = jobs.filter(j => j.name !== name)
+        if (jobs.length !== before) auditLog('CRON_REMOVE', `${managed.name}:${name}`, 'SDK')
+      } else if (action !== "list") {
+        return Response.json({ error: "action must be list, set or remove" }, { status: 400, headers: corsHeaders })
+      }
+      if (action !== "list") {
+        for (const target of new Set([config, managed.config])) {
+          if (jobs.length > 0) target.cron = jobs
+          else delete target.cron
+        }
+        await saveServerConfigs()
+      }
+      return Response.json({ success: true, name: managed.name, jobs }, { headers: corsHeaders })
     }
 
     // === Route Management ===
@@ -4874,10 +5054,9 @@ const controlServer = Bun.serve({
               if (isBoundDomain) {
                 newProcess.lastActivity = Date.now()
                 try {
-                  const proxyRes = await fetch(`http://localhost:${newProcess.port}${url.pathname}${url.search}`, {
+                  const proxyRes = await fetchWithHeaderTimeout(`http://localhost:${newProcess.port}${url.pathname}${url.search}`, {
                     headers: req.headers,
-                    signal: AbortSignal.timeout(30000),
-                  })
+                  }, req)
                   return new Response(proxyRes.body, { status: proxyRes.status, headers: proxyRes.headers })
                 } catch (e) {
                   return new Response(`Proxy error: ${e}`, { status: 502 })

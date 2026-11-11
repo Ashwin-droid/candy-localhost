@@ -191,6 +191,8 @@ const buildResponse = (
 
 const UPSTREAMS = (process.env.CANDY_DNS_UPSTREAM || "1.1.1.1,8.8.8.8")
   .split(",").map(s => s.trim()).filter(Boolean)
+// Tailscale's own resolver (MagicDNS). ts.net machine names only exist there.
+const TAILSCALE_RESOLVER = ["100.100.100.100"]
 const UPSTREAM_RETRY_MS = 1500
 const UPSTREAM_GIVE_UP_MS = 4000
 
@@ -223,8 +225,8 @@ const openUpstreamSocket = async () => {
 // Relay a query as-is to the first upstream, try the second if it stays quiet,
 // and give up (reply(null)) after a few seconds. IDs are remapped so two
 // clients using the same ID can't get each other's answers.
-const forwardQuery = (query: Buffer, reply: (response: Buffer | null) => void) => {
-  if (!upstreamSocket || UPSTREAMS.length === 0 || pendingForwards.size >= 0xffff) return reply(null)
+const forwardQuery = (query: Buffer, reply: (response: Buffer | null) => void, upstreams: string[] = UPSTREAMS) => {
+  if (!upstreamSocket || upstreams.length === 0 || pendingForwards.size >= 0xffff) return reply(null)
   let id = Math.floor(Math.random() * 0x10000)
   while (pendingForwards.has(id)) id = (id + 1) & 0xffff
   const out = Buffer.from(query)
@@ -232,11 +234,11 @@ const forwardQuery = (query: Buffer, reply: (response: Buffer | null) => void) =
   out.writeUInt16BE(id, 0)
   const send = (upstream: string) => { try { upstreamSocket!.send(out, 53, upstream) } catch {} }
   const timers = [
-    setTimeout(() => send(UPSTREAMS[1] ?? UPSTREAMS[0]), UPSTREAM_RETRY_MS),
+    setTimeout(() => send(upstreams[1] ?? upstreams[0]), UPSTREAM_RETRY_MS),
     setTimeout(() => { pendingForwards.delete(id); reply(null) }, UPSTREAM_GIVE_UP_MS),
   ]
   pendingForwards.set(id, { originalId, reply, timers })
-  send(UPSTREAMS[0])
+  send(upstreams[0])
 }
 
 // ============================================================================
@@ -325,6 +327,18 @@ const main = async () => {
               socket.send(response ?? buildResponse(query, queryId, name, null, 2), port, addr)
               if (!response) log(`SERVFAIL ${nameLower} [lan] (upstream did not answer)`)
             })
+            return
+          }
+
+          // A ts.net name we aren't serving on the LAN right now (nothing is
+          // published over HTTPS on it): a front resolver may still send these
+          // here, so ask Tailscale instead of claiming the name doesn't exist.
+          if (view === "lan" && nameLower.endsWith(".ts.net")) {
+            const query = Buffer.from(buf)
+            forwardQuery(query, (response) => {
+              socket.send(response ?? buildResponse(query, queryId, name, null, 2), port, addr)
+              if (!response) log(`SERVFAIL ${nameLower} [lan] (Tailscale's resolver did not answer)`)
+            }, TAILSCALE_RESOLVER)
             return
           }
 

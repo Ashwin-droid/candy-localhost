@@ -61,6 +61,7 @@ export interface SandboxSpec {
   cwd: string
   codeDir: string
   extraRw?: string[]
+  envFile?: string | null   // read by systemd itself, so it may be unreadable to the server's user
   env: Record<string, string | undefined>
   script: string            // run as: bash -ic <script> [candy <args...>]
   args?: string[]
@@ -114,6 +115,7 @@ export const sandboxProperties = (spec: SandboxSpec): string[] => {
     const tmp = isUnder(path, "/tmp") || isUnder(path, "/var/tmp")
     props.push(tmp ? `BindPaths=${path}` : `ReadWritePaths=${path}`)
   }
+  if (spec.envFile) props.push(`EnvironmentFile=${spec.envFile}`)
   if (spec.bindsTo) props.push(`BindsTo=${spec.bindsTo}`, `After=${spec.bindsTo}`)
   return props
 }
@@ -144,4 +146,39 @@ export const unitOfCgroup = (cgroupText: string): string | null => {
   const path = cgroupText.split("\n").find(line => line.startsWith("0::"))?.slice(3).trim()
   const last = path?.split("/").pop()
   return last && last.endsWith(".service") ? last : null
+}
+
+// ---------------------------------------------------------------------------
+// Env files
+// ---------------------------------------------------------------------------
+
+// Root puts a file under /etc/candy/env/<user>/ to hand it to that user's
+// servers without the user being able to read it.
+export const ENV_FILE_ROOT = "/etc/candy/env"
+export const userEnvDir = (user: string): string => `${ENV_FILE_ROOT}/${user}`
+
+// An env file path: absolute and already normal. Returns the clean path or null.
+export const validateEnvFilePath = (path: unknown): string | null => {
+  if (typeof path !== "string" || path.length === 0 || path.length > 1024) return null
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f\x7f]/.test(path) || !isAbsolute(path)) return null
+  return normalize(path) === path && !path.endsWith("/") ? path : null
+}
+
+// KEY=VALUE lines, the way systemd's EnvironmentFile reads them (near enough):
+// blank lines and # comments are skipped, an optional "export " is dropped,
+// matching quotes around the value are removed, nothing is expanded.
+export const parseEnvFile = (text: string): Record<string, string> => {
+  const out: Record<string, string> = {}
+  for (const raw of text.split("\n")) {
+    const line = raw.trim()
+    if (!line || line.startsWith("#") || line.startsWith(";")) continue
+    const m = line.replace(/^export\s+/, "").match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/)
+    if (!m) continue
+    let value = m[2]
+    const quote = value[0]
+    if ((quote === '"' || quote === "'") && value.length >= 2 && value.endsWith(quote)) value = value.slice(1, -1)
+    out[m[1]] = value
+  }
+  return out
 }

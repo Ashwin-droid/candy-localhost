@@ -970,6 +970,9 @@ function printHelp() {
   console.log(`  ${c.cyan}candy dev${c.reset} <cmd> --name foo   Register and run with custom route name`)
   console.log(`  ${c.cyan}candy dev${c.reset} <cmd> --api        API mode: hold the first request while starting, then forward it`)
   console.log(`  ${c.cyan}candy api${c.reset} <name> [on|off]     Turn API mode on or off for a site`)
+  console.log(`  ${c.cyan}candy env${c.reset} <name> <path|off>     Give a site its environment from a KEY=VALUE file`)
+  console.log(`  ${c.cyan}candy route serve${c.reset} <name> <port|off>  https://<host>.ts.net:<port> on the tailnet (tailscale serve, run by candy)`)
+  console.log(`  ${c.cyan}candy route entry${c.reset} <name> <port|off>  A local port that always reaches the site through candy`)
   console.log(`  ${c.cyan}candy sandbox${c.reset} <name> [on|off] [--rw <path>]  Sandbox a site (on by default as a root service); --rw adds a writable folder`)
   console.log(`  ${c.cyan}candy stop${c.reset} [name]            Stop server (current folder or by name)`)
   console.log(`  ${c.cyan}candy status${c.reset}                 Show all running servers`)
@@ -1069,6 +1072,24 @@ switch (command) {
       : `${name}: API mode on. The first request waits for the server and is forwarded to it.`)
     break
   }
+  case 'env': {
+    // candy env <name> <path|off>: hand a KEY=VALUE file to the server as environment
+    const [name, value] = args.slice(1)
+    if (!name || !value) {
+      console.error(`${c.red}Usage: candy env <name> <path|off>${c.reset}`)
+      process.exit(1)
+    }
+    const { resolve } = await import('path')
+    const res = await apiPost('/config/env', { name, envFile: value === 'off' ? null : resolve(value) })
+    if (!res || res.error) {
+      console.error(`${c.red}${res?.error || 'Daemon not running'}${c.reset}`)
+      process.exit(1)
+    }
+    console.log(res.envFile
+      ? `${name}: gets its environment from ${c.cyan}${res.envFile}${c.reset}. ${c.dim}${res.message}${c.reset}`
+      : `${name}: no env file. ${c.dim}${res.message}${c.reset}`)
+    break
+  }
   case 'sandbox': {
     // candy sandbox <name> [on|off] [--rw <path>]... [--no-rw <path>]...
     const name = args[1]
@@ -1122,6 +1143,38 @@ switch (command) {
       } else {
         console.log(`${c.green}+ ${name}.localhost -> :${port}${persistent ? ' (persistent)' : ''}${c.reset}`)
       }
+    } else if (sub === 'serve') {
+      // candy route serve <name> <port|off>: https://<host>.ts.net:<port> on the tailnet, via tailscale serve
+      const name = rargs[1]
+      const value = rargs[2]
+      if (!name || !value || (value !== 'off' && !/^\d+$/.test(value))) {
+        console.error(`${c.red}Usage: candy route serve <name> <port|off>${c.reset}`)
+        process.exit(1)
+      }
+      const res = await apiPost('/routes/serve', { name, port: value === 'off' ? null : Number(value) })
+      if (!res || res.error) {
+        console.error(`${c.red}${res?.error || 'Daemon not running'}${c.reset}`)
+        process.exit(1)
+      }
+      console.log(res.url
+        ? `${c.green}+ ${res.url} -> ${name}${c.reset} ${c.dim}(tailnet only, trusted certificate, goes through candy)${c.reset}`
+        : `${c.red}- ${name} is no longer served on the tailnet hostname${c.reset}`)
+    } else if (sub === 'entry') {
+      // candy route entry <name> <port|off>: a loopback port that always goes through candy
+      const name = rargs[1]
+      const value = rargs[2]
+      if (!name || !value || (value !== 'off' && !/^\d+$/.test(value))) {
+        console.error(`${c.red}Usage: candy route entry <name> <port|off>${c.reset}`)
+        process.exit(1)
+      }
+      const res = await apiPost('/routes/entry', { name, port: value === 'off' ? null : Number(value) })
+      if (!res || res.error) {
+        console.error(`${c.red}${res?.error || 'Daemon not running'}${c.reset}`)
+        process.exit(1)
+      }
+      console.log(res.port
+        ? `${c.green}+ ${res.url} -> ${name}${c.reset} ${c.dim}(this machine only; starts ${name} when needed)${c.reset}`
+        : `${c.red}- ${name} has no entry port${c.reset}`)
     } else if (sub === 'rm' || sub === 'remove') {
       const name = rargs[1]
       if (!name) {

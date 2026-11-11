@@ -604,6 +604,8 @@ Actions:
 - lan_publish: Make <name>.candy reachable FROM THE LOCAL NETWORK (off by default; .candy is Tailscale-only otherwise). https adds a publicly trusted certificate: true = the bound domain if the name has one, else the ts.net hostname; "domain" = https://<bound domain>; "tailscale" = https://<host>.ts.net:<port>; false = HTTPS off. port picks the ts.net port (implies "tailscale"; auto-assigned otherwise). Omit https to leave it unchanged
 - lan_unpublish: Take <name>.candy off the local network
 - adguard_status: Is AdGuard Home linked for LAN DNS, and which rules candy manages there (owner only, read-only)
+- entry: Give a name a loopback port (port: 1024-65535, omit to remove) that always reaches it through candy, whatever Host is sent. For local front ends such as tailscale serve; pointing those at the server's own port would bypass candy, so a stopped server would never start. entry_list shows them
+- serve: Put a name on this machine's Tailscale hostname with a trusted certificate: https://<host>.ts.net:<port> (port: 1024-65535, omit to remove). candy runs tailscale serve for it and forwards through its entry port. Tailnet only. serve_list shows them
 - adguard_unlink: Remove the AdGuard Home link and the rules candy added (owner only). LAN devices stop resolving .candy names through AdGuard
 
 Linking AdGuard Home is not offered here: it needs the AdGuard password, which the user enters themselves with \`candy lan adguard\`.
@@ -614,7 +616,7 @@ lan_publish EXPOSES A SITE TO EVERY DEVICE ON THE LOCAL NETWORK - confirm with t
       properties: {
         action: {
           type: "string",
-          enum: ["list", "add", "remove", "rename", "lan_list", "lan_publish", "lan_unpublish", "adguard_status", "adguard_unlink"],
+          enum: ["list", "add", "remove", "rename", "lan_list", "lan_publish", "lan_unpublish", "entry", "entry_list", "serve", "serve_list", "adguard_status", "adguard_unlink"],
           description: "Action to perform"
         },
         name: {
@@ -667,13 +669,15 @@ Renaming a route is candy_route rename. Removing one variant is candy_deregister
 
 - set_sandbox: Servers run sandboxed by default (read-only filesystem except their code folder, their state folder CANDY_STATE_DIR and a private /tmp). sandbox: false turns that off for a name; addRw / removeRw edit its list of extra writable folders (absolute paths). Takes effect at the next start. TURNING THE SANDBOX OFF OR ADDING WRITABLE PATHS WEAKENS ISOLATION - confirm with the user first
 
-set_api, set_port and set_sandbox MODIFY CONFIGURATION - confirm with user if they haven't asked.`,
+- set_env_file: Hand a KEY=VALUE file to the server as its environment at launch (envFile: absolute path; omit to remove). Only the path passes through here, never the contents. The file must be readable by the server's user, or placed by root in /etc/candy/env/<user>/
+
+set_api, set_port, set_sandbox and set_env_file MODIFY CONFIGURATION - confirm with user if they haven't asked.`,
     inputSchema: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["list", "users", "set_api", "set_port", "set_sandbox"],
+          enum: ["list", "users", "set_api", "set_port", "set_sandbox", "set_env_file"],
           description: "Action to perform"
         },
         name: {
@@ -687,6 +691,10 @@ set_api, set_port and set_sandbox MODIFY CONFIGURATION - confirm with user if th
         api: {
           type: "boolean",
           description: "set_api: true for on, false for off"
+        },
+        envFile: {
+          type: "string",
+          description: "set_env_file: absolute path of the env file (omit to remove it)"
         },
         sandbox: {
           type: "boolean",
@@ -975,8 +983,11 @@ async function handleDeregister(params: any): Promise<any> {
 }
 
 async function handleConfig(params: any): Promise<any> {
-  const { action, name, configId, api, port, sandbox, addRw, removeRw } = params
+  const { action, name, configId, api, port, sandbox, addRw, removeRw, envFile } = params
   switch (action) {
+    case "set_env_file":
+      if (!name) return { error: "name is required for set_env_file" }
+      return await post("/config/env", { name, ...(configId ? { configId } : {}), envFile: envFile ? String(envFile) : null })
     case "set_sandbox":
       if (!name) return { error: "name is required for set_sandbox" }
       return await post("/config/sandbox", {
@@ -1001,7 +1012,7 @@ async function handleConfig(params: any): Promise<any> {
       return res
     }
     default:
-      return { error: "Unknown action. Use: list, users, set_api, set_port, set_sandbox" }
+      return { error: "Unknown action. Use: list, users, set_api, set_port, set_sandbox, set_env_file" }
   }
 }
 
@@ -1132,6 +1143,20 @@ async function handleRoute(params: any): Promise<any> {
         ? `Published to LAN: ${name}.candy -> ${res.lanIp || "no LAN address detected"}${res.httpsUrl ? `, HTTPS: ${res.httpsUrl}` : ""}${res.warning ? ` (${res.warning})` : ""}`
         : `Unpublished from LAN: ${name}.candy`)
     }
+    case "entry": {
+      if (!name) return "Error: name is required for entry"
+      const res = await post("/routes/entry", { name, port: port ? Number(port) : null })
+      return fail(res) ?? (res.port ? `Entry port: ${res.url} -> ${name} (this machine only)` : `${name} has no entry port`)
+    }
+    case "entry_list":
+      return await daemonFetch("/routes/entry")
+    case "serve": {
+      if (!name) return "Error: name is required for serve"
+      const res = await post("/routes/serve", { name, port: port ? Number(port) : null })
+      return fail(res) ?? (res.url ? `Served on the tailnet: ${res.url} -> ${name}` : `${name} is no longer served on the tailnet hostname`)
+    }
+    case "serve_list":
+      return await daemonFetch("/routes/serve")
     case "adguard_status":
       return await daemonFetch("/lan/adguard")
     case "adguard_unlink":

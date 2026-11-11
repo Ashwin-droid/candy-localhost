@@ -173,3 +173,54 @@ export const idleVerdict = (i: IdleInput): IdleVerdict => {
   }
   return { kill: true, idleMinutes, detail: `idle ${idleMinutes}min` }
 }
+
+// ---------------------------------------------------------------------------
+// Listening sockets (for servers that never print their port)
+// ---------------------------------------------------------------------------
+
+// TCP ports each PID listens on, from `ss -Htlnp` output. Lines look like
+// LISTEN 0 128 127.0.0.1:8222 0.0.0.0:* users:(("vaultwarden",pid=4242,fd=11))
+export const listeningPortsByPid = (ssOutput: string): Map<number, number[]> => {
+  const byPid = new Map<number, number[]>()
+  for (const line of ssOutput.split("\n")) {
+    const cols = line.trim().split(/\s+/)
+    if (cols.length < 5 || cols[0] !== "LISTEN") continue
+    const port = Number(cols[3].slice(cols[3].lastIndexOf(":") + 1))
+    if (!Number.isInteger(port) || port < 1 || port > 65535) continue
+    for (const m of line.matchAll(/pid=(\d+)/g)) {
+      const pid = Number(m[1])
+      const ports = byPid.get(pid) ?? []
+      if (!ports.includes(port)) ports.push(port)
+      byPid.set(pid, ports)
+    }
+  }
+  return byPid
+}
+
+// Ports any of `pids` listens on, lowest first
+export const listeningPortsOf = (ssOutput: string, pids: Iterable<number>): number[] => {
+  const byPid = listeningPortsByPid(ssOutput)
+  const ports = new Set<number>()
+  for (const pid of pids) for (const port of byPid.get(pid) ?? []) ports.add(port)
+  return [...ports].sort((a, b) => a - b)
+}
+
+// ---------------------------------------------------------------------------
+// tailscale serve
+// ---------------------------------------------------------------------------
+
+// HTTPS port -> proxy target of the "/" handler, from `tailscale serve status --json`
+export const tailscaleServeTargets = (statusJson: string): Map<number, string> => {
+  const targets = new Map<number, string>()
+  let status: any
+  try { status = JSON.parse(statusJson) } catch { return targets }
+  for (const [hostPort, site] of Object.entries((status?.Web ?? {}) as Record<string, any>)) {
+    const port = Number(hostPort.slice(hostPort.lastIndexOf(":") + 1))
+    const proxy = site?.Handlers?.["/"]?.Proxy
+    if (Number.isInteger(port)) targets.set(port, typeof proxy === "string" ? proxy : "(something else)")
+  }
+  for (const port of Object.keys((status?.TCP ?? {}) as Record<string, any>)) {
+    if (!targets.has(Number(port))) targets.set(Number(port), "(something else)")
+  }
+  return targets
+}

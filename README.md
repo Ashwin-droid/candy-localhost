@@ -230,6 +230,42 @@ candy api <name> on|off          # toggle for an existing site
 
 The portal has the same toggle in each site's menu.
 
+### Env Files
+
+```bash
+candy env myapp /path/to/myapp.env   # KEY=VALUE lines, handed to the server as environment
+candy env myapp off
+```
+
+The file is read at every launch, so the server doesn't have to read secrets from disk itself. Two kinds of file are accepted:
+
+- one the server's user can read (checked as that user), or
+- one root placed in `/etc/candy/env/<user>/` (both root-owned and not writable by anyone else). For a sandboxed server systemd reads it, so the file can be mode 600 root: the secrets reach the process but the user's other programs can't read the file.
+
+Anything else is refused, so candy can't be used to read someone else's files. Values in the file override candy's own variables.
+
+### Ports
+
+candy learns a server's port from its output. A server that prints nothing recognisable is still found: after 1.5 seconds candy looks at which TCP ports the server's processes listen on (for up to a minute).
+
+### Tailscale HTTPS (`candy route serve`)
+
+```bash
+candy route serve vault 9443   # https://<host>.<tailnet>.ts.net:9443, tailnet only, trusted certificate
+candy route serve vault off
+```
+
+candy runs `tailscale serve` for the port and forwards it to the name's entry port (created if needed), so requests go through candy and can start a stopped server. A port that tailscale already serves for something else is refused. The port stays open while the server is stopped (the next request starts it) and is closed when you turn it off or delete the site. `candy lan publish <name> --https=<port>` (Tailscale mode) turns this on for the same port, so the URL is identical on the LAN and on the tailnet.
+
+### Entry Ports
+
+```bash
+candy route entry vault 18222   # http://127.0.0.1:18222 always reaches "vault" through candy
+candy route entry vault off
+```
+
+An entry port is a plain-HTTP port on loopback that reaches a name through candy whatever `Host` header is sent. Use it as the target for a local front end that can't set the host, such as `tailscale serve --https=9443 http://127.0.0.1:18222`. Pointing such a front end at the server's own port bypasses candy, so a stopped server (idle, crashed, API mode) would never be started by that traffic.
+
 ### Reserved Names
 
 `portal`, `k`, `kill`, `p` — cannot be used as server names. Names may only use letters, numbers, dashes, underscores and dots.
@@ -295,8 +331,8 @@ candy version | -v             Show version
 | `candy_start` / `candy_restart` / `candy_stop` | Control a server. `candy_start` takes `configId` when a name has several variants |
 | `candy_logs` / `candy_input` | Read a server's output (tail, head, search) and type into its terminal |
 | `candy_register` / `candy_deregister` | Add or remove a config. Register accepts `api` (API mode) and `user` (run-as account, owner only); deregister accepts `configId` to remove one variant |
-| `candy_config` | `list` configs and variants, `users` (run-as accounts), `set_api` (API mode on/off), `set_port` (pick one of several detected ports), `set_sandbox` (sandbox on/off, extra writable folders) |
-| `candy_route` | `list`, `add` (port or URL `target`, `persistent`), `remove`, `rename`; LAN: `lan_list`, `lan_publish` (`https`: `true`, `false`, `"domain"` or `"tailscale"`, optional `port`), `lan_unpublish`; AdGuard Home: `adguard_status`, `adguard_unlink` |
+| `candy_config` | `list` configs and variants, `users` (run-as accounts), `set_api` (API mode on/off), `set_port` (pick one of several detected ports), `set_sandbox` (sandbox on/off, extra writable folders), `set_env_file` |
+| `candy_route` | `list`, `add` (port or URL `target`, `persistent`), `remove`, `rename`; LAN: `lan_list`, `lan_publish` (`https`: `true`, `false`, `"domain"` or `"tailscale"`, optional `port`), `lan_unpublish`; `entry` / `entry_list` (loopback entry ports), `serve` / `serve_list` (tailscale serve); AdGuard Home: `adguard_status`, `adguard_unlink` |
 | `candy_domain` | Bound domains: `list`, `bind`, `unbind`, `config`; protection: `auth_status`, `auth_generate_jwt`, `auth_token` (`ttl`, `once`), `auth_clear` (`which`: password, jwt or all), `allowlist` (`add`, `remove`, `ips`, `enabled`); the public MCP endpoint: `public_mcp_status`, `public_mcp_on`, `public_mcp_off`, `public_mcp_revoke` |
 | `candy_portal_open` / `candy_portal_close` / `candy_portals` | Cloudflare quick tunnels |
 | `candy_status` | `status` (daemon and Caddy health), `stats` (requests per domain), `traffic` (recent requests for a name), `activity` (daemon activity log) |
@@ -532,8 +568,8 @@ candy lan publish vault --no-https
 **Tailscale mode** (the default otherwise):
 
 - Caddy serves `https://<host>.<tailnet>.ts.net:<port>` on the **LAN IP only**, with a Let's Encrypt certificate fetched from `tailscaled` (`get_certificate tailscale`).
-- `candy-dns`'s LAN view answers the ts.net hostname with the LAN IP (A record; other types get NODATA). The tailnet view doesn't answer it.
-- The Tailscale IP is left alone. On the tailnet, MagicDNS resolves the hostname to the Tailscale IP, so to give tailnet devices the same URL, serve the same port there with `tailscale serve --https=<port> http://127.0.0.1:<app port>`. The same URL then works at home and on the tailnet, and nothing is exposed to the internet.
+- `candy-dns`'s LAN view answers the ts.net hostname with the LAN IP (A record; other types get NODATA). While nothing is published over HTTPS on it, the LAN view passes ts.net lookups to Tailscale's resolver (`100.100.100.100`), so a front-resolver rule for the hostname can stay in place. The tailnet view doesn't answer it.
+- Caddy never binds the Tailscale IP for this. On the tailnet, MagicDNS resolves the hostname to the Tailscale IP, where candy runs `tailscale serve` on the same port (see `candy route serve`). The same URL then works at home and on the tailnet, and nothing is exposed to the internet.
 - One-time setup: Caddy needs `tailscaled` access for certificates (`sudo tailscale set --operator=$USER`), and the front resolver must send LAN clients' queries for the hostname to the LAN listener (`[/<host>.<tailnet>.ts.net/]127.0.0.1:5336`, or let candy add it, below).
 
 In both modes, devices with their own DNS (Android Private DNS, DoH in the browser) skip the LAN resolver: in Tailscale mode they won't see the LAN address, in bound domain mode they simply go out through Cloudflare.
@@ -649,6 +685,9 @@ Runs as the installing user with `CAP_NET_BIND_SERVICE` for port 53 — not root
 | `~/.config/candy/routes.json` | Persistent routes |
 | `~/.config/candy/lan.json` | Names published to the LAN, and their HTTPS mode (ts.net port or `"domain"`) |
 | `~/.config/candy/mcp-oauth.json` | Public MCP endpoint: registered clients and hashed refresh tokens (mode 600) |
+| `~/.config/candy/entries.json` | Entry ports (name → loopback port) |
+| `~/.config/candy/serves.json` | Names served on the ts.net hostname (name → HTTPS port) |
+| `/etc/candy/env/<user>/` | Root-placed env files for that user's servers |
 | `~/.config/candy/adguard.json` | AdGuard Home login and the upstream lines candy manages (mode 600) |
 | `~/.config/candy/domains.json` | Domain binding config (zone, tunnel, bindings) |
 | `~/.config/candy/candy-grudge.lock` | Bound-domain auth grudge state |

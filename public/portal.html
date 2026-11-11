@@ -765,6 +765,52 @@
       return httpsUrl ? ` <a class="route-lan" href="${escapeHtml(httpsUrl)}" target="_blank" title="LAN HTTPS (trusted certificate)">${escapeHtml(httpsUrl.replace(/^https:\/\//, ''))}</a>` : '';
     }
 
+    // tailscale serve, run by candy: https://<this machine>.ts.net:<port> for the tailnet
+    async function setTailscaleServe(name, port) {
+      const res = await apiCall('/routes/serve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, port }),
+      });
+      return await res.json();
+    }
+
+    function serveOnTailscale(name, currentUrl) {
+      const current = (currentUrl.match(/:(\d+)$/) || [])[1] || '';
+      showPrompt({
+        title: `Serve ${name} on Tailscale`,
+        label: 'Port',
+        value: current || '8443',
+        type: 'number',
+        submit: current ? 'Change port' : 'Serve',
+        hint: `Devices on your tailnet open https://<this machine>.ts.net:<port>, with a trusted certificate. It goes through candy, so ${name} starts when needed. This is the outside port, not the one ${name} listens on.`,
+        onSubmit: async (value) => {
+          const port = Number(value);
+          if (!Number.isInteger(port) || port < 1024 || port > 65535) { toast('Enter a port between 1024 and 65535', 'error'); return false; }
+          try {
+            const data = await setTailscaleServe(name, port);
+            if (data.error) { toast(data.error, 'error'); return false; }
+            toast(`${name} is at ${data.url}`, 'success');
+            refreshAll();
+            return true;
+          } catch {
+            toast('Could not set up Tailscale serving', 'error');
+            return false;
+          }
+        },
+      });
+    }
+
+    async function stopTailscaleServe(name) {
+      try {
+        const data = await setTailscaleServe(name, null);
+        if (data.error) toast(data.error, 'error');
+        else { toast(`${name} is no longer served on Tailscale`, 'success'); refreshAll(); }
+      } catch {
+        toast('Could not stop Tailscale serving', 'error');
+      }
+    }
+
     async function toggleLanHttps(name, https) {
       try {
         const res = await apiCall('/lan', {
@@ -1806,6 +1852,7 @@
 
       const lan = route ? route.lan : s.config?.lan;
       const lanHttps = route ? route.lanHttps : s.config?.lanHttps;
+      const tsServe = route ? route.tsServe : s.config?.tsServe;
       const chips = [];
       if (route?.persistent) chips.push('<span class="chip on" title="Kept across daemon restarts">Pinned</span>');
       if (s.config?.api) chips.push('<span class="chip on" title="Requests wait while it starts and are passed straight through. No loading page.">API mode</span>');
@@ -1814,6 +1861,7 @@
       if (state.status?.multiUser && runsAs && runsAs !== state.status.owner) chips.push(`<span class="chip" title="Started as this user">Runs as ${escapeHtml(runsAs)}</span>`);
       if (lan) chips.push(`<span class="chip on" title="${safe}.candy is reachable from the local network">On LAN</span>`);
       if (lanHttps) chips.push(`<a class="chip-link" href="${escapeHtml(lanHttps)}" target="_blank" title="LAN address with a trusted certificate">${escapeHtml(lanHttps.replace(/^https:\/\//, ''))}</a>`);
+      if (tsServe && tsServe !== lanHttps) chips.push(`<a class="chip-link" href="${escapeHtml(tsServe)}" target="_blank" title="Tailscale address with a trusted certificate. Only your tailnet can open it.">${escapeHtml(tsServe.replace(/^https:\/\//, ''))}</a>`);
 
       let portalLine = '';
       if (s.portal) {
@@ -1838,6 +1886,8 @@
       if (route) toggles.push(menuItem(route.persistent ? 'Unpin' : 'Pin across restarts', `togglePersistent('${js}', ${!route.persistent})`));
       if (route || s.config) toggles.push(menuItem(lan ? 'Remove from LAN' : 'Publish to LAN…', `toggleLan('${js}', ${!lan})`));
       if (lan) toggles.push(menuItem(lanHttps ? 'Turn off LAN HTTPS' : 'Serve LAN over HTTPS', `toggleLanHttps('${js}', ${!lanHttps})`));
+      if (route || s.config) toggles.push(menuItem(tsServe ? 'Change Tailscale port…' : 'Serve on Tailscale…', `serveOnTailscale('${js}', '${escapeJsSingle(tsServe || '')}')`));
+      if (tsServe) toggles.push(menuItem('Stop serving on Tailscale', `stopTailscaleServe('${js}')`));
       if (s.config) toggles.push(menuItem(s.config.api ? 'Turn off API mode' : 'API mode', `toggleApiMode('${js}', ${!s.config.api})`));
       if (s.config && state.status?.multiUser) toggles.push(menuItem(s.config.sandbox === false ? 'Turn on sandbox' : 'Run without sandbox', `toggleSandbox('${js}', ${s.config.sandbox === false})`));
       const danger = [];

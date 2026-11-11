@@ -7,12 +7,12 @@
 
 import { $, spawn, type Subprocess } from "bun"
 import { existsSync, readFileSync, watch, type FSWatcher } from "node:fs"
-import { appendFile, chmod, chown, mkdir, unlink, writeFile } from "node:fs/promises"
+import { appendFile, chmod, chown, mkdir, stat, unlink, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
 import { userInfo } from "node:os"
 import { SHARED_GROUP, SHARED_SECRET_FILE } from "./secret.ts"
-import { AccessLogTail, activityFromAccessLog, countEstablished, idleVerdict, IDLE_TIMEOUT_MS, localNameCandidates, readMemoryState, type MemoryState } from "./activity.ts"
-import { findCodeDir, stateDirPath, systemdRunCommand, unitName, unitOfCgroup, validateRwPath, MAX_RW_PATHS } from "./sandbox.ts"
+import { AccessLogTail, activityFromAccessLog, countEstablished, idleVerdict, IDLE_TIMEOUT_MS, listeningPortsOf, localNameCandidates, readMemoryState, tailscaleServeTargets, type MemoryState } from "./activity.ts"
+import { findCodeDir, parseEnvFile, stateDirPath, systemdRunCommand, unitName, unitOfCgroup, userEnvDir, validateEnvFilePath, validateRwPath, MAX_RW_PATHS, SANDBOX_SLICE } from "./sandbox.ts"
 import { OAuthServer, type OAuthPersisted } from "./mcp-oauth.ts"
 import { handleRequest as handleMcpRequest } from "./mcp.ts"
 import { applyAdguardUpstreams, upstreamRule, type AdguardConfig } from "./adguard.ts"
@@ -60,6 +60,7 @@ interface ServerConfig {
   cron?: CronJob[]  // scheduled runs of cmd with extra args, set by the app via the SDK
   sandbox?: false   // opt out of the systemd sandbox (root mode); on unless false
   rw?: string[]     // extra writable paths inside the sandbox
+  envFile?: string  // KEY=VALUE file handed to the server as environment at launch
 }
 
 type ProcessStatus = 'starting' | 'running' | 'dead' | 'errored'
@@ -105,6 +106,8 @@ const ADVERTISEMENTS_FILE = `${CANDY_CONFIG_DIR}/advertisements.json`
 const LAN_FILE = `${CANDY_CONFIG_DIR}/lan.json`
 const ADGUARD_FILE = `${CANDY_CONFIG_DIR}/adguard.json`
 const MCP_OAUTH_FILE = `${CANDY_CONFIG_DIR}/mcp-oauth.json`
+const ENTRIES_FILE = `${CANDY_CONFIG_DIR}/entries.json`
+const SERVES_FILE = `${CANDY_CONFIG_DIR}/serves.json`
 const CLOUDFLARED_SYSTEM_CONFIG = `/etc/cloudflared/config.yml`
 const CLOUDFLARED_USER_CONFIG = `${process.env.HOME}/.cloudflared/config.yml`
 const CANDY_RUNTIME_MAGIC_ENV = "X_CANDY_RUNTIME_MAGIC_STRING"
@@ -848,6 +851,34 @@ const MCP_PUBLIC_CORS = {
 }
 const MCP_MAX_BODY = 1024 * 1024
 
+// Unauthenticated requests to the public MCP host, per visitor IP. A client
+// signing in sends a quick burst (discovery, register, token), so this is far
+// looser than the 3-per-second limit on other public sites. Requests that
+// carry a valid access token are not counted.
+const MCP_RATE_WINDOW_MS = 10 * 1000
+const MCP_RATE_MAX = 60
+const MCP_RATE_BLOCK_MS = 30 * 1000
+const mcpRate = new Map<string, { times: number[]; blockedUntil: number }>()
+
+const mcpRateOk = (ip: string): boolean => {
+  const now = Date.now()
+  if (mcpRate.size > 5000) {
+    for (const [key, entry] of mcpRate) {
+      if (entry.blockedUntil < now && (entry.times.at(-1) ?? 0) < now - MCP_RATE_WINDOW_MS) mcpRate.delete(key)
+    }
+  }
+  const entry = mcpRate.get(ip) ?? { times: [], blockedUntil: 0 }
+  mcpRate.set(ip, entry)
+  if (now < entry.blockedUntil) return false
+  entry.times = entry.times.filter(t => now - t < MCP_RATE_WINDOW_MS)
+  entry.times.push(now)
+  if (entry.times.length > MCP_RATE_MAX) {
+    entry.blockedUntil = now + MCP_RATE_BLOCK_MS
+    return false
+  }
+  return true
+}
+
 const mcpJson = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
   Response.json(body, { status, headers: { ...MCP_PUBLIC_CORS, "Cache-Control": "no-store", ...headers } })
 
@@ -866,8 +897,9 @@ const handlePublicMcp = async (req: Request, url: URL, server: any): Promise<Res
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: MCP_PUBLIC_CORS })
 
   const { ip } = getFingerprint(req, server)
-  if (!checkRateLimit(ip, "mcp-public")) return mcpJson({ error: "slow_down", error_description: "Too many requests." }, 429)
   const path = url.pathname.replace(/\/+$/, "") || "/"
+  const tooMany = () => mcpJson({ error: "slow_down", error_description: "Too many requests. Try again in a moment." }, 429, { "Retry-After": "30" })
+  if (path !== "/mcp" && !mcpRateOk(ip)) return tooMany()
 
   if (req.method === "GET" && (path === "/.well-known/oauth-protected-resource" || path === "/.well-known/oauth-protected-resource/mcp")) {
     return mcpJson(oauth.protectedResourceMetadata(), 200, { "Cache-Control": "max-age=300" })
@@ -914,6 +946,7 @@ const handlePublicMcp = async (req: Request, url: URL, server: any): Promise<Res
     const bearer = req.headers.get("authorization")?.match(/^Bearer\s+(\S+)$/i)?.[1]
     const token = bearer ? oauth.verifyAccessToken(bearer) : null
     if (!token) {
+      if (!mcpRateOk(ip)) return tooMany()
       return mcpJson({ error: "invalid_token", error_description: "Sign in again to continue." }, 401, {
         "WWW-Authenticate": `${challenge["WWW-Authenticate"]}${bearer ? ', error="invalid_token"' : ''}`,
       })
@@ -1727,17 +1760,40 @@ const setLanPublished = async (name: string, publish: boolean, actor: Actor = 'P
   await syncCaddy()
 }
 
-// Drop the opt-in once a name is gone, so a later, unrelated server that
-// reuses the name does not start out exposed to the LAN.
+// Drop a name's exposure once the name is gone (no route, no server config),
+// so a later, unrelated server that reuses the name does not start out
+// exposed: the LAN opt-in, its Tailscale serve port and its entry port.
 const forgetLanPublishedIfGone = async (name: string): Promise<boolean> => {
   const key = name.toLowerCase()
-  if (!lanPublished.has(key) || routes.has(name) || serverConfigs.has(name)) return false
-  lanPublished.delete(key)
-  lanHttps.delete(key)
-  lanDomainHttps.delete(key)
-  await saveLanPublished()
-  auditLog('LAN_UNPUBLISH', `${key}.candy (name removed)`, 'System')
-  return true
+  if (routes.has(name) || serverConfigs.has(name)) return false
+  let changed = false
+  if (lanPublished.has(key)) {
+    lanPublished.delete(key)
+    lanHttps.delete(key)
+    lanDomainHttps.delete(key)
+    await saveLanPublished()
+    auditLog('LAN_UNPUBLISH', `${key}.candy (name removed)`, 'System')
+    changed = true
+  }
+  const served = tsServes.get(key)
+  if (served) {
+    tsServes.delete(key)
+    await saveTsServes()
+    // Only close the Tailscale port if it still points at this name's entry port
+    const entry = entryPorts.get(key)
+    const target = (await tsServeTargets()).get(served)
+    if (entry && target === `http://127.0.0.1:${entry}`) {
+      await $`tailscale serve --https=${served} off`.quiet().nothrow()
+    }
+    auditLog('TS_SERVE_OFF', `${key} :${served} (name removed)`, 'System')
+    changed = true
+  }
+  if (entryPorts.delete(key)) {
+    await saveEntryPorts()
+    auditLog('ENTRY_PORT_OFF', `${key} (name removed)`, 'System')
+    changed = true
+  }
+  return changed
 }
 
 const refreshLanIp = async () => {
@@ -2189,6 +2245,8 @@ const loadServerConfigs = async () => {
             const rw = (item as any).rw.map(validateRwPath).filter((v: string | null): v is string => !!v).slice(0, MAX_RW_PATHS)
             if (rw.length > 0) cfg.rw = rw
           }
+          const envFile = validateEnvFilePath((item as any).envFile)
+          if (envFile) cfg.envFile = envFile
           if (Array.isArray((item as any).cron)) {
             const jobs = (item as any).cron.map(validateCronJob).filter((v: any) => v.ok).map((v: any) => v.job as CronJob)
             if (jobs.length > 0) cfg.cron = jobs.slice(0, MAX_CRON_JOBS)
@@ -2401,8 +2459,17 @@ const launchSpec = async (config: ServerConfig, cron?: { job: string; args: stri
     : { FORCE_COLOR: '1', TERM: 'xterm-256color', [CANDY_RUNTIME_MAGIC_ENV]: config.id }
   const script = cron ? cronScript(config.cmd) : config.cmd
   const args = cron ? ['candy', ...cron.args] : []
+  let fileEnv: Record<string, string> = {}
+  if (config.envFile) {
+    const problem = await envFileProblem(configUser(config), config.envFile)
+    if (problem) throw new Error(`Refusing to start: ${problem}`)
+    // Sandboxed launches let systemd read the file; the others get it merged here
+    if (!(SANDBOX_AVAILABLE && config.sandbox !== false && name)) {
+      fileEnv = parseEnvFile(await Bun.file(config.envFile).text())
+    }
+  }
   if (!RUNNING_AS_ROOT) {
-    return { cmd: ['bash', '-ic', script, ...args], cwd: config.cwd, env: { ...process.env, ...extra }, unit: null }
+    return { cmd: ['bash', '-ic', script, ...args], cwd: config.cwd, env: { ...process.env, ...fileEnv, ...extra }, unit: null }
   }
   const account = await lookupUser(configUser(config))
   if (!account || account.uid === 0) {
@@ -2431,6 +2498,7 @@ const launchSpec = async (config: ServerConfig, cron?: { job: string; args: stri
         cwd: config.cwd,
         codeDir: findCodeDir(config.cwd, account.home, dir => existsSync(`${dir}/.git`)),
         extraRw: config.rw,
+        envFile: config.envFile,
         env,
         script,
         args: cron?.args,
@@ -2449,9 +2517,54 @@ const launchSpec = async (config: ServerConfig, cron?: { job: string; args: stri
       'bash', '-c', LAUNCH_WRAPPER, 'candy', config.cwd, script, ...args,
     ],
     cwd: '/',
-    env,
+    env: { ...env, ...fileEnv, ...extra },
     unit: null,
   }
+}
+
+// Why <path> can't be <user>'s env file, or null if it can. Checked when it is
+// set and again at every launch. Two ways in:
+// - the user can read the file themselves, or
+// - root placed it under /etc/candy/env/<user>/ (root-owned, not writable by
+//   anyone else). Sandboxed, systemd reads it, so the user never can.
+// Anything else would let a user read root's files through candy.
+const envFileProblem = async (user: string, path: string): Promise<string | null> => {
+  if (!validateEnvFilePath(path)) return "The env file must be an absolute path."
+  const info = await stat(path).catch(() => null)
+  if (!info?.isFile()) return `${path} is not a file.`
+  if (info.size > 256 * 1024) return "The env file is larger than 256 KB."
+  if (!RUNNING_AS_ROOT) return null  // read as ourselves; no more rights than the user has
+  const dir = userEnvDir(user)
+  if (path.startsWith(dir + "/") && !path.slice(dir.length + 1).includes("/")) {
+    const dirInfo = await stat(dir).catch(() => null)
+    const rootOnly = (s: typeof info | null) => !!s && s.uid === 0 && (s.mode & 0o022) === 0
+    return rootOnly(info) && rootOnly(dirInfo) ? null : `${dir} and the file must be owned by root and not writable by others.`
+  }
+  const account = await lookupUser(user)
+  if (!account || account.uid === 0) return `'${user}' is not a usable account.`
+  const readable = await $`setpriv --reuid=${account.uid} --regid=${account.gid} --init-groups -- test -r ${path}`.quiet().nothrow()
+  return readable.exitCode === 0 ? null : `${user} can't read ${path}. Make it readable to them, or have root put it in ${dir}/.`
+}
+
+// Port detection fallback for servers that don't print their port
+const SOCKET_SCAN_AFTER = 1500
+const SOCKET_SCAN_EVERY = 500
+const SOCKET_SCAN_GIVE_UP = 60 * 1000
+
+const serverPids = async (managed: ManagedProcess): Promise<number[]> => {
+  if (managed.unit) {
+    const procs = await Bun.file(`/sys/fs/cgroup/${SANDBOX_SLICE}/${managed.unit}/cgroup.procs`).text().catch(() => "")
+    return parsePidList(procs)
+  }
+  const root = managed.pid ?? managed.proc?.pid ?? null
+  return root ? await getProcessTreePids(root) : []
+}
+
+const listeningPortsOfServer = async (managed: ManagedProcess): Promise<number[]> => {
+  const pids = await serverPids(managed)
+  if (pids.length === 0) return []
+  const ss = await $`ss -Htlnp`.quiet().nothrow().text()
+  return listeningPortsOf(ss, pids)
 }
 
 // Stop a sandboxed launch: systemd ends every process in the unit (TERM, then
@@ -2498,6 +2611,7 @@ const spawnProcess = async (name: string, actor: Actor = 'System', configId?: st
 
   const startPortDetection = () => {
     const startTime = Date.now()
+    let lastSocketScan = 0
     const checkInterval = setInterval(async () => {
       const elapsed = Date.now() - startTime
 
@@ -2523,8 +2637,21 @@ const spawnProcess = async (name: string, actor: Actor = 'System', configId?: st
         return
       }
 
-      // Timeout: keep starting state (user can manually select a port if multiple detected)
-      if (elapsed >= PORT_DETECTION_TIMEOUT) {
+      // Printed nothing we recognise: look at what it actually listens on.
+      // Only once a socket is open, so a request is never forwarded too early.
+      if (managed.detectedPorts.length === 0 && elapsed >= SOCKET_SCAN_AFTER && Date.now() - lastSocketScan >= SOCKET_SCAN_EVERY) {
+        lastSocketScan = Date.now()
+        const found = await listeningPortsOfServer(managed)
+        if (found.length > 0 && managed.status === 'starting' && managed.detectedPorts.length === 0) {
+          managed.detectedPorts.push(...found)
+          auditLog('PORT_FROM_SOCKET', `${name}: listening on ${found.join(', ')}`, 'System')
+        }
+        return
+      }
+
+      // Timeout: keep starting state (user can manually select a port if multiple detected).
+      // A silent server gets longer, since only its socket can tell us the port.
+      if (elapsed >= (managed.detectedPorts.length === 0 ? SOCKET_SCAN_GIVE_UP : PORT_DETECTION_TIMEOUT)) {
         clearInterval(checkInterval)
       }
     }, 100)
@@ -3107,6 +3234,138 @@ const savePersistentRoutes = async () => {
   await Bun.write(ROUTES_FILE, JSON.stringify(data, null, 2))
 }
 
+// Entry ports: a plain-HTTP port on loopback that always reaches <name>
+// through candy, whatever Host the caller sends. For local front ends that
+// can't set the Host (tailscale serve, another proxy): pointing them at the
+// server's own port would bypass candy, so a stopped server would never start.
+const entryPorts = new Map<string, number>()
+
+const loadEntryPorts = async () => {
+  try {
+    const file = Bun.file(ENTRIES_FILE)
+    if (!await file.exists()) return
+    for (const [name, port] of Object.entries(await file.json() as Record<string, unknown>)) {
+      if (isSafeName(name) && isValidLanHttpsPort(port)) entryPorts.set(name.toLowerCase(), port)
+    }
+  } catch {}
+}
+
+const saveEntryPorts = async () => {
+  await $`mkdir -p ${CANDY_CONFIG_DIR}`.quiet().nothrow()
+  await Bun.write(ENTRIES_FILE, JSON.stringify(Object.fromEntries([...entryPorts].sort(([a], [b]) => a.localeCompare(b))), null, 2))
+}
+
+const entryPortProblem = (name: string, port: number): string | null => {
+  if (!isValidLanHttpsPort(port)) return "Port must be between 1024 and 65535."
+  if (LAN_HTTPS_RESERVED_PORTS.has(port)) return `Port ${port} is reserved for the candy daemon.`
+  for (const [other, otherPort] of entryPorts) {
+    if (other !== name && otherPort === port) return `Port ${port} is already the entry port of ${other}.`
+  }
+  if (entryPorts.get(name) === port) return null  // already ours, Caddy holds it
+  if (!canBindPort("127.0.0.1", port)) return `Port ${port} is already in use on this machine.`
+  return null
+}
+
+// tailscale serve, run by candy: https://<host>.ts.net:<port> on the tailnet,
+// forwarded to the name's entry port so the request goes through candy (and
+// can start a stopped server). The Tailscale IP's ports belong to tailscaled,
+// so this is how a name gets a trusted-certificate URL on the tailnet.
+const tsServes = new Map<string, number>()   // name -> HTTPS port on the ts.net hostname
+const ENTRY_PORT_START = 18200
+
+const loadTsServes = async () => {
+  try {
+    const file = Bun.file(SERVES_FILE)
+    if (!await file.exists()) return
+    for (const [name, port] of Object.entries(await file.json() as Record<string, unknown>)) {
+      if (isSafeName(name) && isValidLanHttpsPort(port)) tsServes.set(name.toLowerCase(), port)
+    }
+  } catch {}
+}
+
+const saveTsServes = async () => {
+  await $`mkdir -p ${CANDY_CONFIG_DIR}`.quiet().nothrow()
+  await Bun.write(SERVES_FILE, JSON.stringify(Object.fromEntries([...tsServes].sort(([a], [b]) => a.localeCompare(b))), null, 2))
+}
+
+// The name's entry port, giving it one if it has none
+const ensureEntryPort = async (name: string): Promise<number | null> => {
+  const existing = entryPorts.get(name)
+  if (existing) return existing
+  for (let port = ENTRY_PORT_START; port < ENTRY_PORT_START + 200; port++) {
+    if (!entryPortProblem(name, port)) {
+      entryPorts.set(name, port)
+      await saveEntryPorts()
+      return port
+    }
+  }
+  return null
+}
+
+const tsServeUrl = (name: string): string | null => {
+  const port = tsServes.get(name.toLowerCase())
+  const host = getTailnetHostname()
+  return port && host ? `https://${host}:${port}` : null
+}
+
+const tsServeTargets = async (): Promise<Map<number, string>> =>
+  tailscaleServeTargets(await $`tailscale serve status --json`.quiet().nothrow().text())
+
+// Why tailscale's HTTPS <port> can't be given to <name>, or null if it can
+const tsServeProblem = async (name: string, port: number): Promise<string | null> => {
+  if (!isValidLanHttpsPort(port)) return "Port must be between 1024 and 65535."
+  if (!getTailnetHostname()) return "Tailscale isn't reporting this machine's hostname."
+  for (const [other, otherPort] of tsServes) {
+    if (other !== name && otherPort === port) return `Port ${port} is already served for ${other}.`
+  }
+  const current = (await tsServeTargets()).get(port)
+  const entry = entryPorts.get(name)
+  const ownPort = processes.get(name)?.port ?? (typeof routes.get(name)?.target === "number" ? routes.get(name)!.target : null)
+  const ours = current === undefined
+    || (entry && current === `http://127.0.0.1:${entry}`)
+    || (ownPort && (current === `http://127.0.0.1:${ownPort}` || current === `http://localhost:${ownPort}`))
+  return ours ? null : `Tailscale already serves port ${port} for something else (${current}). Turn that off first: tailscale serve --https=${port} off`
+}
+
+// Make tailscaled match: every served name forwards to its entry port
+const syncTsServe = async () => {
+  if (tsServes.size === 0) return
+  const targets = await tsServeTargets()
+  for (const [name, port] of tsServes) {
+    if (!routes.has(name) && !serverConfigs.has(name)) continue
+    const entry = await ensureEntryPort(name)
+    if (!entry) continue
+    const want = `http://127.0.0.1:${entry}`
+    if (targets.get(port) === want) continue
+    const result = await $`tailscale serve --bg --https=${port} ${want}`.quiet().nothrow()
+    if (result.exitCode !== 0) auditLog('TS_SERVE_FAIL', `${name} :${port}: ${result.stderr.toString().trim().slice(0, 200)}`, 'System')
+  }
+}
+
+const setTsServe = async (name: string, port: number | null, actor: Actor): Promise<{ ok: true; url: string | null } | { ok: false; error: string }> => {
+  const key = name.toLowerCase()
+  const previous = tsServes.get(key)
+  if (port === null) {
+    if (previous) {
+      tsServes.delete(key)
+      await saveTsServes()
+      await $`tailscale serve --https=${previous} off`.quiet().nothrow()
+      auditLog('TS_SERVE_OFF', `${key} :${previous}`, actor)
+    }
+    return { ok: true, url: null }
+  }
+  const problem = await tsServeProblem(key, port)
+  if (problem) return { ok: false, error: problem }
+  if (!await ensureEntryPort(key)) return { ok: false, error: "No free entry port found." }
+  if (previous && previous !== port) await $`tailscale serve --https=${previous} off`.quiet().nothrow()
+  tsServes.set(key, port)
+  await saveTsServes()
+  await syncCaddy()      // the entry port's site
+  await syncTsServe()
+  auditLog('TS_SERVE', `${key} -> ${tsServeUrl(key)}`, actor)
+  return { ok: true, url: tsServeUrl(key) }
+}
+
 // Where a route's site block proxies to. An API-mode server that isn't running
 // goes to the daemon instead of its (dead) port, so a request can start it;
 // this matters for persistent routes, which outlive the process.
@@ -3242,6 +3501,26 @@ const syncCaddy = async () => {
 
 `
     }
+  }
+
+  // Entry ports (loopback only). A running server is proxied directly; anything
+  // else goes to the daemon under the name's own host, so it can start it.
+  for (const [name, port] of [...entryPorts].sort(([a], [b]) => a.localeCompare(b))) {
+    const route = routes.get(name)
+    if (!route && !serverConfigs.has(name)) continue
+    const target = route ? routeProxyTarget(name, route) : 'localhost:9999'
+    const proxy = target === 'localhost:9999'
+      ? `reverse_proxy localhost:9999 {
+    header_up Host ${name}.localhost
+  }`
+      : `reverse_proxy ${target}`
+    content += `http://:${port} {
+  bind 127.0.0.1
+  ${proxy}
+  log
+}
+
+`
   }
 
   // Tunnel domains (trycloudflare.com) - route to local ports
@@ -4295,6 +4574,9 @@ const controlServer = Bun.serve({
       }
 
       const isRestricted = body.target && (body.target.startsWith("http://") || body.target.startsWith("https://"))
+      if (!isRestricted && (!Number.isInteger(body.port) || body.port! < 1 || body.port! > 65535)) {
+        return Response.json({ error: "A route needs a port (1-65535) or an http(s) address.", details: String(body.port ?? body.target ?? "") }, { status: 400, headers: corsHeaders })
+      }
       const routeTarget = isRestricted ? body.target! : body.port!
 
       if (!isRestricted) {
@@ -4395,7 +4677,7 @@ const controlServer = Bun.serve({
     }
 
     if (req.method === "GET" && url.pathname === "/routes") {
-      const routeList: Record<string, { target: number | string, isRestricted: boolean, persistent: boolean, lan: boolean, lanHttps: string | null }> = {}
+      const routeList: Record<string, { target: number | string, isRestricted: boolean, persistent: boolean, lan: boolean, lanHttps: string | null, tsServe: string | null }> = {}
       for (const [name, route] of routes) {
         if (isReserved(name)) continue  // hide reserved
         routeList[name] = {
@@ -4404,6 +4686,7 @@ const controlServer = Bun.serve({
           persistent: route.persistent,
           lan: isLanPublished(name),
           lanHttps: isLanPublished(name) ? lanHttpsUrl(name) : null,
+          tsServe: tsServeUrl(name),
         }
       }
       return Response.json(routeList, { headers: corsHeaders })
@@ -4425,6 +4708,62 @@ const controlServer = Bun.serve({
           ...[...lanDomainHttps].map(name => [name, { mode: "domain", port: null, url: lanHttpsUrl(name) }]),
         ]),
       }, { headers: corsHeaders })
+    }
+
+    if (url.pathname === "/routes/serve") {
+      if (req.method === "GET") {
+        return Response.json({
+          tailnetHost: getTailnetHostname(),
+          serves: Object.fromEntries([...tsServes].map(([name, port]) => [name, { port, url: tsServeUrl(name), entryPort: entryPorts.get(name) ?? null }])),
+        }, { headers: corsHeaders })
+      }
+      if (req.method === "POST") {
+        const body = await req.json().catch(() => ({})) as { name?: string; port?: number | null }
+        const name = typeof body.name === "string" ? body.name.trim().toLowerCase() : ""
+        if (!name || isReserved(name)) return Response.json({ error: "A valid name is required." }, { status: 400, headers: corsHeaders })
+        if (!routes.has(name) && !serverConfigs.has(name)) return Response.json({ error: msg.notFound, details: name }, { status: 404, headers: corsHeaders })
+        const cfg = getConfigsForName(name)[0]
+        if (cfg && !mayChangeConfig(requestUser(req), cfg)) {
+          return Response.json({ error: `${name} runs as ${configUser(cfg)}. Only they can change it.` }, { status: 403, headers: corsHeaders })
+        }
+        const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+        const result = await setTsServe(name, body.port === null || body.port === undefined ? null : Number(body.port), actor)
+        if (!result.ok) return Response.json({ error: result.error }, { status: 409, headers: corsHeaders })
+        return Response.json({ name, port: tsServes.get(name) ?? null, url: result.url, entryPort: entryPorts.get(name) ?? null }, { headers: corsHeaders })
+      }
+    }
+
+    if (url.pathname === "/routes/entry") {
+      if (req.method === "GET") {
+        return Response.json({ entries: Object.fromEntries(entryPorts) }, { headers: corsHeaders })
+      }
+      if (req.method === "POST") {
+        const body = await req.json().catch(() => ({})) as { name?: string; port?: number | null }
+        const name = typeof body.name === "string" ? body.name.trim().toLowerCase() : ""
+        if (!name || isReserved(name)) return Response.json({ error: "A valid name is required." }, { status: 400, headers: corsHeaders })
+        if (!routes.has(name) && !serverConfigs.has(name)) return Response.json({ error: msg.notFound, details: name }, { status: 404, headers: corsHeaders })
+        const cfg = getConfigsForName(name)[0]
+        if (cfg && !mayChangeConfig(requestUser(req), cfg)) {
+          return Response.json({ error: `${name} runs as ${configUser(cfg)}. Only they can change it.` }, { status: 403, headers: corsHeaders })
+        }
+        const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+        if (body.port === null || body.port === undefined) {
+          if (entryPorts.delete(name)) {
+            await saveEntryPorts()
+            await syncCaddy()
+            auditLog('ENTRY_PORT_OFF', name, actor)
+          }
+          return Response.json({ name, port: null }, { headers: corsHeaders })
+        }
+        const port = Number(body.port)
+        const problem = entryPortProblem(name, port)
+        if (problem) return Response.json({ error: problem }, { status: 409, headers: corsHeaders })
+        entryPorts.set(name, port)
+        await saveEntryPorts()
+        await syncCaddy()
+        auditLog('ENTRY_PORT', `${name} <- 127.0.0.1:${port}`, actor)
+        return Response.json({ name, port, url: `http://127.0.0.1:${port}` }, { headers: corsHeaders })
+      }
     }
 
     if (url.pathname === "/lan/adguard") {
@@ -4524,6 +4863,12 @@ const controlServer = Bun.serve({
             lanDomainHttps.delete(key)
             lanHttps.set(key, port)
             httpsChange = "on"
+          }
+          // Same URL on the tailnet: tailscale serve on the same port, through candy.
+          // Best effort; a port tailscale already serves for something else is left alone.
+          if (tsServes.get(key) !== port) {
+            const served = await setTsServe(key, port, (req.headers.get('X-Candy-Actor') as Actor) || 'Portal')
+            if (!served.ok) auditLog('TS_SERVE_SKIP', `${key} :${port}: ${served.error}`, 'System')
           }
         }
       } else if (body.https === false && lanHttpsMode(key)) {
@@ -4967,6 +5312,20 @@ const controlServer = Bun.serve({
       const name = url.pathname.split("/")[3]
       const { port } = await req.json() as { port: number }
       const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        return Response.json({ success: false, error: "The port must be a number from 1 to 65535." }, { status: 400, headers: corsHeaders })
+      }
+      // This is the port the server itself listens on, not an outside address.
+      // If we can see what it listens on, refuse anything else: candy would
+      // forward to a port nothing answers on.
+      const running = processes.get(name)
+      const actual = running ? await listeningPortsOfServer(running).catch(() => []) : []
+      if (actual.length > 0 && !actual.includes(port)) {
+        return Response.json({
+          success: false,
+          error: `${name} listens on ${actual.join(", ")}, not ${port}. This sets the server's own port; for an outside address use a route, a bound domain or 'candy route serve'.`,
+        }, { status: 409, headers: corsHeaders })
+      }
       const success = await setProcessPort(name, port, actor)
       return Response.json({ success }, { headers: corsHeaders })
     }
@@ -5040,18 +5399,20 @@ const controlServer = Bun.serve({
           user: configUser(first),
           api: !!first.api,
           sandbox: SANDBOX_AVAILABLE && first.sandbox !== false,
+          envFile: first.envFile ?? null,
           rw: first.rw ?? [],
           count: entries.length,
           variants: entries.map(c => ({ id: c.id, cwd: c.cwd, cmd: c.cmd, user: configUser(c), api: !!c.api })),
           lan: isLanPublished(name),
           lanHttps: isLanPublished(name) ? lanHttpsUrl(name) : null,
+          tsServe: tsServeUrl(name),
         }
       }
       return Response.json({ success: true, configs }, { headers: corsHeaders })
     }
 
     if (req.method === "POST" && url.pathname === "/config") {
-      const { name, cwd, cmd, api, user: runAs } = await req.json() as { name: string, cwd: string, cmd: string, api?: boolean, user?: string }
+      const { name, cwd, cmd, api, user: runAs, envFile } = await req.json() as { name: string, cwd: string, cmd: string, api?: boolean, user?: string, envFile?: string | null }
       if (isReserved(name)) {
         return Response.json({ error: isSafeName(name) ? "That name is reserved." : "Names can only use letters, numbers, dashes, underscores and dots.", details: name }, { status: isSafeName(name) ? 403 : 400, headers: corsHeaders })
       }
@@ -5068,8 +5429,21 @@ const controlServer = Bun.serve({
         }
         user = runAs
       }
+      // A name belongs to one user: its state folder and env files are theirs
+      const otherOwner = RUNNING_AS_ROOT ? getConfigsForName(name).find(cfg => configUser(cfg) !== user) : undefined
+      if (otherOwner) {
+        return Response.json({ error: `'${name}' already belongs to ${configUser(otherOwner)}. Pick another name.` }, { status: 403, headers: corsHeaders })
+      }
+      if (envFile !== undefined && envFile !== null) {
+        const problem = await envFileProblem(user, String(envFile))
+        if (problem) return Response.json({ error: problem }, { status: 400, headers: corsHeaders })
+      }
       await addServerConfig(name, cwd, cmd, actor, user, typeof api === "boolean" ? api : undefined)
       const added = getConfigsForName(name).slice(-1)[0]
+      if (envFile && added) {
+        added.envFile = String(envFile)
+        await saveServerConfigs()
+      }
       return Response.json({ success: true, config: added }, { headers: corsHeaders })
     }
 
@@ -5093,6 +5467,36 @@ const controlServer = Bun.serve({
       const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
       auditLog('CONFIG_API', `${name}: API mode ${api ? 'on' : 'off'}`, actor)
       return Response.json({ success: true, api, message: `API mode ${api ? 'on' : 'off'} for ${name}` }, { headers: corsHeaders })
+    }
+
+    if (req.method === "POST" && url.pathname === "/config/env") {
+      const body = await req.json().catch(() => ({})) as { name?: string, configId?: string, envFile?: string | null }
+      const { name, configId } = body
+      if (!name) return Response.json({ error: "name is required" }, { status: 400, headers: corsHeaders })
+      const targets = getConfigsForName(name).filter(cfg => !configId || cfg.id === configId)
+      if (targets.length === 0) {
+        return Response.json({ error: `No site named '${name}' with a start command.` }, { status: 404, headers: corsHeaders })
+      }
+      const requester = requestUser(req)
+      const denied = targets.find(cfg => !mayChangeConfig(requester, cfg))
+      if (denied) {
+        return Response.json({ error: `${name} runs as ${configUser(denied)}. Only they can change it.` }, { status: 403, headers: corsHeaders })
+      }
+      const path = body.envFile ? String(body.envFile) : null
+      if (path) {
+        for (const cfg of targets) {
+          const problem = await envFileProblem(configUser(cfg), path)
+          if (problem) return Response.json({ error: problem }, { status: 400, headers: corsHeaders })
+        }
+      }
+      for (const cfg of targets) {
+        if (path) cfg.envFile = path
+        else delete cfg.envFile
+      }
+      await saveServerConfigs()
+      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      auditLog('CONFIG_ENV', `${name}: ${path ?? 'no env file'}`, actor)
+      return Response.json({ success: true, envFile: path, message: `Takes effect the next time ${name} starts.` }, { headers: corsHeaders })
     }
 
     if (req.method === "POST" && url.pathname === "/config/sandbox") {
@@ -5857,6 +6261,8 @@ await loadAdvertisements()
 
 // LAN publishing: opted-in names and this machine's LAN address
 await loadLanPublished()
+await loadEntryPorts()
+await loadTsServes()
 await loadAdguardConfig()
 lanIp = await discoverLanIp()
 
@@ -5871,6 +6277,7 @@ tailscaleIp = await discoverTailscaleIp()
 if (tailscaleIp) {
   // Re-sync Caddy with .candy blocks now that we have the IP
   await syncCaddy()
+  syncTsServe().catch(() => {})
 }
 
 // Write PID file

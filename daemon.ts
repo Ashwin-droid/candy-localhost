@@ -6,12 +6,15 @@
  */
 
 import { $, spawn, type Subprocess } from "bun"
-import { watch, type FSWatcher } from "node:fs"
+import { existsSync, readFileSync, watch, type FSWatcher } from "node:fs"
 import { appendFile, chmod, chown, mkdir, unlink, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
 import { userInfo } from "node:os"
 import { SHARED_GROUP, SHARED_SECRET_FILE } from "./secret.ts"
 import { AccessLogTail, activityFromAccessLog, countEstablished, idleVerdict, IDLE_TIMEOUT_MS, localNameCandidates, readMemoryState, type MemoryState } from "./activity.ts"
+import { findCodeDir, stateDirPath, systemdRunCommand, unitName, unitOfCgroup, validateRwPath, MAX_RW_PATHS } from "./sandbox.ts"
+import { OAuthServer, type OAuthPersisted } from "./mcp-oauth.ts"
+import { handleRequest as handleMcpRequest } from "./mcp.ts"
 import { applyAdguardUpstreams, upstreamRule, type AdguardConfig } from "./adguard.ts"
 import { CRON_JOB_ENV, LAUNCH_WRAPPER, cronMatches, cronScript, DEFAULT_CRON_TIMEOUT_S, MAX_CRON_JOBS, parseCron, validateCronJob, type CronJob } from "./cron.ts"
 import { JtiBloom, readCredential, signJwt, stripCandyCredentials, verifyJwt, JWT_AUDIENCE, MAX_TOKEN_LIFETIME_S, type AuthResult, ipAllowed, isLoopback, parseCidr, TAILSCALE_RANGES } from "./server-auth.ts"
@@ -55,6 +58,8 @@ interface ServerConfig {
   user?: string  // account the server runs as (root mode); defaults to the owner
   api?: boolean  // API mode: hold the first request while starting and forward it, no loading page
   cron?: CronJob[]  // scheduled runs of cmd with extra args, set by the app via the SDK
+  sandbox?: false   // opt out of the systemd sandbox (root mode); on unless false
+  rw?: string[]     // extra writable paths inside the sandbox
 }
 
 type ProcessStatus = 'starting' | 'running' | 'dead' | 'errored'
@@ -73,6 +78,7 @@ interface ManagedProcess {
   detectedPorts: number[]  // All ports detected during startup
   terminal: any | null  // Bun.Terminal reference for PTY input
   idling: boolean  // the app said it is only waiting for events (SDK setIdling)
+  unit: string | null  // transient systemd unit, when launched sandboxed
 }
 
 // ============================================================================
@@ -98,6 +104,7 @@ const DNS_CONFIG_FILE = `${CANDY_CONFIG_DIR}/candy-dns.json`
 const ADVERTISEMENTS_FILE = `${CANDY_CONFIG_DIR}/advertisements.json`
 const LAN_FILE = `${CANDY_CONFIG_DIR}/lan.json`
 const ADGUARD_FILE = `${CANDY_CONFIG_DIR}/adguard.json`
+const MCP_OAUTH_FILE = `${CANDY_CONFIG_DIR}/mcp-oauth.json`
 const CLOUDFLARED_SYSTEM_CONFIG = `/etc/cloudflared/config.yml`
 const CLOUDFLARED_USER_CONFIG = `${process.env.HOME}/.cloudflared/config.yml`
 const CANDY_RUNTIME_MAGIC_ENV = "X_CANDY_RUNTIME_MAGIC_STRING"
@@ -186,6 +193,8 @@ interface DomainConfig {
   zone: { id: string; domain: string }
   cfApiToken: string
   bindings: Record<string, DomainBinding>
+  // Public MCP endpoint (https://<subdomain>.<zone>/mcp). Off unless enabled.
+  mcp?: { enabled: boolean; subdomain: string }
 }
 
 // ============================================================================
@@ -775,6 +784,238 @@ const resolveBindingFromHost = (host: string): { serverName: string; binding: Do
   return null
 }
 
+// ---------------------------------------------------------------------------
+// Public MCP endpoint (optional, off by default)
+//
+// https://<subdomain>.<zone>/mcp serves candy's MCP tools over HTTP to clients
+// holding an OAuth 2.1 access token. Nobody logs in with a password: the
+// authorization request is parked and the browser is sent to
+// https://portal.candy/oauth/consent, which only exists on the tailnet. Being
+// able to open that page and press Allow is the proof of identity, so
+// Tailscale's ACLs decide who may connect a client. Approving hands back a
+// one-time grant that the public host exchanges for the authorization code.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_MCP_SUBDOMAIN = "candy"
+let mcpOAuth: OAuthServer | null = null
+let mcpOAuthFor: string | null = null  // fqdn the instance was built for
+
+const publicMcpFqdn = (): string | null => {
+  const cfg = domainConfig?.mcp
+  const zone = domainConfig?.zone?.domain
+  return cfg?.enabled && zone ? `${cfg.subdomain}.${zone}`.toLowerCase() : null
+}
+
+const loadMcpOAuthState = async (): Promise<OAuthPersisted | null> => {
+  try {
+    const file = Bun.file(MCP_OAUTH_FILE)
+    return await file.exists() ? await file.json() as OAuthPersisted : null
+  } catch {
+    return null
+  }
+}
+
+const saveMcpOAuthState = async (state: OAuthPersisted) => {
+  await $`mkdir -p ${CANDY_CONFIG_DIR}`.quiet().nothrow()
+  await Bun.write(MCP_OAUTH_FILE, JSON.stringify(state, null, 2))
+  await chmod(MCP_OAUTH_FILE, 0o600).catch(() => {})
+}
+
+// The OAuth server for the current public host, or null while the feature is off
+const getMcpOAuth = async (): Promise<OAuthServer | null> => {
+  const fqdn = publicMcpFqdn()
+  if (!fqdn) return null
+  if (!mcpOAuth || mcpOAuthFor !== fqdn) {
+    mcpOAuth = new OAuthServer({
+      issuer: `https://${fqdn}`,
+      resource: `https://${fqdn}/mcp`,
+      persisted: await loadMcpOAuthState(),
+      onChange: (state) => { saveMcpOAuthState(state).catch(() => {}) },
+    })
+    mcpOAuthFor = fqdn
+  }
+  return mcpOAuth
+}
+
+// Where the consent page lives: the portal, on the tailnet only
+const mcpConsentUrl = (requestId: string) => `https://portal.candy/oauth/consent?request=${encodeURIComponent(requestId)}`
+
+const MCP_PUBLIC_CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Authorization, Content-Type, Mcp-Protocol-Version, Mcp-Session-Id",
+  "Access-Control-Expose-Headers": "WWW-Authenticate",
+}
+const MCP_MAX_BODY = 1024 * 1024
+
+const mcpJson = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
+  Response.json(body, { status, headers: { ...MCP_PUBLIC_CORS, "Cache-Control": "no-store", ...headers } })
+
+const mcpErrorPage = (title: string, detail: string, status = 400) =>
+  new Response(`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${title}</title>
+<style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px 16px;box-sizing:border-box;background:#eceef2;color:#1a1d33;font:15px/1.5 system-ui,sans-serif}main{max-width:440px}h1{font-size:20px;margin:0 0 6px}p{margin:0;color:#555b75}@media (prefers-color-scheme:dark){body{background:#10121a;color:#e7e9f2}p{color:#a3a8c0}}</style>
+</head><body><main><h1>${title}</h1><p>${detail}</p></main></body></html>`, { status, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } })
+
+const escapeHtmlText = (text: string) => text.replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]!))
+
+// Everything served on the public MCP host. Nothing else of the daemon is
+// reachable through it.
+const handlePublicMcp = async (req: Request, url: URL, server: any): Promise<Response> => {
+  const oauth = await getMcpOAuth()
+  if (!oauth) return new Response("Not found", { status: 404 })
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: MCP_PUBLIC_CORS })
+
+  const { ip } = getFingerprint(req, server)
+  if (!checkRateLimit(ip, "mcp-public")) return mcpJson({ error: "slow_down", error_description: "Too many requests." }, 429)
+  const path = url.pathname.replace(/\/+$/, "") || "/"
+
+  if (req.method === "GET" && (path === "/.well-known/oauth-protected-resource" || path === "/.well-known/oauth-protected-resource/mcp")) {
+    return mcpJson(oauth.protectedResourceMetadata(), 200, { "Cache-Control": "max-age=300" })
+  }
+  if (req.method === "GET" && (path === "/.well-known/oauth-authorization-server" || path === "/.well-known/oauth-authorization-server/mcp")) {
+    return mcpJson(oauth.authorizationServerMetadata(), 200, { "Cache-Control": "max-age=300" })
+  }
+
+  if (req.method === "POST" && path === "/register") {
+    const body = await req.json().catch(() => null)
+    const result = oauth.registerClient(body)
+    if (!result.ok) return mcpJson({ error: result.error, error_description: result.error_description }, result.status)
+    auditLog('MCP_PUBLIC_CLIENT', `registered "${(result.client as any).client_name}" from ${ip}`, 'Network')
+    return mcpJson(result.client, 201)
+  }
+
+  if (req.method === "GET" && path === "/authorize") {
+    const result = oauth.startAuthorization(url.searchParams)
+    if (result.ok) return Response.redirect(mcpConsentUrl(result.requestId), 302)
+    if (result.redirect) return Response.redirect(result.redirect, 302)
+    return mcpErrorPage("This sign-in link is not valid", escapeHtmlText(result.error_description), result.status)
+  }
+
+  // Back from the consent page on the tailnet, carrying the one-time grant
+  if (req.method === "GET" && path === "/authorize/complete") {
+    const result = oauth.complete(url.searchParams.get("request") || "", url.searchParams.get("grant") || "")
+    if (result.ok) return Response.redirect(result.redirect, 302)
+    return mcpErrorPage("This approval can't be used", escapeHtmlText(result.error_description), result.status)
+  }
+
+  if (req.method === "POST" && path === "/token") {
+    const text = (await req.text().catch(() => "")).slice(0, 16 * 1024)
+    const result = oauth.token(new URLSearchParams(text))
+    if (result.status === 200) auditLog('MCP_PUBLIC_TOKEN', `issued to ${ip}`, 'Network')
+    return mcpJson(result.body, result.status, { Pragma: "no-cache" })
+  }
+
+  if (path === "/mcp") {
+    const challenge = { "WWW-Authenticate": `Bearer resource_metadata="https://${url.host}/.well-known/oauth-protected-resource"` }
+    if (req.method !== "POST") {
+      // No server-initiated stream, no sessions: POST only
+      return mcpJson({ error: "method_not_allowed" }, 405, { Allow: "POST, OPTIONS" })
+    }
+    const bearer = req.headers.get("authorization")?.match(/^Bearer\s+(\S+)$/i)?.[1]
+    const token = bearer ? oauth.verifyAccessToken(bearer) : null
+    if (!token) {
+      return mcpJson({ error: "invalid_token", error_description: "Sign in again to continue." }, 401, {
+        "WWW-Authenticate": `${challenge["WWW-Authenticate"]}${bearer ? ', error="invalid_token"' : ''}`,
+      })
+    }
+    const raw = await req.text().catch(() => "")
+    if (raw.length > MCP_MAX_BODY) return mcpJson({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Request too large" } }, 413)
+    let message: any
+    try { message = JSON.parse(raw) } catch {
+      return mcpJson({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }, 400)
+    }
+    const batch = Array.isArray(message)
+    const replies: unknown[] = []
+    for (const item of (batch ? message : [message]).slice(0, 50)) {
+      if (!item || typeof item !== "object" || typeof item.method !== "string") continue  // responses and junk get no reply
+      if (item.method === "tools/call") {
+        auditLog('MCP_PUBLIC_CALL', `${item.params?.name ?? '?'} by "${token.clientName}" (approved by ${token.approver ?? 'unknown'})`, 'AI')
+      }
+      const reply = await handleMcpRequest(item)
+      if (reply && item.id !== undefined && item.id !== null) replies.push(reply)
+    }
+    if (replies.length === 0) return new Response(null, { status: 202, headers: MCP_PUBLIC_CORS })
+    return mcpJson(batch ? replies : replies[0])
+  }
+
+  return new Response("Not found", { status: 404, headers: MCP_PUBLIC_CORS })
+}
+
+// Who is pressing Allow, according to Tailscale: "user@example.com on laptop"
+const tailnetIdentity = async (ip: string): Promise<string> => {
+  if (isLoopback(ip)) return "this machine"
+  try {
+    const out = await $`tailscale whois --json ${ip}`.quiet().nothrow().text()
+    const who = JSON.parse(out) as { Node?: { ComputedName?: string; Name?: string }; UserProfile?: { LoginName?: string } }
+    const user = who.UserProfile?.LoginName
+    const node = who.Node?.ComputedName || who.Node?.Name?.split(".")[0]
+    if (user || node) return [user, node && `on ${node}`].filter(Boolean).join(" ")
+  } catch {}
+  return ip
+}
+
+// Turn the public MCP endpoint on or off: DNS record, tunnel ingress, Caddy site.
+// Turning it off also signs every client out.
+const setPublicMcp = async (enabled: boolean, subdomain: string, actor: Actor): Promise<{ ok: true; fqdn: string | null } | { ok: false; error: string }> => {
+  if (!domainConfig?.zone?.domain || !domainConfig?.tunnel?.id) {
+    return { ok: false, error: "Set up a domain and tunnel first (candy domain config)." }
+  }
+  const zone = domainConfig.zone.domain
+  if (enabled) {
+    if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(subdomain)) return { ok: false, error: "The subdomain can only use letters, numbers and dashes." }
+    if (domainConfig.bindings?.[subdomain]) return { ok: false, error: `${subdomain}.${zone} is already bound to ${domainConfig.bindings[subdomain].serverName}. Pick another subdomain.` }
+    const previous = publicMcpFqdn()
+    const fqdn = `${subdomain}.${zone}`
+    if (previous && previous !== fqdn) await deleteDnsRecords(previous)
+    await $`cloudflared tunnel route dns ${domainConfig.tunnel.name} ${fqdn}`.quiet().nothrow()
+    domainConfig.mcp = { enabled: true, subdomain }
+    auditLog('MCP_PUBLIC_ON', fqdn, actor)
+  } else {
+    const fqdn = publicMcpFqdn()
+    if (fqdn) await deleteDnsRecords(fqdn)
+    ;(await getMcpOAuth())?.revokeAll()
+    mcpOAuth = null
+    mcpOAuthFor = null
+    await unlink(MCP_OAUTH_FILE).catch(() => {})
+    domainConfig.mcp = { enabled: false, subdomain: domainConfig.mcp?.subdomain || subdomain }
+    auditLog('MCP_PUBLIC_OFF', fqdn ?? '', actor)
+  }
+  await saveDomainConfig()
+  await syncCaddy()
+  await syncCloudflaredIngress()
+  await restartCloudflared()
+  return { ok: true, fqdn: publicMcpFqdn() }
+}
+
+const deleteDnsRecords = async (fqdn: string) => {
+  if (!domainConfig?.cfApiToken || !domainConfig.zone?.id) return
+  try {
+    const auth = { Authorization: `Bearer ${domainConfig.cfApiToken}` }
+    const base = `https://api.cloudflare.com/client/v4/zones/${domainConfig.zone.id}/dns_records`
+    const list = await fetch(`${base}?name=${fqdn}`, { headers: auth, signal: AbortSignal.timeout(10000) })
+    if (!list.ok) return
+    for (const record of ((await list.json()) as any).result || []) {
+      await fetch(`${base}/${record.id}`, { method: 'DELETE', headers: auth, signal: AbortSignal.timeout(10000) }).catch(() => {})
+    }
+  } catch (e) {
+    auditLog('DOMAIN_DNS_DELETE_FAIL', `${fqdn}: ${e}`, 'System')
+  }
+}
+
+const publicMcpStatus = async () => {
+  const oauth = await getMcpOAuth()
+  const zone = domainConfig?.zone?.domain ?? null
+  const subdomain = domainConfig?.mcp?.subdomain || DEFAULT_MCP_SUBDOMAIN
+  return {
+    available: !!(zone && domainConfig?.tunnel?.id),
+    enabled: !!oauth,
+    url: oauth ? `https://${publicMcpFqdn()}/mcp` : null,
+    wouldBe: zone ? `https://${subdomain}.${zone}/mcp` : null,
+    consent: "https://portal.candy/oauth/consent",
+    clients: oauth?.listClients() ?? [],
+  }
+}
+
 // Write ingress rules to cloudflared config files and restart the service
 const syncCloudflaredIngress = async () => {
   if (!domainConfig?.tunnel?.id) return
@@ -787,6 +1028,8 @@ const syncCloudflaredIngress = async () => {
       service: 'http://localhost:80',
     })
   }
+  const mcpFqdn = publicMcpFqdn()
+  if (mcpFqdn) ingressRules.push({ hostname: mcpFqdn, service: 'http://localhost:80' })
 
   // Build YAML content
   let yaml = `tunnel: ${domainConfig.tunnel.id}\n`
@@ -999,7 +1242,7 @@ const runCronJob = async (name: string, config: ServerConfig, job: CronJob) => {
     auditLog('CRON_SKIP', `${name}:${job.name} (previous run still going)`, 'System')
     return
   }
-  const launch = await launchSpec(config, { job: job.name, args: job.args })
+  const launch = await launchSpec(config, { job: job.name, args: job.args }, name)
   await mkdir(CRON_LOG_DIR, { recursive: true }).catch(() => {})
   const logFile = `${CRON_LOG_DIR}/${name.replace(/[^\w.-]/g, '_').replace(/^\.+/, '_')}.log`
   const write = (text: string) => appendFile(logFile, text).catch(() => {})
@@ -1013,7 +1256,10 @@ const runCronJob = async (name: string, config: ServerConfig, job: CronJob) => {
   }
   const timeoutS = job.timeoutSec ?? DEFAULT_CRON_TIMEOUT_S
   let timedOut = false
-  const timer = setTimeout(() => { timedOut = true; terminateProcessTree(proc.pid, 5000).catch(() => {}) }, timeoutS * 1000)
+  const timer = setTimeout(() => {
+    timedOut = true
+    ;(launch.unit ? stopUnit(launch.unit) : terminateProcessTree(proc.pid, 5000)).catch(() => {})
+  }, timeoutS * 1000)
   await Promise.all([pump(proc.stdout), pump(proc.stderr)]).catch(() => {})
   const code = await proc.exited
   clearTimeout(timer)
@@ -1051,6 +1297,13 @@ setTimeout(() => { cronTick(); setInterval(cronTick, 60 * 1000) }, 60 * 1000 - (
 // /run/candy/users/<user>/secret readable only by them, and servers they
 // register run as them. Nothing is ever started as root.
 const RUNNING_AS_ROOT = process.getuid?.() === 0
+// The systemd unit this daemon runs in (null when started by hand). Sandboxed
+// servers are bound to it, so they stop when the daemon does.
+const OWN_UNIT = (() => {
+  try { return unitOfCgroup(readFileSync("/proc/self/cgroup", "utf8")) } catch { return null }
+})()
+// Servers are sandboxed when the daemon is root, under systemd, with systemd-run at hand
+const SANDBOX_AVAILABLE = RUNNING_AS_ROOT && !!OWN_UNIT && !!Bun.which("systemd-run")
 const OWNER = process.env.CANDY_OWNER || (RUNNING_AS_ROOT ? "" : userInfo().username)
 if (RUNNING_AS_ROOT && !OWNER) {
   console.error("\x1b[31mRunning as root needs CANDY_OWNER=<user> (the user whose ~/.config/candy is used).\x1b[0m")
@@ -1931,6 +2184,11 @@ const loadServerConfigs = async () => {
           const cfg: ServerConfig = { id, cwd, cmd }
           if (user) cfg.user = user
           if ((item as any).api === true) cfg.api = true
+          if ((item as any).sandbox === false) cfg.sandbox = false
+          if (Array.isArray((item as any).rw)) {
+            const rw = (item as any).rw.map(validateRwPath).filter((v: string | null): v is string => !!v).slice(0, MAX_RW_PATHS)
+            if (rw.length > 0) cfg.rw = rw
+          }
           if (Array.isArray((item as any).cron)) {
             const jobs = (item as any).cron.map(validateCronJob).filter((v: any) => v.ok).map((v: any) => v.job as CronJob)
             if (jobs.length > 0) cfg.cron = jobs.slice(0, MAX_CRON_JOBS)
@@ -2137,35 +2395,69 @@ const forwardApiModeRequest = async (req: Request, url: URL, name: string, confi
 // cd as that user (so a cwd they couldn't reach on their own fails).
 // A cron run passes `cron`: its args reach the command as "$@" (positional
 // parameters), never as shell text, so they can't add commands.
-const launchSpec = async (config: ServerConfig, cron?: { job: string; args: string[] }): Promise<{ cmd: string[]; cwd: string; env: Record<string, string | undefined> }> => {
+const launchSpec = async (config: ServerConfig, cron?: { job: string; args: string[] }, name = ''): Promise<{ cmd: string[]; cwd: string; env: Record<string, string | undefined>; unit: string | null }> => {
   const extra: Record<string, string> = cron
     ? { TERM: 'dumb', [CRON_JOB_ENV]: cron.job }
     : { FORCE_COLOR: '1', TERM: 'xterm-256color', [CANDY_RUNTIME_MAGIC_ENV]: config.id }
   const script = cron ? cronScript(config.cmd) : config.cmd
   const args = cron ? ['candy', ...cron.args] : []
   if (!RUNNING_AS_ROOT) {
-    return { cmd: ['bash', '-ic', script, ...args], cwd: config.cwd, env: { ...process.env, ...extra } }
+    return { cmd: ['bash', '-ic', script, ...args], cwd: config.cwd, env: { ...process.env, ...extra }, unit: null }
   }
   const account = await lookupUser(configUser(config))
   if (!account || account.uid === 0) {
     throw new Error(`Refusing to start: '${configUser(config)}' is not a usable non-root account`)
   }
+  const env = {
+    HOME: account.home,
+    USER: account.name,
+    LOGNAME: account.name,
+    SHELL: account.shell,
+    PATH: `${account.home}/.bun/bin:${account.home}/.local/bin:/opt/bun/bin:/usr/local/bin:/usr/bin:/bin`,
+    LANG: process.env.LANG,
+    ...extra,
+  }
+
+  // Sandboxed: its own systemd unit, as the config's user. Read-only
+  // everywhere except the code folder, the state folder and a private /tmp.
+  if (SANDBOX_AVAILABLE && config.sandbox !== false && name) {
+    const unit = unitName(name, cron ? 'cron' : 'srv')
+    return {
+      cmd: systemdRunCommand({
+        name,
+        unit,
+        uid: account.uid,
+        gid: account.gid,
+        cwd: config.cwd,
+        codeDir: findCodeDir(config.cwd, account.home, dir => existsSync(`${dir}/.git`)),
+        extraRw: config.rw,
+        env,
+        script,
+        args: cron?.args,
+        mode: cron ? 'pipe' : 'pty',
+        bindsTo: OWN_UNIT,
+      }),
+      cwd: '/',
+      env: process.env,
+      unit,
+    }
+  }
+
   return {
     cmd: [
       'setpriv', `--reuid=${account.uid}`, `--regid=${account.gid}`, '--init-groups', '--',
       'bash', '-c', LAUNCH_WRAPPER, 'candy', config.cwd, script, ...args,
     ],
     cwd: '/',
-    env: {
-      HOME: account.home,
-      USER: account.name,
-      LOGNAME: account.name,
-      SHELL: account.shell,
-      PATH: `${account.home}/.bun/bin:${account.home}/.local/bin:/opt/bun/bin:/usr/local/bin:/usr/bin:/bin`,
-      LANG: process.env.LANG,
-      ...extra,
-    },
+    env,
+    unit: null,
   }
+}
+
+// Stop a sandboxed launch: systemd ends every process in the unit (TERM, then
+// KILL after TimeoutStopSec), which also ends the systemd-run client we hold.
+const stopUnit = async (unit: string) => {
+  await $`systemctl stop ${unit}`.quiet().nothrow()
 }
 
 // Spawn a dev server process using Bun.Terminal for proper PTY support
@@ -2174,7 +2466,7 @@ const spawnProcess = async (name: string, actor: Actor = 'System', configId?: st
   if (!config) {
     throw new Error(`No config found for server: ${name}`)
   }
-  const launch = await launchSpec(config)
+  const launch = await launchSpec(config, undefined, name)
 
   const logFile = getLogFile(name)
   // Add restart separator to log file (don't clear)
@@ -2194,10 +2486,11 @@ const spawnProcess = async (name: string, actor: Actor = 'System', configId?: st
     detectedPorts: [],
     terminal: null,
     idling: false,
+    unit: launch.unit,
   }
 
   processes.set(name, managed)
-  auditLog('PROCESS_START', `${name}:${config.id} ${config.cmd}`, actor)
+  auditLog('PROCESS_START', `${name}:${config.id} ${config.cmd}${launch.unit ? ` [${launch.unit}]` : ''}`, actor)
 
   // Collected output for port detection
   let collectedOutput = ''
@@ -2300,6 +2593,16 @@ const spawnProcess = async (name: string, actor: Actor = 'System', configId?: st
     }
     auditLog('STATE', `${name}: ${newStatus} (exit ${exitCode})`, 'System')
 
+    // API mode: point Caddy back at the daemon, so the next request starts the
+    // server again and is held and forwarded (lazy respawn). Without this Caddy
+    // keeps proxying to the dead port and callers get 502s. Other servers keep
+    // their route, and the crash page, as before.
+    if (managed.config.api && processes.get(name) === managed) {
+      if (!routes.get(name)?.persistent) routes.delete(name)
+      syncCaddy().catch(() => {})
+      auditLog('API_RESPAWN_ARMED', `${name}: next request restarts it`, 'System')
+    }
+
     // Don't remove from processes map - keep for crash recovery UI
   })
 
@@ -2377,7 +2680,8 @@ const stopProcess = async (name: string, actor: Actor = 'System'): Promise<boole
   if (shouldTerminate) {
     const pid = managed.pid ?? managed.proc?.pid ?? null
     if (pid && await isPidRunning(pid)) {
-      await terminateProcessTree(pid, 5000)
+      if (managed.unit) await stopUnit(managed.unit)
+      await terminateProcessTree(pid, managed.unit ? 2000 : 5000)
       terminated = !(await isPidRunning(pid))
     } else if (managed.proc) {
       try { managed.proc.kill() } catch {}
@@ -2626,7 +2930,13 @@ const resolveManagedRuntime = async (configId: string, pid?: number): Promise<Ma
   if (!rootPid) return null
   if (!await isPidRunning(pid)) return null
 
-  return await isPidInProcessTree(rootPid, pid) ? managed : null
+  if (await isPidInProcessTree(rootPid, pid)) return managed
+  // Sandboxed servers run in their own unit, not under our process tree
+  if (managed.unit) {
+    const cgroup = await Bun.file(`/proc/${pid}/cgroup`).text().catch(() => "")
+    if (unitOfCgroup(cgroup) === managed.unit) return managed
+  }
+  return null
 }
 
 const claimPidOwnedRoute = (name: string, pid: number) => {
@@ -2713,6 +3023,7 @@ const stopCaddy = async (force = false) => {
       if (managed.status !== 'running' && managed.status !== 'starting') continue
       const pid = managed.pid ?? managed.proc?.pid ?? null
       if (pid && await isPidRunning(pid)) {
+        if (managed.unit) await stopUnit(managed.unit)
         await terminateProcessTree(pid, 2000)
       } else if (managed.proc) {
         try { managed.proc.kill() } catch {}
@@ -2796,6 +3107,15 @@ const savePersistentRoutes = async () => {
   await Bun.write(ROUTES_FILE, JSON.stringify(data, null, 2))
 }
 
+// Where a route's site block proxies to. An API-mode server that isn't running
+// goes to the daemon instead of its (dead) port, so a request can start it;
+// this matters for persistent routes, which outlive the process.
+const routeProxyTarget = (name: string, route: { target: number | string }): string => {
+  const status = processes.get(name)?.status
+  if (apiModeConfig(name) && status !== 'running') return 'localhost:9999'
+  return typeof route.target === "number" ? `localhost:${route.target}` : route.target
+}
+
 // Write Caddyfile and reload
 const syncCaddy = async () => {
   let content = `# candy-localhost routes
@@ -2822,7 +3142,7 @@ const syncCaddy = async () => {
   const candyPortalAliasHosts: string[] = []
 
   for (const [name, route] of routes) {
-    const proxyTarget = typeof route.target === "number" ? `localhost:${route.target}` : route.target
+    const proxyTarget = routeProxyTarget(name, route)
     content += `${name}.localhost {
   tls internal
   reverse_proxy ${proxyTarget}
@@ -2838,7 +3158,7 @@ const syncCaddy = async () => {
   for (const [name, route] of routes) {
     const bindAddrs = candyBindAddrs(name)
     if (bindAddrs.length === 0) continue
-    const proxyTarget = typeof route.target === "number" ? `localhost:${route.target}` : route.target
+    const proxyTarget = routeProxyTarget(name, route)
     const candyHosts = [`${name}.candy`]
     const alias = buildHostAlias(name, localHostLabel)
     if (alias && !localExactNames.has(alias)) {
@@ -3023,6 +3343,17 @@ ${body}
 
 `
     }
+  }
+
+  // Public MCP endpoint: the daemon answers it directly (OAuth + MCP over HTTP)
+  const mcpPublicFqdn = publicMcpFqdn()
+  if (mcpPublicFqdn) {
+    content += `http://${mcpPublicFqdn} {
+  reverse_proxy localhost:9999
+  log
+}
+
+`
   }
 
   // Kill subdomains:
@@ -3228,9 +3559,69 @@ const controlServer = Bun.serve({
     const origin = req.headers.get("origin")
     const corsHeaders = getCorsHeaders(origin)
 
+    // The control port listens on every interface (tailnet peers post their
+    // registry here), but everything else arrives through Caddy on loopback.
+    // Refuse direct connections from anywhere else, so a LAN device can't
+    // open the portal or the consent page by talking to :9999 itself.
+    const peerIp = normalizeIp(controlServer.requestIP(req)?.address || "")
+    if (!isLoopback(peerIp) && !(url.pathname.startsWith("/candy/") && ipAllowed(peerIp, []))) {
+      return new Response("Forbidden", { status: 403 })
+    }
+
+    // Public MCP host: its own small surface (OAuth + /mcp), nothing else
+    const requestHostname = (req.headers.get("host") || "").replace(/:\d+$/, "").toLowerCase()
+    if (requestHostname && requestHostname === publicMcpFqdn()) {
+      return await handlePublicMcp(req, url, controlServer)
+    }
+
     // Handle CORS preflight
     if (req.method === "OPTIONS") {
       return new Response(null, { headers: corsHeaders })
+    }
+
+    // Consent for a public MCP client. Only on the portal's own host, which is
+    // served on the tailnet (portal.candy) and this machine (portal.localhost).
+    if (url.pathname.startsWith("/oauth/")) {
+      const onPortal = resolveLocalCandyDomain(req.headers.get("host") || "") === "portal" && !resolveBindingFromHost(req.headers.get("host") || "")
+      const oauth = onPortal ? await getMcpOAuth() : null
+      if (!oauth) return new Response("Not found", { status: 404 })
+
+      if (req.method === "GET" && url.pathname === "/oauth/consent") {
+        const rawHtml = await Bun.file(import.meta.dir + "/public/authorize.html").text()
+        // A portal session token, so only this page load can answer
+        const html = rawHtml.replace('<script>', `<script>window.CANDY_TOKEN="${createSession()}";</script><script>`)
+        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } })
+      }
+      if (req.method === "GET" && url.pathname === "/oauth/request") {
+        const pending = oauth.getRequest(url.searchParams.get("request") || "")
+        if (!pending || pending.decided) return Response.json({ error: "This request has expired or was already answered." }, { status: 404 })
+        const { ip } = getFingerprint(req, controlServer)
+        let redirectHost = pending.redirectUri
+        try { redirectHost = new URL(pending.redirectUri).host || pending.redirectUri } catch {}
+        return Response.json({
+          clientName: pending.clientName,
+          redirectHost,
+          expiresAt: pending.expiresAt,
+          endpoint: `https://${publicMcpFqdn()}/mcp`,
+          you: await tailnetIdentity(ip),
+        }, { headers: { "Cache-Control": "no-store" } })
+      }
+      if (req.method === "POST" && url.pathname === "/oauth/decision") {
+        const token = req.headers.get("X-Candy-Token")
+        if (!token || !consumeToken(token)) return unauthorizedResponse(corsHeaders)
+        const body = await req.json().catch(() => ({})) as { request?: string; allow?: boolean }
+        const { ip } = getFingerprint(req, controlServer)
+        const approver = await tailnetIdentity(ip)
+        const pending = oauth.getRequest(body.request || "")
+        const result = oauth.decide(body.request || "", body.allow === true, approver)
+        if (!result.ok) return Response.json({ error: result.error_description }, { status: result.status })
+        auditLog(body.allow === true ? 'MCP_PUBLIC_ALLOW' : 'MCP_PUBLIC_DENY', `"${pending?.clientName ?? '?'}" by ${approver}`, 'Portal')
+        const back = new URL(`https://${publicMcpFqdn()}/authorize/complete`)
+        back.searchParams.set("request", body.request || "")
+        back.searchParams.set("grant", result.grant)
+        return Response.json({ redirect: back.toString() })
+      }
+      return new Response("Not found", { status: 404 })
     }
 
     // === Bound Domain Auth Endpoints (forward_auth from Caddy) ===
@@ -4648,6 +5039,8 @@ const controlServer = Bun.serve({
           cmd: first.cmd,
           user: configUser(first),
           api: !!first.api,
+          sandbox: SANDBOX_AVAILABLE && first.sandbox !== false,
+          rw: first.rw ?? [],
           count: entries.length,
           variants: entries.map(c => ({ id: c.id, cwd: c.cwd, cmd: c.cmd, user: configUser(c), api: !!c.api })),
           lan: isLanPublished(name),
@@ -4702,6 +5095,52 @@ const controlServer = Bun.serve({
       return Response.json({ success: true, api, message: `API mode ${api ? 'on' : 'off'} for ${name}` }, { headers: corsHeaders })
     }
 
+    if (req.method === "POST" && url.pathname === "/config/sandbox") {
+      const body = await req.json().catch(() => ({})) as { name?: string, configId?: string, sandbox?: boolean, rw?: string[], addRw?: string[], removeRw?: string[] }
+      const { name, configId } = body
+      if (!name) return Response.json({ error: "name is required" }, { status: 400, headers: corsHeaders })
+      const targets = getConfigsForName(name).filter(cfg => !configId || cfg.id === configId)
+      if (targets.length === 0) {
+        return Response.json({ error: `No site named '${name}' with a start command.` }, { status: 404, headers: corsHeaders })
+      }
+      const requester = requestUser(req)
+      const denied = targets.find(cfg => !mayChangeConfig(requester, cfg))
+      if (denied) {
+        return Response.json({ error: `${name} runs as ${configUser(denied)}. Only they can change it.` }, { status: 403, headers: corsHeaders })
+      }
+      const lists = [body.rw, body.addRw, body.removeRw].filter(Array.isArray) as unknown[][]
+      const bad = lists.flat().find(p => !validateRwPath(p))
+      if (bad !== undefined) {
+        return Response.json({ error: "Writable paths must be absolute folders, not a whole system tree.", details: String(bad) }, { status: 400, headers: corsHeaders })
+      }
+      const clean = (list?: string[]) => (list ?? []).map(p => validateRwPath(p)!)
+      for (const cfg of targets) {
+        if (body.sandbox === false) cfg.sandbox = false
+        else if (body.sandbox === true) delete cfg.sandbox
+        if (lists.length > 0) {
+          let rw = body.rw ? clean(body.rw) : [...(cfg.rw ?? [])]
+          rw = [...new Set([...rw, ...clean(body.addRw)])].filter(p => !clean(body.removeRw).includes(p))
+          if (rw.length > MAX_RW_PATHS) {
+            return Response.json({ error: `At most ${MAX_RW_PATHS} extra writable paths.` }, { status: 400, headers: corsHeaders })
+          }
+          if (rw.length > 0) cfg.rw = rw
+          else delete cfg.rw
+        }
+      }
+      await saveServerConfigs()
+      const first = targets[0]
+      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      auditLog('CONFIG_SANDBOX', `${name}: sandbox ${first.sandbox === false ? 'off' : 'on'}${first.rw?.length ? `, writable: ${first.rw.join(' ')}` : ''}`, actor)
+      return Response.json({
+        success: true,
+        sandbox: first.sandbox !== false,
+        active: SANDBOX_AVAILABLE && first.sandbox !== false,
+        rw: first.rw ?? [],
+        stateDir: stateDirPath(name),
+        message: `Takes effect the next time ${name} starts.`,
+      }, { headers: corsHeaders })
+    }
+
     if (req.method === "DELETE" && url.pathname.startsWith("/config/")) {
       const parts = url.pathname.split("/")
       const name = parts[2]
@@ -4745,6 +5184,35 @@ const controlServer = Bun.serve({
       }, { headers: corsHeaders })
     }
 
+    if (url.pathname === "/domains/mcp" || url.pathname === "/domains/mcp/revoke") {
+      if (requestUser(req) !== OWNER) {
+        return Response.json({ error: "Only the owner can change the public MCP endpoint." }, { status: 403, headers: corsHeaders })
+      }
+      if (req.method === "GET" && url.pathname === "/domains/mcp") {
+        return Response.json(await publicMcpStatus(), { headers: corsHeaders })
+      }
+      if (req.method === "POST" && url.pathname === "/domains/mcp") {
+        const body = await req.json().catch(() => ({})) as { enabled?: boolean; subdomain?: string }
+        if (typeof body.enabled !== "boolean") {
+          return Response.json({ error: "enabled (true or false) is required" }, { status: 400, headers: corsHeaders })
+        }
+        const subdomain = (body.subdomain || domainConfig?.mcp?.subdomain || DEFAULT_MCP_SUBDOMAIN).trim().toLowerCase()
+        const result = await setPublicMcp(body.enabled, subdomain, isMCP ? 'AI' : 'Portal')
+        if (!result.ok) return Response.json({ error: result.error }, { status: 400, headers: corsHeaders })
+        return Response.json(await publicMcpStatus(), { headers: corsHeaders })
+      }
+      if (req.method === "POST" && url.pathname === "/domains/mcp/revoke") {
+        const oauth = await getMcpOAuth()
+        if (!oauth) return Response.json({ error: "The public MCP endpoint is off." }, { status: 409, headers: corsHeaders })
+        const body = await req.json().catch(() => ({})) as { clientId?: string }
+        if (body.clientId) {
+          if (!oauth.revokeClient(body.clientId)) return Response.json({ error: "No such client." }, { status: 404, headers: corsHeaders })
+        } else oauth.revokeAll()
+        auditLog('MCP_PUBLIC_REVOKE', body.clientId || 'all clients', isMCP ? 'AI' : 'Portal')
+        return Response.json(await publicMcpStatus(), { headers: corsHeaders })
+      }
+    }
+
     if (req.method === "POST" && url.pathname === "/domains/bind") {
       if (!domainConfig?.zone?.domain || !domainConfig?.tunnel?.id) {
         return Response.json({ error: "Domain config not set up. Run POST /domains/config first." }, { status: 400, headers: corsHeaders })
@@ -4756,6 +5224,9 @@ const controlServer = Bun.serve({
       }
 
       const fqdn = `${subdomain}.${domainConfig.zone.domain}`
+      if (fqdn.toLowerCase() === publicMcpFqdn()) {
+        return Response.json({ error: `${fqdn} is the public MCP endpoint. Pick another subdomain, or turn that off first.` }, { status: 409, headers: corsHeaders })
+      }
 
       // Bind any site: one candy starts, or a plain route to a port or URL
       if (!serverConfigs.has(serverName) && !routes.has(serverName)) {

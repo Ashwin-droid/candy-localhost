@@ -190,6 +190,29 @@ Scans process stdout/stderr for ports in range `1024–65535`:
 
 One port detected → auto-bind. Multiple → manual selection required via UI or API.
 
+### Sandbox
+
+When the daemon runs as the root systemd service, every server and cron run is started with `systemd-run` as its own unit (`candy-<name>-<id>.service` in `candy.slice`), as the user the site runs as. The unit is bound to the candy service, so it stops when the daemon stops or dies.
+
+Inside, the whole filesystem is read-only except three places:
+
+| Writable | What it is |
+|---|---|
+| The code folder | The repository the start folder is in (nearest `.git`), or the start folder itself. Never the whole home |
+| The state folder | `/var/lib/candy/<name>`, owned by the site's user, given to the app as `CANDY_STATE_DIR`. Survives restarts |
+| `/tmp` | Private to the server and emptied when it stops |
+
+Caches that would land in the read-only home are pointed at the state folder (`XDG_CACHE_HOME`, bun and npm caches). The unit also gets private devices, no capabilities, no privilege gain (`sudo` doesn't work inside), and protected kernel settings, clock and hostname. It keeps the user's UID and the host network: other local processes can still reach its port.
+
+```bash
+candy sandbox myapp --rw /srv/myapp-data   # one more writable folder
+candy sandbox myapp --no-rw /srv/myapp-data
+candy sandbox myapp off                    # run it unsandboxed (setpriv, as before)
+candy sandbox myapp on
+```
+
+Changes apply at the next start. An app that fails with "Read-only file system" is writing outside those places: move that data to `CANDY_STATE_DIR`, or add the folder with `--rw`. Started by hand or as a normal user, the daemon doesn't sandbox anything.
+
 ### Variant Configs
 
 A server name can have multiple configurations (different cwd/cmd). Only one variant runs at a time — starting a different variant stops the active one.
@@ -266,21 +289,43 @@ candy version | -v             Show version
 
 ## MCP Tools
 
-| Tool | Arguments | Description |
-|------|-----------|-------------|
-| `candy_servers` | — | List all servers with status, port, PID |
-| `candy_start` | `name` | Start a server |
-| `candy_stop` | `name` | Stop a server |
-| `candy_restart` | `name` | Restart a server |
-| `candy_logs` | `name`, `mode?`, `lines?`, `pattern?` | Read logs (tail/head/search) |
-| `candy_register` | `name`, `cwd`, `cmd` | Register a server config |
-| `candy_deregister` | `name` | Remove a server config |
-| `candy_portal_open` | `name`, `port?` | Open a tunnel |
-| `candy_portal_close` | `name` | Close a tunnel |
-| `candy_portals` | — | List active tunnels |
-| `candy_input` | `name`, `input?`, `key?` | Send PTY input to server |
-| `candy_domain` | `action`, `subdomain?`, `serverName?`, `force?`, `zone?`, `tunnel?` | Domain management |
-| `candy_route` | `action`, `name?`, `port?`, `persistent?` | Route management (`add`, `remove`, `list`, `lan_publish`, `lan_unpublish`); `https?` with `lan_publish` |
+| Tool | What it does |
+|------|--------------|
+| `candy_servers` | List servers with status, port, PID, run-as user, API mode, variants (`configId`) and detected ports |
+| `candy_start` / `candy_restart` / `candy_stop` | Control a server. `candy_start` takes `configId` when a name has several variants |
+| `candy_logs` / `candy_input` | Read a server's output (tail, head, search) and type into its terminal |
+| `candy_register` / `candy_deregister` | Add or remove a config. Register accepts `api` (API mode) and `user` (run-as account, owner only); deregister accepts `configId` to remove one variant |
+| `candy_config` | `list` configs and variants, `users` (run-as accounts), `set_api` (API mode on/off), `set_port` (pick one of several detected ports), `set_sandbox` (sandbox on/off, extra writable folders) |
+| `candy_route` | `list`, `add` (port or URL `target`, `persistent`), `remove`, `rename`; LAN: `lan_list`, `lan_publish` (`https`: `true`, `false`, `"domain"` or `"tailscale"`, optional `port`), `lan_unpublish`; AdGuard Home: `adguard_status`, `adguard_unlink` |
+| `candy_domain` | Bound domains: `list`, `bind`, `unbind`, `config`; protection: `auth_status`, `auth_generate_jwt`, `auth_token` (`ttl`, `once`), `auth_clear` (`which`: password, jwt or all), `allowlist` (`add`, `remove`, `ips`, `enabled`); the public MCP endpoint: `public_mcp_status`, `public_mcp_on`, `public_mcp_off`, `public_mcp_revoke` |
+| `candy_portal_open` / `candy_portal_close` / `candy_portals` | Cloudflare quick tunnels |
+| `candy_status` | `status` (daemon and Caddy health), `stats` (requests per domain), `traffic` (recent requests for a name), `activity` (daemon activity log) |
+| `candy_network` | The `.candy` registry across Tailscale machines |
+
+Actions that change who can reach a site (`lan_publish`, `auth_clear`, turning an allowlist off or removing entries, `unbind`, opening a portal) tell the model to confirm with you first.
+
+Secrets never pass through the model: set a site password with `candy auth set <subdomain>` and link AdGuard Home with `candy lan adguard`. The one exception is `auth_generate_jwt`, which returns the newly generated secret once.
+
+### Public MCP endpoint (optional)
+
+Off by default. When on, the same tools are served over HTTP at `https://candy.<your zone>/mcp` (MCP Streamable HTTP), so an AI client anywhere can use them, for example as a custom connector.
+
+```bash
+candy domain mcp on                 # or --subdomain <name>; also a switch in the portal
+candy domain mcp                    # status and connected clients
+candy domain mcp revoke [clientId]  # sign one client or everyone out
+candy domain mcp off                # removes the address and signs everyone out
+```
+
+There is no password. Sign-in is OAuth 2.1, and Tailscale decides who gets in:
+
+1. The client finds the OAuth endpoints from `/.well-known/oauth-protected-resource`, registers itself, and opens `https://candy.<zone>/authorize` in your browser.
+2. candy parks the request and sends the browser to `https://portal.candy/oauth/consent`. That page exists only on your tailnet, so only a device your Tailscale ACLs let reach this machine can open it. It shows the client's name, where it will send you back, and who Tailscale says you are.
+3. Pressing **Allow** sends the browser back to `https://candy.<zone>/authorize/complete` with a one-time grant, which candy exchanges for the authorization code the client redeems.
+
+Details: PKCE (S256) is required; access tokens last 1 hour and live in memory only; refresh tokens rotate, last 30 days and are stored hashed in `~/.config/candy/mcp-oauth.json`; reusing an old refresh token signs that client out. The public host serves nothing but the OAuth endpoints and `/mcp`. Calls run as the owner and are recorded in the audit log (`MCP_PUBLIC_*`) with the client's name and who approved it.
+
+A connected client can do what the portal can, including typing into server terminals, which means running commands on this machine. Approve only clients you trust.
 
 ### How MCP Integration Works
 
@@ -603,6 +648,7 @@ Runs as the installing user with `CAP_NET_BIND_SERVICE` for port 53 — not root
 | `~/.config/candy/servers.json` | Server configurations (name → variants) |
 | `~/.config/candy/routes.json` | Persistent routes |
 | `~/.config/candy/lan.json` | Names published to the LAN, and their HTTPS mode (ts.net port or `"domain"`) |
+| `~/.config/candy/mcp-oauth.json` | Public MCP endpoint: registered clients and hashed refresh tokens (mode 600) |
 | `~/.config/candy/adguard.json` | AdGuard Home login and the upstream lines candy manages (mode 600) |
 | `~/.config/candy/domains.json` | Domain binding config (zone, tunnel, bindings) |
 | `~/.config/candy/candy-grudge.lock` | Bound-domain auth grudge state |
@@ -613,6 +659,7 @@ Runs as the installing user with `CAP_NET_BIND_SERVICE` for port 53 — not root
 | `~/.config/caddy/caddy.log` | Caddy process stdout/stderr |
 | `~/.config/caddy/candy.pid` | Daemon PID |
 | `/run/candy/users/<user>/secret` | Per-user bootstrap secret (root mode) |
+| `/var/lib/candy/<name>/` | A sandboxed server's state folder (`CANDY_STATE_DIR`) |
 | `/var/log/candy/<name>.log` | Process logs when run as root (cleared on daemon start) |
 | `/tmp/candy-logs/<name>.log` | Process logs when run as a normal user |
 | `/tmp/candy-logs/_audit.log` | Operation audit log (`/var/log/candy` as root) |

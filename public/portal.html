@@ -1059,6 +1059,25 @@
       }
     }
 
+    async function toggleSandbox(name, sandbox) {
+      if (!sandbox && !confirm(`Run ${name} without the sandbox? It will be able to write anywhere its user can.`)) return;
+      try {
+        const res = await apiCall('/config/sandbox', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, sandbox }),
+        });
+        const data = await res.json();
+        if (data.error) toast(data.error, 'error');
+        else {
+          toast(`${name}: sandbox ${sandbox ? 'on' : 'off'} from its next start`, 'success');
+          refreshAll();
+        }
+      } catch (e) {
+        toast('Could not change the sandbox', 'error');
+      }
+    }
+
     async function restartProcess(name) {
       try {
         toast(`Restarting ${name}...`, 'info');
@@ -1273,8 +1292,9 @@
 
         const bindings = Object.values(data.bindings || {});
         setCount('count-domains', bindings.length || '');
+        const mcpHtml = await publicMcpItem();
         if (bindings.length === 0) {
-          list.innerHTML = `<div class="empty">No public domains yet. Bind one to serve a site at <code>name.${escapeHtml(domainZone?.domain || 'your domain')}</code>.</div>`;
+          list.innerHTML = `<div class="empty">No public domains yet. Bind one to serve a site at <code>name.${escapeHtml(domainZone?.domain || 'your domain')}</code>.</div>` + mcpHtml;
           return;
         }
         list.innerHTML = bindings.map(b => {
@@ -1313,7 +1333,7 @@
               <div class="settings">${rows.join('')}
               </div>
             </div>`;
-        }).join('');
+        }).join('') + mcpHtml;
       } catch {
         list.innerHTML = '<div class="empty">Couldn’t load domains.</div>';
       }
@@ -1494,6 +1514,61 @@
         }
       } catch (e) {
         toast('Failed to set password', 'error');
+      }
+    }
+
+    // candy's own MCP server on a public address (off unless turned on here)
+    async function publicMcpItem() {
+      let st;
+      try { st = await (await apiCall('/domains/mcp')).json(); } catch { return ''; }
+      if (!st || st.error || !st.available) return '';
+      const signedIn = (st.clients || []).filter(c => c.activeGrants > 0);
+      const names = signedIn.map(c => c.clientName).join(', ');
+      const btn = (label, onclick) => `<button onclick="${onclick}">${label}</button>`;
+      const row = (label, value, on, actions, title = '') => `
+                <div class="setting">
+                  <span class="setting-label">${label}</span>
+                  <span class="setting-value ${on ? 'on' : ''}" ${title ? `title="${escapeHtml(title)}"` : ''}>${escapeHtml(value)}</span>
+                  <span class="setting-actions">${actions.join('')}</span>
+                </div>`;
+      const address = (st.url || st.wouldBe || '').replace(/^https:\/\//, '');
+      const rows = [row('Status', st.enabled ? 'On' : 'Off', st.enabled, [btn(st.enabled ? 'Turn off' : 'Turn on', `setPublicMcp(${!st.enabled})`)])];
+      if (st.enabled) rows.push(row('Clients', signedIn.length ? `${signedIn.length} signed in` : 'None', signedIn.length > 0,
+        signedIn.length ? [btn('Sign out all', 'revokePublicMcp()')] : [], names));
+      return `
+            <div class="rail-item domain-item">
+              <div class="domain-head"><span class="fqdn">${escapeHtml(address)}</span></div>
+              <div class="sub-line"><span>candy for AI clients, from anywhere. Each client is approved from your tailnet.</span></div>
+              <div class="settings">${rows.join('')}
+              </div>
+            </div>`;
+    }
+
+    async function setPublicMcp(enabled) {
+      if (!enabled && !confirm('Turn off the public MCP address? Every connected client is signed out.')) return;
+      try {
+        const res = await apiCall('/domains/mcp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled }),
+        });
+        const data = await res.json();
+        if (data.error) toast(data.error, 'error');
+        else { toast(enabled ? `MCP is public at ${data.url}` : 'Public MCP address is off', 'success'); refreshAll(); }
+      } catch (e) {
+        toast('Could not change the public MCP address', 'error');
+      }
+    }
+
+    async function revokePublicMcp() {
+      if (!confirm('Sign out every MCP client? They will need to be approved again.')) return;
+      try {
+        const res = await apiCall('/domains/mcp/revoke', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const data = await res.json();
+        if (data.error) toast(data.error, 'error');
+        else { toast('Every MCP client was signed out', 'success'); refreshAll(); }
+      } catch (e) {
+        toast('Could not sign clients out', 'error');
       }
     }
 
@@ -1734,6 +1809,7 @@
       const chips = [];
       if (route?.persistent) chips.push('<span class="chip on" title="Kept across daemon restarts">Pinned</span>');
       if (s.config?.api) chips.push('<span class="chip on" title="Requests wait while it starts and are passed straight through. No loading page.">API mode</span>');
+      if (state.status?.multiUser && s.config && s.config.sandbox === false) chips.push('<span class="chip" title="Runs without the sandbox: it can write anywhere its user can">No sandbox</span>');
       const runsAs = s.config?.user;
       if (state.status?.multiUser && runsAs && runsAs !== state.status.owner) chips.push(`<span class="chip" title="Started as this user">Runs as ${escapeHtml(runsAs)}</span>`);
       if (lan) chips.push(`<span class="chip on" title="${safe}.candy is reachable from the local network">On LAN</span>`);
@@ -1763,6 +1839,7 @@
       if (route || s.config) toggles.push(menuItem(lan ? 'Remove from LAN' : 'Publish to LAN…', `toggleLan('${js}', ${!lan})`));
       if (lan) toggles.push(menuItem(lanHttps ? 'Turn off LAN HTTPS' : 'Serve LAN over HTTPS', `toggleLanHttps('${js}', ${!lanHttps})`));
       if (s.config) toggles.push(menuItem(s.config.api ? 'Turn off API mode' : 'API mode', `toggleApiMode('${js}', ${!s.config.api})`));
+      if (s.config && state.status?.multiUser) toggles.push(menuItem(s.config.sandbox === false ? 'Turn on sandbox' : 'Run without sandbox', `toggleSandbox('${js}', ${s.config.sandbox === false})`));
       const danger = [];
       if (route) danger.push(menuItem('Delete route', `deleteRoute('${js}')`, true));
       if (s.config) variants.forEach(v => danger.push(menuItem(variants.length > 1 ? `Delete command ${v.id}` : 'Delete start command', `deleteConfig('${js}', '${escapeJsSingle(v.id)}')`, true)));

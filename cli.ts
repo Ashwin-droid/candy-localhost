@@ -791,6 +791,46 @@ async function cmdDomain(args: string[]) {
         console.log(`  ${c.green}${b.fqdn}${c.reset} -> ${c.cyan}${b.serverName}${c.reset}`)
       }
     }
+  } else if (sub === 'mcp') {
+    // candy domain mcp [status] | on [--subdomain <name>] | off | revoke [clientId]
+    const action = args[1] || 'status'
+    const fail = (res: any) => {
+      if (!res) { console.error(`${c.red}Daemon not running${c.reset}`); process.exit(1) }
+      if (res.error) { console.error(`${c.red}${res.error}${c.reset}`); process.exit(1) }
+    }
+    const show = (res: any) => {
+      if (!res.available) {
+        console.log(`${c.dim}Needs a domain and tunnel first: candy domain config --zone <domain> --tunnel <name>${c.reset}`)
+        return
+      }
+      if (!res.enabled) {
+        console.log(`${c.dim}Public MCP endpoint is off. 'candy domain mcp on' would serve ${res.wouldBe}${c.reset}`)
+        return
+      }
+      console.log(`${c.green}Public MCP endpoint is on${c.reset}  ${c.cyan}${res.url}${c.reset}`)
+      console.log(`${c.dim}  Clients are approved on the tailnet at ${res.consent}${c.reset}`)
+      if (res.clients.length === 0) console.log(`${c.dim}  No clients yet${c.reset}`)
+      for (const cl of res.clients) {
+        const used = cl.lastUsedAt ? `last used ${new Date(cl.lastUsedAt).toLocaleString()}` : 'never used'
+        console.log(`  ${cl.activeGrants > 0 ? c.green : c.dim}${cl.clientName}${c.reset} ${c.dim}${cl.clientId}  ${cl.activeGrants > 0 ? 'signed in' : 'not signed in'}, ${used}${c.reset}`)
+      }
+    }
+    if (action === 'status') {
+      const res = await apiGet('/domains/mcp'); fail(res); show(res)
+    } else if (action === 'on' || action === 'off') {
+      const body: Record<string, unknown> = { enabled: action === 'on' }
+      const flag = args.indexOf('--subdomain')
+      if (flag >= 0 && args[flag + 1]) body.subdomain = args[flag + 1]
+      const res = await apiPost('/domains/mcp', body); fail(res)
+      if (action === 'off') console.log(`${c.red}- Public MCP endpoint is off${c.reset} ${c.dim}(every client was signed out)${c.reset}`)
+      else show(res)
+    } else if (action === 'revoke') {
+      const res = await apiPost('/domains/mcp/revoke', args[2] ? { clientId: args[2] } : {}); fail(res)
+      console.log(`${c.red}- ${args[2] ? 'Client removed' : 'Every client was signed out'}${c.reset}`)
+    } else {
+      console.error(`${c.red}Usage: candy domain mcp [status|on [--subdomain <name>]|off|revoke [clientId]]${c.reset}`)
+      process.exit(1)
+    }
   } else if (sub === 'allow' || sub === 'allowlist') {
     // candy domain allow <sub> [ip|cidr ...] | --off | --on | --rm <ip ...>
     const subdomain = args[1]
@@ -930,6 +970,7 @@ function printHelp() {
   console.log(`  ${c.cyan}candy dev${c.reset} <cmd> --name foo   Register and run with custom route name`)
   console.log(`  ${c.cyan}candy dev${c.reset} <cmd> --api        API mode: hold the first request while starting, then forward it`)
   console.log(`  ${c.cyan}candy api${c.reset} <name> [on|off]     Turn API mode on or off for a site`)
+  console.log(`  ${c.cyan}candy sandbox${c.reset} <name> [on|off] [--rw <path>]  Sandbox a site (on by default as a root service); --rw adds a writable folder`)
   console.log(`  ${c.cyan}candy stop${c.reset} [name]            Stop server (current folder or by name)`)
   console.log(`  ${c.cyan}candy status${c.reset}                 Show all running servers`)
   console.log(`  ${c.cyan}candy logs${c.reset} [name]            Tail logs (current folder or by name)`)
@@ -946,6 +987,7 @@ function printHelp() {
   console.log(`      ${c.dim}set <domain> --jwt [secret]  JWT secret for API-mode sites (generated if omitted)${c.reset}`)
   console.log(`      ${c.dim}token <domain> [--ttl s] [--once]  mint a JWT to test with${c.reset}`)
   console.log(`  ${c.cyan}candy domain allow${c.reset} <sub> [ip|cidr...] [--rm ip...] [--on|--off]  Allowlist mode (Tailscale always allowed)`)
+  console.log(`  ${c.cyan}candy domain mcp${c.reset} [on|off|status|revoke]  Public MCP endpoint, approved over Tailscale (off by default)`)
   console.log(`  ${c.cyan}candy mcp${c.reset}                    Start MCP server (stdio) for AI integration`)
   console.log(`  ${c.cyan}candy daemon${c.reset}                 Run the daemon (use systemd for production)`)
   console.log()
@@ -1025,6 +1067,37 @@ switch (command) {
     console.log(state === 'off'
       ? `${name}: API mode off. Browsers get the loading page again.`
       : `${name}: API mode on. The first request waits for the server and is forwarded to it.`)
+    break
+  }
+  case 'sandbox': {
+    // candy sandbox <name> [on|off] [--rw <path>]... [--no-rw <path>]...
+    const name = args[1]
+    const rest = args.slice(2)
+    const body: Record<string, unknown> = { name }
+    const addRw: string[] = [], removeRw: string[] = []
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === 'on') body.sandbox = true
+      else if (rest[i] === 'off') body.sandbox = false
+      else if (rest[i] === '--rw' && rest[i + 1]) addRw.push(rest[++i])
+      else if (rest[i] === '--no-rw' && rest[i + 1]) removeRw.push(rest[++i])
+      else { body.name = undefined; break }
+    }
+    if (!name || !body.name) {
+      console.error(`${c.red}Usage: candy sandbox <name> [on|off] [--rw <path>] [--no-rw <path>]${c.reset}`)
+      process.exit(1)
+    }
+    if (addRw.length) body.addRw = addRw
+    if (removeRw.length) body.removeRw = removeRw
+    const res = await apiPost('/config/sandbox', body)
+    if (!res || res.error) {
+      console.error(`${c.red}${res?.error || 'Daemon not running'}${res?.details ? ` (${res.details})` : ''}${c.reset}`)
+      process.exit(1)
+    }
+    console.log(`${name}: sandbox ${res.sandbox ? `${c.green}on${c.reset}` : `${c.red}off${c.reset}`}${res.sandbox && !res.active ? ` ${c.dim}(not in effect: the daemon isn't running as a root systemd service)${c.reset}` : ''}`)
+    if (res.sandbox) {
+      console.log(`${c.dim}  Writable: its code folder, ${res.stateDir} (CANDY_STATE_DIR), a private /tmp${res.rw.length ? `, ${res.rw.join(', ')}` : ''}${c.reset}`)
+      console.log(`${c.dim}  Everything else is read-only. ${res.message}${c.reset}`)
+    }
     break
   }
   case 'domain':

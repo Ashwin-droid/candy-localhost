@@ -1,8 +1,10 @@
 /**
  * candy-localhost MCP Server
  *
- * Simple server management tools: list, start, stop, logs
- * Designed for autonomous agent use - no explicit user request needed.
+ * Tools that mirror what the candy CLI and web portal can do: servers and
+ * their configs, routes, LAN publishing, portals, bound domains and their
+ * protection, plus read-only status. Runs over stdio when executed directly;
+ * the daemon can also import handleRequest.
  */
 import { exchangeSecret, readSecrets, secretHint } from "./secret.ts"
 
@@ -11,16 +13,16 @@ import { exchangeSecret, readSecrets, secretHint } from "./secret.ts"
 // Types
 // ============================================================================
 
-interface MCPRequest {
+export interface MCPRequest {
   jsonrpc: "2.0"
-  id: number | string
+  id?: number | string | null
   method: string
   params?: any
 }
 
-interface MCPResponse {
+export interface MCPResponse {
   jsonrpc: "2.0"
-  id: number | string
+  id: number | string | null
   result?: any
   error?: { code: number; message: string; data?: any }
 }
@@ -31,11 +33,15 @@ interface MCPResponse {
 
 const DAEMON_URL = "http://localhost:9999"
 
+const SERVER_VERSION = "0.5.0"  // keep in step with package.json
+const PROTOCOL_VERSIONS = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]
+const DEFAULT_PROTOCOL_VERSION = "2025-06-18"
+
 // ============================================================================
 // Tool Definitions
 // ============================================================================
 
-const TOOLS = [
+export const TOOLS = [
   {
     name: "candy_servers",
     description: `List all configured local dev servers managed by candy-localhost.
@@ -46,7 +52,8 @@ USE THIS TOOL AUTONOMOUSLY when:
 - You need to check if a server is running before suggesting to start it
 - User is debugging a web app and you need to know its port/status
 
-Returns each server's: name, status (running/stopped), port, PID, working directory, and start command.
+Returns each server's: name, status (running/stopped), port, PID, working directory, start command, run-as user, API mode, and LAN publishing.
+When a name has several configs (variants), they are listed with their configId; when a server printed several ports, detectedPorts lists them (pick one with candy_config set_port).
 Servers are accessible at <name>.localhost when running.
 
 This is a READ-ONLY operation - safe to call anytime without asking.`,
@@ -78,6 +85,8 @@ Once started, the server will be accessible at <name>.localhost.
 
 	If the server is already running, this call is idempotent and will not spawn a duplicate process.
 
+	If the name has several configs (variants), pass configId (see candy_servers). Without it the daemon answers with the list of variants to choose from. Starting a different variant than the one running stops the running one first.
+
 	This STARTS A PROCESS - prefer to confirm with user if they haven't explicitly asked.`,
     inputSchema: {
       type: "object",
@@ -85,6 +94,10 @@ Once started, the server will be accessible at <name>.localhost.
         name: {
           type: "string",
           description: "Server name (e.g. 'inkspired', 'myapp')"
+        },
+        configId: {
+          type: "string",
+          description: "Which variant to start, when the name has several configs"
         }
       },
       required: ["name"]
@@ -222,6 +235,11 @@ USE THIS TOOL AUTONOMOUSLY when:
 
 Creates a server config that can be started on-demand by visiting <name>.localhost.
 The server won't start until first accessed.
+Registering a name again with a different cwd/cmd adds a variant (see candy_servers for configIds).
+
+Options:
+- api: API mode. Requests to a stopped server are held and forwarded once it is up, instead of showing the loading page. On a protected bound domain, API mode also switches browsers' login page for header (JWT) auth.
+- user: account the server runs as. Defaults to you. Only the daemon's owner can pick another account, and only one listed by candy_config users.
 
 This MODIFIES CONFIGURATION - confirm with user before registering.`,
     inputSchema: {
@@ -238,6 +256,14 @@ This MODIFIES CONFIGURATION - confirm with user before registering.`,
         cmd: {
           type: "string",
           description: "Command to start the dev server (e.g. 'npm run dev', 'bun run dev')"
+        },
+        api: {
+          type: "boolean",
+          description: "API mode: hold and forward requests while the server starts"
+        },
+        user: {
+          type: "string",
+          description: "Run-as account (owner only; see candy_config users). Defaults to the caller"
         }
       },
       required: ["name", "cwd", "cmd"]
@@ -260,6 +286,7 @@ USE THIS TOOL AUTONOMOUSLY when:
 - User no longer needs a dev server registered
 
 This removes the server config. If the server is running, it will be stopped first.
+With configId, only that variant is removed (and the server is stopped only if that variant is the one running); without it, every variant of the name is removed.
 
 This MODIFIES CONFIGURATION - confirm with user before deregistering.`,
     inputSchema: {
@@ -268,6 +295,10 @@ This MODIFIES CONFIGURATION - confirm with user before deregistering.`,
         name: {
           type: "string",
           description: "Server name to remove"
+        },
+        configId: {
+          type: "string",
+          description: "Remove only this variant (see candy_servers)"
         }
       },
       required: ["name"]
@@ -427,23 +458,76 @@ USE THIS TOOL when:
 - User wants to bind/unbind a subdomain
 
 Actions:
-- list: Show all bound domains and config status
+- list: Show all bound domains, their protection (password / JWT secret / allowlist) and config status
 - bind: Bind a subdomain to a server config (creates DNS + ingress)
 - unbind: Remove a subdomain binding (deletes DNS + ingress)
 - config: Set up zone/tunnel configuration (one-time setup)
+- auth_status: Per domain: is it protected, by password and/or JWT secret, API mode, active login sessions (read-only)
+- auth_generate_jwt: Give a domain a new random JWT secret (returned once in the result; show it to the user, do not store it). Replaces any existing JWT secret, so tokens signed with the old one stop working. JWTs are only checked when the server is in API mode
+- auth_token: Mint a short-lived JWT for a domain that has a JWT secret. ttl in seconds (default 600); once: true makes it single use
+- auth_clear: Remove protection. which: "password", "jwt" or "all". THIS CAN MAKE THE DOMAIN PUBLIC: with nothing left, anyone on the internet can reach it. Logs out every session
+- allowlist: Restrict a domain to listed IPs/CIDRs (plus Tailscale and this machine). add / remove edit the list, ips replaces it, enabled turns it on or off. Adding entries turns it on. enabled: false, or removing entries, WIDENS WHO CAN REACH THE DOMAIN
+- public_mcp_status: Is candy's own MCP server reachable on a public address, where, and which clients are connected (read-only)
+- public_mcp_on / public_mcp_off: Turn that public address on or off (subdomain optional, default "candy"). It is OFF by default. ON PUTS CANDY'S CONTROL TOOLS ON THE INTERNET (clients must still be approved from the tailnet); off signs every client out
+- public_mcp_revoke: Sign one client out (clientId) or all of them
 
-This MODIFIES DNS AND TUNNEL CONFIG - confirm with user before bind/unbind.`,
+For the auth_* and allowlist actions, name the domain with subdomain (the binding key, e.g. 'myapp') or domain (the full name, e.g. 'myapp.example.com').
+
+Setting a password is not offered here: the user sets it themselves with \`candy auth set <subdomain>\` so it never passes through a model.
+
+This MODIFIES DNS AND TUNNEL CONFIG - confirm with user before bind/unbind.
+auth_clear, allowlist with enabled: false / remove / ips, unbind and public_mcp_on CHANGE WHO CAN REACH THE SITE OR CANDY ITSELF - always confirm with the user first, saying exactly what will become reachable.`,
     inputSchema: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["list", "bind", "unbind", "config"],
+          enum: ["list", "bind", "unbind", "config", "auth_status", "auth_generate_jwt", "auth_token", "auth_clear", "allowlist", "public_mcp_status", "public_mcp_on", "public_mcp_off", "public_mcp_revoke"],
           description: "Action to perform"
         },
         subdomain: {
           type: "string",
-          description: "Subdomain name for bind/unbind (e.g. 'myapp')"
+          description: "Subdomain name (e.g. 'myapp')"
+        },
+        domain: {
+          type: "string",
+          description: "auth_* and allowlist: full domain name, as an alternative to subdomain"
+        },
+        clientId: {
+          type: "string",
+          description: "public_mcp_revoke: the client to sign out (omit for all)"
+        },
+        which: {
+          type: "string",
+          enum: ["password", "jwt", "all"],
+          description: "auth_clear: what to remove (required)"
+        },
+        ttl: {
+          type: "number",
+          description: "auth_token: lifetime in seconds (default 600)"
+        },
+        once: {
+          type: "boolean",
+          description: "auth_token: single-use token (adds a random jti)"
+        },
+        enabled: {
+          type: "boolean",
+          description: "allowlist: turn allowlist mode on or off"
+        },
+        ips: {
+          type: "array",
+          items: { type: "string" },
+          description: "allowlist: replace the whole list with these IPs/CIDRs"
+        },
+        add: {
+          type: "array",
+          items: { type: "string" },
+          description: "allowlist: IPs/CIDRs to add"
+        },
+        remove: {
+          type: "array",
+          items: { type: "string" },
+          description: "allowlist: IPs/CIDRs to remove"
         },
         serverName: {
           type: "string",
@@ -476,7 +560,7 @@ This MODIFIES DNS AND TUNNEL CONFIG - confirm with user before bind/unbind.`,
     annotations: {
       title: "Manage Bound Domains",
       readOnlyHint: false,
-      destructiveHint: false,
+      destructiveHint: true,
       idempotentHint: false,
       openWorldHint: true
     }
@@ -509,32 +593,170 @@ This is a READ-ONLY operation - safe to call anytime without asking.`,
   },
   {
     name: "candy_route",
-    description: "Add, remove, or list domain routes. Use persistent flag for routes that survive daemon restarts. lan_publish / lan_unpublish opt a name in or out of being reachable at <name>.candy from the local network (off by default; .candy is Tailscale-only otherwise). With lan_publish, https: true also serves the site at https://<host>.ts.net:<port> on the LAN with a publicly trusted certificate (port optional; https: false turns that off).",
+    description: `Manage plain routes (<name>.localhost -> a port or URL) and LAN publishing.
+
+Actions:
+- list: All routes with target, persistence and LAN state
+- add: Route <name>.localhost to a port (or to an http(s) URL with target). persistent: true survives daemon restarts
+- remove: Remove a route. Also stops the server of that name if it is running
+- rename: Rename a route (name -> newName). The route, its portal and its LAN opt-in move; a server config keeps its old name
+- lan_list: What is published to the LAN, this machine's LAN address and Tailscale hostname, and HTTPS URLs
+- lan_publish: Make <name>.candy reachable FROM THE LOCAL NETWORK (off by default; .candy is Tailscale-only otherwise). https adds a publicly trusted certificate: true = the bound domain if the name has one, else the ts.net hostname; "domain" = https://<bound domain>; "tailscale" = https://<host>.ts.net:<port>; false = HTTPS off. port picks the ts.net port (implies "tailscale"; auto-assigned otherwise). Omit https to leave it unchanged
+- lan_unpublish: Take <name>.candy off the local network
+- adguard_status: Is AdGuard Home linked for LAN DNS, and which rules candy manages there (owner only, read-only)
+- adguard_unlink: Remove the AdGuard Home link and the rules candy added (owner only). LAN devices stop resolving .candy names through AdGuard
+
+Linking AdGuard Home is not offered here: it needs the AdGuard password, which the user enters themselves with \`candy lan adguard\`.
+
+lan_publish EXPOSES A SITE TO EVERY DEVICE ON THE LOCAL NETWORK - confirm with the user first. Confirm remove, rename and adguard_unlink too unless the user asked for them.`,
     inputSchema: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          description: "Action: add, remove, list, lan_publish, or lan_unpublish"
+          enum: ["list", "add", "remove", "rename", "lan_list", "lan_publish", "lan_unpublish", "adguard_status", "adguard_unlink"],
+          description: "Action to perform"
         },
         name: {
           type: "string",
           description: "Route name (becomes <name>.localhost)"
         },
+        newName: {
+          type: "string",
+          description: "rename: the new route name"
+        },
         port: {
           type: "number",
-          description: "Port to route to"
+          description: "add: port to route to. lan_publish: HTTPS port on the ts.net hostname"
+        },
+        target: {
+          type: "string",
+          description: "add: http(s) URL to route to, instead of a port"
         },
         persistent: {
           type: "boolean",
           description: "If true, route survives daemon restarts"
         },
         https: {
-          type: "boolean",
-          description: "lan_publish only: serve over HTTPS on this machine's ts.net hostname (LAN). port picks the port; auto-assigned otherwise"
+          type: ["boolean", "string"],
+          enum: [true, false, "domain", "tailscale"],
+          description: "lan_publish only: HTTPS on the LAN. true (bound domain if any, else ts.net), \"domain\", \"tailscale\", or false to turn it off"
         }
       },
       required: ["action"]
+    },
+    annotations: {
+      title: "Manage Routes and LAN Publishing",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true
+    }
+  },
+  {
+    name: "candy_config",
+    description: `Inspect and change server configs beyond register/deregister.
+
+Actions:
+- list: Every config with its variants (configId, cwd, cmd, run-as user, API mode) and LAN state (read-only)
+- users: Accounts servers can run as, who the daemon's owner is, and who you are (read-only)
+- set_api: Turn API mode on or off for a name (all variants, or one with configId). In API mode requests to a stopped server are held and forwarded once it is up; on a protected bound domain browsers get header (JWT) auth instead of the login page, so confirm with the user before changing it for a site with a bound domain
+- set_port: Choose which port <name>.localhost routes to, when a running server printed several (see detectedPorts in candy_servers)
+
+Renaming a route is candy_route rename. Removing one variant is candy_deregister with configId. Starting a variant is candy_start with configId.
+
+- set_sandbox: Servers run sandboxed by default (read-only filesystem except their code folder, their state folder CANDY_STATE_DIR and a private /tmp). sandbox: false turns that off for a name; addRw / removeRw edit its list of extra writable folders (absolute paths). Takes effect at the next start. TURNING THE SANDBOX OFF OR ADDING WRITABLE PATHS WEAKENS ISOLATION - confirm with the user first
+
+set_api, set_port and set_sandbox MODIFY CONFIGURATION - confirm with user if they haven't asked.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["list", "users", "set_api", "set_port", "set_sandbox"],
+          description: "Action to perform"
+        },
+        name: {
+          type: "string",
+          description: "Server name (set_api, set_port)"
+        },
+        configId: {
+          type: "string",
+          description: "set_api: limit to one variant"
+        },
+        api: {
+          type: "boolean",
+          description: "set_api: true for on, false for off"
+        },
+        sandbox: {
+          type: "boolean",
+          description: "set_sandbox: false to run this server without the sandbox, true to turn it back on"
+        },
+        addRw: {
+          type: "array",
+          items: { type: "string" },
+          description: "set_sandbox: extra folders the server may write to (absolute paths)"
+        },
+        removeRw: {
+          type: "array",
+          items: { type: "string" },
+          description: "set_sandbox: folders to take off that list"
+        },
+        port: {
+          type: "number",
+          description: "set_port: the port to route to"
+        }
+      },
+      required: ["action"]
+    },
+    annotations: {
+      title: "Manage Server Configs",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    }
+  },
+  {
+    name: "candy_status",
+    description: `Daemon status, request statistics and recent traffic.
+
+USE THIS TOOL AUTONOMOUSLY when:
+- You need to know whether the daemon and Caddy are healthy
+- User asks how much traffic a site gets, or what requests just hit it
+- You are debugging and want the last requests to a domain, or the daemon's recent activity
+
+Actions:
+- status (default): Daemon up, Caddy running, route and portal counts, uptime, owner, multi-user mode
+- stats: Request totals per domain, with each server's tunnel domains
+- traffic: Last requests for one name (name required; count default 20, max 500)
+- activity: The daemon's recent activity log (count default 20, max 500)
+
+This is a READ-ONLY operation - safe to call anytime without asking.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["status", "stats", "traffic", "activity"],
+          description: "What to read (default status)"
+        },
+        name: {
+          type: "string",
+          description: "traffic: server or domain name"
+        },
+        count: {
+          type: "number",
+          description: "traffic / activity: how many entries (default 20, max 500)"
+        }
+      }
+    },
+    annotations: {
+      title: "Daemon Status and Traffic",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
     }
   },
   ]
@@ -669,6 +891,15 @@ async function daemonFetch(path: string, options: RequestInit = {}): Promise<any
 // Tool Handlers
 // ============================================================================
 
+// Mutating calls are attributed to the AI in the daemon's audit log
+const AI = { "X-Candy-Actor": "AI" }
+const post = (path: string, body?: unknown) =>
+  daemonFetch(path, { method: "POST", headers: AI, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+const del = (path: string) => daemonFetch(path, { method: "DELETE", headers: AI })
+const seg = (value: unknown) => encodeURIComponent(String(value ?? ""))
+const clampCount = (value: unknown, fallback = 20) =>
+  Math.min(Math.max(Math.floor(Number(value) || fallback), 1), 500)
+
 async function handleServers(): Promise<any> {
   const [configsRes, processesRes] = await Promise.all([
     daemonFetch("/configs"),
@@ -684,14 +915,21 @@ async function handleServers(): Promise<any> {
   const servers: any[] = []
   for (const [name, config] of Object.entries(configs) as [string, any][]) {
     const proc = processes[name]
+    const active = (config.variants || []).find((v: any) => v.id === proc?.configId) || config
     servers.push({
       name,
       url: `https://${name}.localhost`,
       status: proc?.status || "stopped",
       port: proc?.port || null,
       pid: proc?.pid || null,
-      cwd: config.cwd,
-      cmd: config.cmd
+      cwd: active.cwd,
+      cmd: active.cmd,
+      configId: active.id,
+      user: active.user,
+      api: !!active.api,
+      ...(proc?.detectedPorts?.length > 1 ? { detectedPorts: proc.detectedPorts } : {}),
+      ...(config.count > 1 ? { variants: config.variants } : {}),
+      ...(config.lan ? { lan: true, lanHttps: config.lanHttps ?? null } : {}),
     })
   }
 
@@ -699,34 +937,208 @@ async function handleServers(): Promise<any> {
 }
 
 async function handleStart(params: any): Promise<any> {
-  const { name } = params
-  return await daemonFetch(`/process/start/${name}`, { method: "POST" })
+  const { name, configId } = params
+  return await post(`/process/start/${seg(name)}`, configId ? { configId } : undefined)
 }
 
 async function handleRestart(params: any): Promise<any> {
   const { name } = params
-  return await daemonFetch(`/process/restart/${name}`, { method: "POST" })
+  return await post(`/process/restart/${seg(name)}`)
 }
 
 async function handleStop(params: any): Promise<any> {
   const { name } = params
-  return await daemonFetch(`/process/stop/${name}`, { method: "POST" })
+  return await post(`/process/stop/${seg(name)}`)
 }
 
 async function handleRegister(params: any): Promise<any> {
-  const { name, cwd, cmd } = params
-  return await daemonFetch("/config", {
-    method: "POST",
-    body: JSON.stringify({ name, cwd, cmd })
+  const { name, cwd, cmd, api, user } = params
+  return await post("/config", {
+    name, cwd, cmd,
+    ...(typeof api === "boolean" ? { api } : {}),
+    ...(user ? { user } : {}),
   })
 }
 
 async function handleDeregister(params: any): Promise<any> {
-  const { name } = params
-  // First stop the process if running
-  await daemonFetch(`/process/stop/${name}`, { method: "POST" }).catch(() => {})
+  const { name, configId } = params
+  if (!name) return { error: "name is required" }
+  // First stop the process if running (with a configId: only if that variant is the one running)
+  let stop = true
+  if (configId) {
+    const processesRes = await daemonFetch("/processes")
+    stop = processesRes?.processes?.[name]?.configId === configId
+  }
+  if (stop) await post(`/process/stop/${seg(name)}`).catch(() => {})
   // Then remove the config
-  return await daemonFetch(`/config/${name}`, { method: "DELETE" })
+  return await del(`/config/${seg(name)}${configId ? `/${seg(configId)}` : ""}`)
+}
+
+async function handleConfig(params: any): Promise<any> {
+  const { action, name, configId, api, port, sandbox, addRw, removeRw } = params
+  switch (action) {
+    case "set_sandbox":
+      if (!name) return { error: "name is required for set_sandbox" }
+      return await post("/config/sandbox", {
+        name,
+        ...(configId ? { configId } : {}),
+        ...(typeof sandbox === "boolean" ? { sandbox } : {}),
+        ...(Array.isArray(addRw) ? { addRw: addRw.map(String) } : {}),
+        ...(Array.isArray(removeRw) ? { removeRw: removeRw.map(String) } : {}),
+      })
+    case "list":
+      return await daemonFetch("/configs")
+    case "users":
+      return await daemonFetch("/users")
+    case "set_api":
+      if (!name || typeof api !== "boolean") return { error: "name and api (true or false) are required for set_api" }
+      return await post("/config/api", { name, ...(configId ? { configId } : {}), api })
+    case "set_port": {
+      const n = Number(port)
+      if (!name || !Number.isInteger(n) || n < 1 || n > 65535) return { error: "name and a port (1-65535) are required for set_port" }
+      const res = await post(`/process/port/${seg(name)}`, { port: n })
+      if (res && res.success === false) return { error: `${name} is not running, so there is no port to choose. Start it first.` }
+      return res
+    }
+    default:
+      return { error: "Unknown action. Use: list, users, set_api, set_port, set_sandbox" }
+  }
+}
+
+async function handleStatus(params: any): Promise<any> {
+  const { action = "status", name, count } = params
+  switch (action) {
+    case "status":
+      return await daemonFetch("/status")
+    case "stats":
+      return await daemonFetch("/stats")
+    case "traffic":
+      if (!name) return { error: "name is required for traffic" }
+      return await daemonFetch(`/traffic/${seg(name)}?count=${clampCount(count)}`)
+    case "activity":
+      return await daemonFetch(`/logs?count=${clampCount(count)}`)
+    default:
+      return { error: "Unknown action. Use: status, stats, traffic, activity" }
+  }
+}
+
+async function handleDomain(params: any): Promise<any> {
+  const { action, subdomain, domain, serverName, force, zone, tunnel, which, ttl, once, enabled, ips, add, remove, clientId } = params
+  // auth_* and allowlist accept the binding key or the full domain name
+  const target = { ...(subdomain ? { subdomain } : {}), ...(domain ? { domain } : {}) }
+  const needsTarget = () => (!subdomain && !domain) ? { error: `subdomain or domain is required for ${action}` } : null
+  const list = (value: unknown) => Array.isArray(value) ? value.map(String) : undefined
+
+  switch (action) {
+    case "list":
+      return await daemonFetch("/domains")
+    case "bind":
+      if (!subdomain || !serverName) return { error: "subdomain and serverName are required for bind" }
+      return await post("/domains/bind", { subdomain, serverName, force: force || false })
+    case "unbind":
+      if (!subdomain) return { error: "subdomain is required for unbind" }
+      return await del(`/domains/unbind/${seg(subdomain)}`)
+    case "config": {
+      const body: any = {}
+      if (zone) body.zone = zone
+      if (tunnel) body.tunnel = tunnel
+      return await post("/domains/config", body)
+    }
+    case "public_mcp_status":
+      return await daemonFetch("/domains/mcp")
+    case "public_mcp_on":
+    case "public_mcp_off":
+      return await post("/domains/mcp", { enabled: action === "public_mcp_on", ...(subdomain ? { subdomain } : {}) })
+    case "public_mcp_revoke":
+      return await post("/domains/mcp/revoke", clientId ? { clientId } : {})
+    case "auth_status":
+      return await daemonFetch("/auth/status")
+    case "auth_generate_jwt":
+      return needsTarget() ?? await post("/auth/set", { ...target, jwtSecret: "generate" })
+    case "auth_token":
+      return needsTarget() ?? await post("/auth/token", {
+        ...target,
+        ...(ttl !== undefined ? { ttl: Number(ttl) } : {}),
+        ...(once ? { jti: true } : {}),
+      })
+    case "auth_clear":
+      if (which !== "password" && which !== "jwt" && which !== "all") {
+        return { error: 'which is required for auth_clear: "password", "jwt" or "all"' }
+      }
+      return needsTarget() ?? await post("/auth/clear", { ...target, which })
+    case "allowlist": {
+      const body = {
+        ...target,
+        ...(typeof enabled === "boolean" ? { enabled } : {}),
+        ...(list(ips) ? { ips: list(ips) } : {}),
+        ...(list(add) ? { add: list(add) } : {}),
+        ...(list(remove) ? { remove: list(remove) } : {}),
+      }
+      if (Object.keys(body).length === Object.keys(target).length) {
+        return { error: "allowlist needs at least one of enabled, ips, add, remove. Use action list to see the current allowlist." }
+      }
+      return needsTarget() ?? await post("/domains/allowlist", body)
+    }
+    default:
+      return { error: "Unknown action. Use: list, bind, unbind, config, auth_status, auth_generate_jwt, auth_token, auth_clear, allowlist, public_mcp_status, public_mcp_on, public_mcp_off, public_mcp_revoke" }
+  }
+}
+
+async function handleRoute(params: any): Promise<any> {
+  const { action, name, newName, port, target, persistent, https } = params
+  const fail = (res: any) => res?.error && typeof res.error === "string" ? `Error: ${res.error}` : null
+
+  switch (action) {
+    case "list": {
+      const res = await daemonFetch("/routes")
+      if (fail(res)) return fail(res)
+      const entries = Object.entries((res || {}) as Record<string, any>)
+      return entries.length === 0 ? "No routes" : entries.map(([n, r]: [string, any]) => `${n}.localhost -> ${typeof r.target === "string" ? r.target : ":" + r.target}${r.persistent ? " [persistent]" : ""}${r.lan ? " [lan]" : ""}${r.lanHttps ? ` [${r.lanHttps}]` : ""}`).join("\n")
+    }
+    case "add": {
+      if (!name || (!port && !target)) return "Error: name and a port (or target URL) are required for add"
+      const res = await post("/register", { name, ...(target ? { target } : { port }), persistent: persistent || false })
+      return fail(res) ?? `Route added: ${name}.localhost -> ${target || ":" + port}${persistent ? " (persistent)" : ""}`
+    }
+    case "remove": {
+      if (!name) return "Error: name is required for remove"
+      const res = await del(`/register/${seg(name)}`)
+      return fail(res) ?? `Route removed: ${name}.localhost`
+    }
+    case "rename": {
+      if (!name || !newName) return "Error: name and newName are required for rename"
+      const res = await post("/rename", { oldName: name, newName })
+      return fail(res) ?? `Route renamed: ${name}.localhost -> ${newName}.localhost`
+    }
+    case "lan_list":
+      return await daemonFetch("/lan")
+    case "lan_publish":
+    case "lan_unpublish": {
+      if (!name) return `Error: name is required for ${action}`
+      const publish = action === "lan_publish"
+      const httpsValues: unknown[] = [true, false, "domain", "tailscale"]
+      if (publish && https !== undefined && !httpsValues.includes(https)) {
+        return 'Error: https must be true, false, "domain" or "tailscale"'
+      }
+      // A port only means something for the ts.net hostname, so it implies that mode
+      const mode = publish && port && (https === undefined || https === true) ? "tailscale" : https
+      const res = await post("/lan", {
+        name,
+        publish,
+        ...(publish && mode !== undefined ? { https: mode } : {}),
+        ...(publish && port && mode !== false ? { port } : {}),
+      })
+      return fail(res) ?? (publish
+        ? `Published to LAN: ${name}.candy -> ${res.lanIp || "no LAN address detected"}${res.httpsUrl ? `, HTTPS: ${res.httpsUrl}` : ""}${res.warning ? ` (${res.warning})` : ""}`
+        : `Unpublished from LAN: ${name}.candy`)
+    }
+    case "adguard_status":
+      return await daemonFetch("/lan/adguard")
+    case "adguard_unlink":
+      return await post("/lan/adguard", { remove: true })
+    default:
+      return "Unknown action. Use: list, add, remove, rename, lan_list, lan_publish, lan_unpublish, adguard_status, adguard_unlink"
+  }
 }
 
 async function handlePortalOpen(params: any): Promise<any> {
@@ -744,15 +1156,12 @@ async function handlePortalOpen(params: any): Promise<any> {
     }
   }
 
-  return await daemonFetch("/portal", {
-    method: "POST",
-    body: JSON.stringify({ name, port })
-  })
+  return await post("/portal", { name, port })
 }
 
 async function handlePortalClose(params: any): Promise<any> {
   const { name } = params
-  return await daemonFetch(`/portal/close/${name}`, { method: "POST" })
+  return await post(`/portal/close/${seg(name)}`)
 }
 
 async function handlePortals(): Promise<any> {
@@ -765,10 +1174,7 @@ async function handleInput(params: any): Promise<any> {
   if (input !== undefined) body.input = input
   if (key !== undefined) body.key = key
 
-  return await daemonFetch(`/process/input/${name}`, {
-    method: "POST",
-    body: JSON.stringify(body)
-  })
+  return await post(`/process/input/${seg(name)}`, body)
 }
 
 async function handleLogs(params: any): Promise<any> {
@@ -810,8 +1216,12 @@ async function handleLogs(params: any): Promise<any> {
 // MCP Protocol Handlers
 // ============================================================================
 
-async function handleRequest(request: MCPRequest): Promise<MCPResponse | null> {
-  const { id, method, params } = request
+export async function handleRequest(request: MCPRequest): Promise<MCPResponse | null> {
+  const { method, params } = request
+  const id = request.id ?? null
+
+  // Notifications never get a response
+  if (typeof method === "string" && method.startsWith("notifications/")) return null
 
   try {
     switch (method) {
@@ -820,9 +1230,11 @@ async function handleRequest(request: MCPRequest): Promise<MCPResponse | null> {
           jsonrpc: "2.0",
           id,
           result: {
-            protocolVersion: "2024-11-05",
+            protocolVersion: PROTOCOL_VERSIONS.includes(params?.protocolVersion)
+              ? params.protocolVersion
+              : DEFAULT_PROTOCOL_VERSION,
             capabilities: { tools: {} },
-            serverInfo: { name: "candy-localhost", version: "0.4.0" }
+            serverInfo: { name: "candy-localhost", version: SERVER_VERSION }
           }
         }
 
@@ -869,71 +1281,18 @@ async function handleRequest(request: MCPRequest): Promise<MCPResponse | null> {
           case "candy_network":
             result = await daemonFetch("/candy/registry")
             break
-          case "candy_domain": {
-            const { action: domAction, subdomain, serverName, force, zone, tunnel } = toolArgs as any
-            if (domAction === "list") {
-              result = await daemonFetch("/domains")
-            } else if (domAction === "bind") {
-              if (!subdomain || !serverName) {
-                result = { error: "subdomain and serverName are required for bind" }
-              } else {
-                result = await daemonFetch("/domains/bind", {
-                  method: "POST",
-                  body: JSON.stringify({ subdomain, serverName, force: force || false })
-                })
-              }
-            } else if (domAction === "unbind") {
-              if (!subdomain) {
-                result = { error: "subdomain is required for unbind" }
-              } else {
-                result = await daemonFetch(`/domains/unbind/${subdomain}`, { method: "DELETE" })
-              }
-            } else if (domAction === "config") {
-              const body: any = {}
-              if (zone) body.zone = zone
-              if (tunnel) body.tunnel = tunnel
-              result = await daemonFetch("/domains/config", {
-                method: "POST",
-                body: JSON.stringify(body)
-              })
-            } else {
-              result = { error: "Unknown action. Use: list, bind, unbind, config" }
-            }
+          case "candy_domain":
+            result = await handleDomain(toolArgs)
             break
-          }
-          case "candy_route": {
-            const { action: routeAction, name: routeName, port: routePort, persistent: routePersistent } = toolArgs as any
-            const post = (path: string, body: unknown) =>
-              daemonFetch(path, { method: "POST", headers: { "X-Candy-Actor": "AI" }, body: JSON.stringify(body) })
-            if (routeAction === "list") {
-              const res = await daemonFetch("/routes")
-              const entries = Object.entries((res || {}) as Record<string, any>)
-              result = res?.error && typeof res.error === "string"
-                ? `Error: ${res.error}`
-                : entries.length === 0 ? "No routes" : entries.map(([n, r]: [string, any]) => `${n}.localhost -> ${typeof r.target === "string" ? r.target : ":" + r.target}${r.persistent ? " [persistent]" : ""}${r.lan ? " [lan]" : ""}${r.lanHttps ? ` [${r.lanHttps}]` : ""}`).join("\n")
-            } else if (routeAction === "add") {
-              const res = await post("/register", { name: routeName, port: routePort, persistent: routePersistent || false })
-              result = res?.error ? `Error: ${res.error}` : `Route added: ${routeName}.localhost -> :${routePort}${routePersistent ? " (persistent)" : ""}`
-            } else if (routeAction === "remove") {
-              const res = await daemonFetch(`/register/${routeName}`, { method: "DELETE", headers: { "X-Candy-Actor": "AI" } })
-              result = res?.error ? `Error: ${res.error}` : `Route removed: ${routeName}.localhost`
-            } else if (routeAction === "lan_publish" || routeAction === "lan_unpublish") {
-              const publish = routeAction === "lan_publish"
-              const https = (toolArgs as any)?.https
-              const res = await post("/lan", {
-                name: routeName,
-                publish,
-                ...(publish && typeof https === "boolean" ? { https } : {}),
-                ...(publish && https === true && routePort ? { port: routePort } : {}),
-              })
-              result = res?.error
-                ? `Error: ${res.error}`
-                : publish
-                  ? `Published to LAN: ${routeName}.candy -> ${res.lanIp || "no LAN address detected"}${res.httpsUrl ? `, HTTPS: ${res.httpsUrl}` : ""}${res.warning ? ` (${res.warning})` : ""}`
-                  : `Unpublished from LAN: ${routeName}.candy`
-            } else { result = "Unknown action" }
+          case "candy_route":
+            result = await handleRoute(toolArgs)
             break
-          }
+          case "candy_config":
+            result = await handleConfig(toolArgs)
+            break
+          case "candy_status":
+            result = await handleStatus(toolArgs)
+            break
           case "candy_portals":
             result = await handlePortals()
             break
@@ -959,8 +1318,8 @@ async function handleRequest(request: MCPRequest): Promise<MCPResponse | null> {
           }
         }
 
-      case "notifications/initialized":
-        return null
+      case "ping":
+        return { jsonrpc: "2.0", id, result: {} }
 
       default:
         return {
@@ -1018,4 +1377,4 @@ async function main() {
   }
 }
 
-main().catch(console.error)
+if (import.meta.main) main().catch(console.error)

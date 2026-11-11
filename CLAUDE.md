@@ -76,7 +76,12 @@ The MCP server exposes: `candy_servers`, `candy_start`, `candy_restart`, `candy_
 ## Multi-user and API mode
 
 - The systemd unit runs the daemon as root with `CANDY_OWNER=%i`. Members of the `candy` group get per-user secrets; servers run as the user who registered them (`ServerConfig.user`, launched with `setpriv`). Never start anything as root. See `launchSpec`, `requestUser`, `mayChangeConfig` in daemon.ts.
+- Root mode launches go through `systemd-run` (`sandbox.ts`, `launchSpec`): read-only filesystem except the code folder, `/var/lib/candy/<name>` and a private `/tmp`; unit bound to the daemon's unit. Stop with `systemctl stop <unit>` (`managed.unit`), not a process-tree kill. `ServerConfig.sandbox === false` opts out; `ServerConfig.rw` adds writable paths.
 - `ServerConfig.api`: requests to a stopped server are held and forwarded 1:1 (`forwardApiModeRequest`) instead of showing the loading page.
+
+## Public MCP endpoint
+
+Optional (`domainConfig.mcp`, off by default): `https://<sub>.<zone>/mcp` serves `handleRequest` from mcp.ts over HTTP behind OAuth 2.1 (`mcp-oauth.ts`, pure logic). Consent happens only on the portal host (`/oauth/*`, tailnet), see `handlePublicMcp` in daemon.ts. The public host must never reach any other daemon route.
 
 ## Reserved Names
 

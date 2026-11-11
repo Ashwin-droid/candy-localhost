@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Allow access to candy</title>
+  <link rel="icon" href="/favicon.svg">
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #eceef2; --card: #ffffff; --text: #1a1d33; --muted: #555b75; --line: #d9dce6;
+      --accent: #3d4ee0; --accent-text: #ffffff; --danger: #b3261e; --soft: #f4f5f9;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #10121a; --card: #191c28; --text: #e7e9f2; --muted: #a3a8c0; --line: #2b2f42; --accent: #7f8cff; --accent-text: #0d0f18; --danger: #ff8a80; --soft: #1f2231; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; background: var(--bg); color: var(--text); font: 15px/1.5 "Schibsted Grotesk", system-ui, sans-serif; }
+    main { width: 100%; max-width: 440px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 24px; }
+    h1 { font-size: 20px; line-height: 1.3; margin: 0 0 8px; }
+    p { margin: 0 0 12px; color: var(--muted); }
+    .client { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
+    dl { margin: 16px 0; padding: 12px 14px; background: var(--soft); border-radius: 10px; display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 13px; }
+    dt { color: var(--muted); }
+    dd { margin: 0; overflow-wrap: anywhere; }
+    ul { margin: 0 0 16px; padding-left: 20px; color: var(--muted); font-size: 14px; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    button { flex: 1 1 140px; font: inherit; font-weight: 600; padding: 10px 16px; border-radius: 10px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+    button:disabled { opacity: .55; cursor: default; }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .error { color: var(--danger); margin: 12px 0 0; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main>
+    <div id="loading"><h1>Checking the request…</h1></div>
+
+    <div id="ask" hidden>
+      <h1>Allow <span class="client" id="client"></span> to control candy?</h1>
+      <p>It asked to connect to this machine's candy server over the internet.</p>
+      <dl>
+        <dt>Sends you back to</dt><dd id="redirect"></dd>
+        <dt>Connects to</dt><dd id="endpoint"></dd>
+        <dt>You are</dt><dd id="you"></dd>
+      </dl>
+      <p>If you allow it, it can:</p>
+      <ul>
+        <li>start, stop and read the logs of your servers</li>
+        <li>type into their terminals, which can run commands on this machine</li>
+        <li>change routes, public domains and LAN publishing</li>
+      </ul>
+      <div class="actions">
+        <button id="deny">Deny</button>
+        <button id="allow" class="primary">Allow</button>
+      </div>
+      <p class="error" id="error" role="alert" hidden></p>
+    </div>
+
+    <div id="gone" hidden>
+      <h1>This request is no longer valid</h1>
+      <p id="gone-detail">It expired or was already answered. Start again from the app that asked.</p>
+    </div>
+  </main>
+
+  <script>
+    const requestId = new URLSearchParams(location.search).get('request') || '';
+    const $ = (id) => document.getElementById(id);
+    const show = (id) => { for (const s of ['loading', 'ask', 'gone']) $(s).hidden = s !== id; };
+
+    async function load() {
+      try {
+        const res = await fetch('/oauth/request?request=' + encodeURIComponent(requestId));
+        if (!res.ok) return show('gone');
+        const info = await res.json();
+        $('client').textContent = info.clientName;
+        $('redirect').textContent = info.redirectHost;
+        $('endpoint').textContent = info.endpoint;
+        $('you').textContent = info.you;
+        document.title = 'Allow ' + info.clientName + ' to control candy?';
+        show('ask');
+        const left = info.expiresAt - Date.now();
+        if (left > 0) setTimeout(() => show('gone'), left);
+      } catch {
+        show('gone');
+      }
+    }
+
+    async function decide(allow) {
+      $('allow').disabled = $('deny').disabled = true;
+      $('error').hidden = true;
+      try {
+        const res = await fetch('/oauth/decision', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Candy-Token': window.CANDY_TOKEN || '' },
+          body: JSON.stringify({ request: requestId, allow })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.redirect) { location.href = data.redirect; return; }
+        $('error').textContent = data.error || 'Could not save your answer. Reload this page and try again.';
+      } catch {
+        $('error').textContent = 'Could not reach candy. Check your connection and try again.';
+      }
+      $('error').hidden = false;
+      $('allow').disabled = $('deny').disabled = false;
+    }
+
+    $('allow').onclick = () => decide(true);
+    $('deny').onclick = () => decide(false);
+    load();
+  </script>
+</body>
+</html>

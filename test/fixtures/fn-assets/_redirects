@@ -1,0 +1,14 @@
+# redirects
+/old /about 301
+/home /
+/blog/:slug/old /blog/:slug 308
+/news/* /blog/:splat
+/q /about?from=q 302
+/shop/* /index.html 200
+/rewrite-about /about.html 200
+/fn/* /dynamic/:splat 200
+/loop /loop 301
+/api/redir /about 302
+/bad-line
+/teapot /about 418
+https://other.test/x /about 301

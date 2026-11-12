@@ -14,6 +14,7 @@ candy-localhost replaces the workflow of manually starting dev servers, remember
 - **Persistent browser sessions.** Because routing is domain-based (`myapp.localhost`), cookies, localStorage, and service workers persist across server restarts regardless of which port the process binds to.
 - **Host-based routing.** Each server gets its own `.localhost` domain with automatic TLS via Caddy. No port numbers to remember.
 - **Zero-config tunnels.** Expose any local server publicly with one command via Cloudflare Quick Tunnels.
+- **Functions without ports.** Workers-style modules (Hono works as is) run per request and exit when idle. The daemon hands them requests over its own socket and logs every one. See [candy-functions](#candy-functions).
 - **Tailscale-aware.** When a Tailscale IP is detected, servers are also available on `<name>.candy` from any device on the tailnet.
 
 ## Quickstart
@@ -144,6 +145,7 @@ Open `https://myapp.localhost` in your browser. candy spawns the process, detect
 | UI Pages | `public/*.html` | Registration, startup progress, portal control, crash/kill pages |
 | Protocol Handler | `candy-open.sh`, `candy-protocol.desktop` | `candy://` URL scheme |
 | Service Units | `*.service` | systemd service files |
+| Functions | `fn-*.ts` | candy-functions: frame protocol, dispatcher, instance pool, host shim, bindings, cron, deploys, request log |
 
 ## Request and Routing Model
 
@@ -288,6 +290,202 @@ Routes map `<name>.localhost` to a target. There are three kinds:
 - **Persistent routes.** Any route created with `--persistent` (CLI) or `persistent: true` (API) survives daemon restarts. Stored in `~/.config/candy/routes.json`. Non-persistent routes exist only in memory.
 - **External routes.** When `target` is an `http(s)` URL instead of a port number, the route proxies to an external service.
 
+## candy-functions
+
+A function is a plain JS/TS module with a Workers-style default export, a folder of static files, or both. candy runs it on demand at `<name>.localhost`, with the same lifecycle as any other site (sandbox, env files, cron, `.candy`, LAN, bound domains, tunnels, logs, MCP, portal), minus the port.
+
+```ts
+export default {
+  async fetch(req: Request, env: Env, ctx: ExecutionContext) {
+    return new Response(`hi from ${new URL(req.url).pathname}`)
+  },
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(env.KV.put("last-run", String(event.scheduledTime)))
+  },
+}
+```
+
+No build step in dev: candy imports the source as it is.
+
+### Portless
+
+A function never listens on a TCP port or a socket of its own. Caddy sends its hosts to the daemon, the daemon picks the function by `Host` and hands each request to it over a socket the daemon owns (`/run/candy/fn/<name>.sock`, or `$XDG_RUNTIME_DIR/candy/fn/<name>.sock` as a normal user). The function process **dials in** with a per-instance token, takes requests as length-prefixed frames, and streams the responses back. Bodies stream both ways, so SSE and large uploads work, and a client that disconnects aborts `req.signal`.
+
+So there's no port detection, nothing for other local processes to connect to, and the daemon sees and gates every request: auth, activity, holding while it starts, and the request log below.
+
+### TTL 0, and hot instances
+
+- **No request, no process.** The first request starts an instance and is held until it's ready (about 30–50 ms for Bun to boot and import), then dispatched.
+- **An instance exits once it has been idle for `linger` seconds** (default 30, `0` = right away): idle means nothing in flight and every `ctx.waitUntil` settled, and a request during the linger is served warm. The hour-long idle rule and `candy ttl` don't apply.
+- Requests that arrive while an instance is alive share it (up to 32 at once each). Another instance starts only when every live one is full, up to `max` (default 4).
+- **`hot: N`** keeps N instances warm all the time, restarted if they exit or crash. Use it when the cold start matters. Instances above N still exit when idle.
+- Each cold instance imports the current source, so in dev an edit shows up on the next request.
+
+Set hot, max, linger and the request log from the function's **Function** panel in the portal, with `candy fn set <name> --hot n --max n --linger s --log full|meta|off`, or with `POST /fn/settings`.
+
+### Bindings
+
+Project config is read from the function's folder, first match wins: `candy.fn.json`, then `wrangler.jsonc` / `wrangler.json` / `wrangler.toml`. Only this subset is used; anything else is ignored with a warning:
+
+```jsonc
+{
+  "main": "src/index.ts",
+  "vars": { "GREETING": "hi" },
+  "kv_namespaces": [{ "binding": "KV" }],
+  "d1_databases":  [{ "binding": "DB" }],
+  "triggers": { "crons": ["*/5 * * * *"] }
+}
+```
+
+| Binding | What you get |
+|---|---|
+| `vars` | Plain strings on `env` |
+| Secrets | Keys from the site's env file (`candy env <name> <file>`), merged on top of `vars`. Never written into a deploy snapshot |
+| KV | `get` (`text` / `json` / `arrayBuffer` / `stream`), `getWithMetadata`, `put` with `expiration` / `expirationTtl` / `metadata`, `delete`, `list({ prefix, limit, cursor })`. Stored in `kv.sqlite` |
+| D1 | `prepare(sql).bind(...).first() / all() / run() / raw()`, `batch`, `exec`, `dump`, with D1's result shape. One SQLite file per binding (`d1-<binding>.sqlite`) |
+| Cron | `triggers.crons` become candy cron jobs that call `scheduled()` in a one-shot instance |
+| `ctx` | `waitUntil(promise)` keeps the instance alive until it settles; `passThroughOnException()` is a no-op |
+
+KV and D1 live in the function's state folder (`/var/lib/candy/<name>` in root mode, `~/.local/state/candy/fn/<name>` as a normal user). Instances share them through SQLite WAL. Bun's own `fetch`, `crypto.subtle` and `HTMLRewriter` are there too. Not in v1: Durable Objects, R2, Queues, the Cache API and `request.cf`. Static assets are supported, see below.
+
+### Static assets
+
+Same config and behavior as [Cloudflare Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/). Put an `assets` block in `candy.fn.json` or `wrangler.*`:
+
+```jsonc
+{
+  "main": "src/index.ts",                  // optional when assets are set
+  "assets": {
+    "directory": "./dist",                 // required
+    "binding": "ASSETS",                   // optional: env.ASSETS.fetch(req) inside the function
+    "not_found_handling": "single-page-application", // "none" (default) | "404-page" | "single-page-application"
+    "html_handling": "auto-trailing-slash",          // | "force-trailing-slash" | "drop-trailing-slash" | "none"
+    "run_worker_first": ["/api/*"]         // boolean, or route patterns; "!" excludes
+  }
+}
+```
+
+**A SPA with an API: use `run_worker_first`.** With `"not_found_handling": "single-page-application"`, every unknown path gets `/index.html`, including a browser navigation to `/api/me`, and an `/api/*` path that happens to match a file is served as that file. `"run_worker_first": ["/api/*"]` sends every `/api/*` request to your code before any asset lookup, SPA fallback or `_redirects` rule, while everything else stays asset-first:
+
+```jsonc
+{
+  "main": "src/api.ts",                    // e.g. a Hono app with app.get("/api/me", ...)
+  "assets": {
+    "directory": "./dist",                 // your Vite/React build
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "!/api/docs/*"]   // /api/docs/* goes back to the files
+  }
+}
+```
+
+- `true` means always worker first; the code then serves files with `env.ASSETS.fetch(req)`.
+- Patterns match the path only (no query). `*` matches anything, `/` included; a pattern without `*` is an exact path. `!` patterns exclude and win over inclusions. Patterns must start with `/` or `!/` (at most 100), and a bad one fails `candy fn add` / deploy instead of being ignored.
+- Patterns are literal: `"/api/*"` doesn't match `/api` itself. Tip: `["/api", "/api/*"]` sends both to your code.
+
+**Routing order**, decided by the daemon before any instance is touched:
+
+1. A `run_worker_first` match goes to the code.
+2. Otherwise `_redirects`, then a file through `html_handling`, served with `_headers` applied.
+3. No file: the code handles it. With `single-page-application`, browser navigations (`Sec-Fetch-Mode: navigate`) get `/index.html` without invoking the code, like Cloudflare. With no `main`, `not_found_handling` decides: `404-page` serves the nearest `404.html` with status 404, `single-page-application` serves `/index.html`, `none` an empty 404.
+
+With a `main`, methods other than GET and HEAD always go to the code. With no `main`, they get 405 where the path is a file or a `_redirects` rule, and 404 elsewhere. A missing asset folder (before your first build) just means no files yet: requests still reach the code.
+
+**Files in the asset folder** (never served themselves):
+
+- `_redirects`: one `from to [status]` rule per line, 301/302/303/307/308 (default 302) or 200 for a same-origin rewrite. Splats (`*` → `:splat`, one per rule like Cloudflare), `:placeholders` and `#` comments; captured values are substituted percent-encoded. A 200 rewrite onto a `run_worker_first` path goes to your code. Bad lines are warnings at add/deploy.
+- `_headers`: a path pattern line, then indented `Name: value` lines; `! Name` removes a header an earlier rule set. Applies to asset responses only.
+- `.assetsignore`: gitignore syntax; matching files are never served or snapshotted.
+
+**Portless, no process.** The daemon serves the files itself: no port, no instance started for a file hit, ETags with 304s, `HEAD` and `Range`. Dev serves straight from the folder, so edits show up on the next request. A file is served only if the function's user could read it, and nothing outside the folder (symlinks included). On a password-protected bound domain, files are sent with `Cache-Control: private` so a shared cache can't hand them to anyone past the password (a `_headers` rule can still set your own).
+
+**Assets-only sites.** Leave out `main` and the folder is a static site: no process ever starts, and `hot`, `max` and `linger` don't apply. `candy fn add site ./site` works the same; the portal marks it **assets-only**.
+
+```bash
+echo '{ "assets": { "directory": "./dist", "not_found_handling": "404-page" } }' > candy.fn.json
+candy fn add docs
+```
+
+### Deploys
+
+In dev a function is live-linked to its folder. A deploy freezes it:
+
+1. `Bun.build` bundles `main` into one file with a linked sourcemap.
+2. The bundle and a `manifest.json` (config, source path, git rev) are written to `<state>/deploys/<YYYYMMDDHHmmss-sha8>/`.
+3. The asset folder (minus `.assetsignore`) is copied into the snapshot with a manifest; bad `_headers` / `_redirects` fail the deploy. An assets-only site snapshots just the files.
+4. The function is pinned to that snapshot and restarted. Inside the sandbox the snapshot is read-only; only the state folder is writable. Rollback switches code and assets together.
+
+The last 10 deploys are kept. Roll back to any of them, or unpin and go back to the live source. The bundle step runs as the function's user, never root.
+
+### Request log
+
+The daemon records every request a function serves, for the last 24 hours. The function plays no part in it, so code can't skip it.
+
+- Each row has the method, path and query, host, client IP, status, request and response headers and bodies, timings (queued until ready, cold or warm, time to first byte, total), the instance, how it ended (`ok`, `threw`, `cancelled`, `crashed`) with the stack, and the `waitUntil` outcome.
+- Each row says who answered, `kind`: `worker` (the code) or `asset` (the daemon served a file; metadata only, no bodies), and the `rule` that routed it: `worker-first:/api/*`, `spa-navigate`, the `_redirects` line, `404-page`.
+- `console.*` output from inside a request is attached to that request (and still goes to the normal log), like `wrangler tail`.
+- Bodies: the first 64 KB each way. Non-text bodies are kept as size and sha256 only. Streaming responses keep the first 64 KB and the total size. Capture never slows the response.
+- Redacted by default: `Authorization`, `Cookie`, `Set-Cookie`, `Proxy-Authorization`, and any header or JSON/form field matching `token|secret|password|api[-_]?key`, including query parameters in the URL and in `Location` / `Content-Location`.
+- One SQLite file per function in the daemon's own state (`/var/lib/candy-daemon/fn-log/`, or `~/.local/state/candy/fn-log/`), never mounted into the sandbox. Capped at 256 MB, oldest rows first. The log can be set to metadata only, or off.
+- Only the function's owner can read it, and it's never reachable from a public host (the public MCP endpoint doesn't offer the request-log, replay, KV or D1 tools). Removing the function deletes its log.
+
+**Replay** sends a logged request again to the code running now, which is handy straight after an edit. Redacted values stay redacted, and a request whose body was cut at 64 KB is refused unless you allow a partial body.
+
+### CLI
+
+```bash
+candy fn add hello ./hello            # register a function or static site (path defaults to .)
+open https://hello.localhost          # first request starts it
+
+candy fn deploy hello                 # bundle and pin a snapshot
+candy fn deploys hello                # list snapshots
+candy fn rollback hello               # back to the previous one (or pass an id)
+candy fn dev hello                    # unpin, serve the live source again
+
+candy fn kv hello put greeting hi     # poke at bindings
+candy fn kv hello list
+candy fn d1 hello "select count(*) from users"
+
+candy fn requests hello --status 5xx --path /api --since 1h   # ROUTE column: asset/worker + rule
+candy fn request <id>                 # headers, bodies, console, timings
+candy fn tail hello                   # live
+candy fn replay <id>                  # --allow-partial for a truncated body
+```
+
+`candy start`, `stop`, `logs` and `rm` work on functions as they do on any site. The SDK has `registerFunction({ cwd, entry?, name?, hot?, max?, linger? })`; the name defaults to the folder's name.
+
+### Hono
+
+A Hono app already has the right shape, so it runs unchanged:
+
+```ts
+// src/index.ts
+import { Hono } from "hono"
+
+type Bindings = { KV: KVNamespace; DB: D1Database; GREETING: string }
+const app = new Hono<{ Bindings: Bindings }>()
+
+app.get("/", c => c.text(c.env.GREETING))
+
+app.get("/hits", async c => {
+  const n = Number((await c.env.KV.get("hits")) ?? 0) + 1
+  await c.env.KV.put("hits", String(n))
+  return c.json({ hits: n })
+})
+
+app.get("/users", async c => {
+  const { results } = await c.env.DB.prepare("select id, name from users").all()
+  return c.json(results)
+})
+
+export default app
+```
+
+```bash
+cd hello && bun add hono
+candy fn add hello
+curl https://hello.localhost/hits
+```
+
 ## CLI Reference
 
 ```
@@ -314,6 +512,12 @@ candy domain list              List bound public domains
 candy domain bind <sub> [--server <name>]  Bind subdomain (defaults serverName=subdomain)
 candy domain unbind <sub>      Remove domain binding
 candy domain config --zone <domain> --tunnel <name> [--tunnel-id <id>] [--credentials <path>]
+candy fn add <name> [path]     Register a function (see candy-functions)
+candy fn deploy|deploys|rollback|dev [name] [id]
+                               Snapshots: bundle and pin, list, re-pin, back to live source
+candy fn kv <name> get|put|list|delete ...   KV binding
+candy fn d1 <name> "<sql>"     D1 binding
+candy fn requests|request|tail|replay ...    The 24h request log
 candy mcp                      Start MCP server (stdio)
 candy daemon                   Run daemon in foreground
 candy help | -h                Show help
@@ -336,7 +540,7 @@ candy version | -v             Show version
 
 | Tool | What it does |
 |------|--------------|
-| `candy_servers` | List servers with status, port, PID, run-as user, API mode, variants (`configId`) and detected ports |
+| `candy_servers` | List servers with status, port, PID, run-as user, API mode, variants (`configId`) and detected ports; functions add `fn` (entry, settings, `assets`) |
 | `candy_start` / `candy_restart` / `candy_stop` | Control a server. `candy_start` takes `configId` when a name has several variants |
 | `candy_logs` / `candy_input` | Read a server's output (tail, head, search) and type into its terminal |
 | `candy_register` / `candy_deregister` | Add or remove a config. Register accepts `api` (API mode) and `user` (run-as account, owner only); deregister accepts `configId` to remove one variant |
@@ -346,6 +550,10 @@ candy version | -v             Show version
 | `candy_portal_open` / `candy_portal_close` / `candy_portals` | Cloudflare quick tunnels |
 | `candy_status` | `status` (daemon and Caddy health), `stats` (requests per domain), `traffic` (recent requests for a name), `activity` (daemon activity log) |
 | `candy_network` | The `.candy` registry across Tailscale machines |
+| `candy_fn_add` | Register a function or static site from a folder (assets and `run_worker_first` come from its project config) |
+| `candy_fn_deploy` / `candy_fn_rollback` / `candy_fn_deploys` | Bundle and pin a snapshot, re-pin an earlier one, list snapshots |
+| `candy_fn_kv` / `candy_fn_d1` | Read and write a function's KV and D1 bindings |
+| `candy_fn_requests` / `candy_fn_request` | The request log: filter by status, path and time, then one request in full (headers, bodies, console, timings, `kind` asset/worker and the routing `rule`) |
 
 Actions that change who can reach a site (`lan_publish`, `auth_clear`, turning an allowlist off or removing entries, `unbind`, opening a portal) tell the model to confirm with you first.
 
@@ -368,7 +576,7 @@ There is no password. Sign-in is OAuth 2.1, and Tailscale decides who gets in:
 2. candy parks the request and sends the browser to `https://portal.candy/oauth/consent`. That page exists only on your tailnet, so only a device your Tailscale ACLs let reach this machine can open it. It shows the client's name, where it will send you back, and who Tailscale says you are.
 3. Pressing **Allow** sends the browser back to `https://candy.<zone>/authorize/complete` with a one-time grant, which candy exchanges for the authorization code the client redeems.
 
-Details: PKCE (S256) is required; access tokens last 1 hour and live in memory only; refresh tokens rotate, last 30 days and are stored hashed in `~/.config/candy/mcp-oauth.json`; reusing an old refresh token signs that client out. The public host serves nothing but the OAuth endpoints and `/mcp`. Calls run as the owner and are recorded in the audit log (`MCP_PUBLIC_*`) with the client's name and who approved it.
+Details: PKCE (S256) is required; access tokens last 1 hour and live in memory only; refresh tokens rotate, last 30 days and are stored hashed in `~/.config/candy/mcp-oauth.json`; reusing an old refresh token signs that client out. The public host serves nothing but the OAuth endpoints and `/mcp`, and `/mcp` there leaves out the function request-log, replay, KV and D1 tools (`PUBLIC_HIDDEN_TOOLS` in mcp.ts). Calls run as the owner and are recorded in the audit log (`MCP_PUBLIC_*`) with the client's name and who approved it.
 
 A connected client can do what the portal can, including typing into server terminals, which means running commands on this machine. Approve only clients you trust.
 
@@ -478,6 +686,28 @@ Two auth modes:
 | `POST` | `/domains/config` | `{ zone?, tunnel?, cfApiToken? }` | Configure zone/tunnel |
 | `POST` | `/domains/bind` | `{ subdomain, serverName, force? }` | Bind subdomain + DNS + ingress sync |
 | `DELETE` | `/domains/unbind/:sub` | — | Unbind + remove DNS records |
+
+#### Functions
+
+Only the function's owner can call these. Errors are `{ success: false, error }`.
+
+| Method | Path | Body | Description |
+|--------|------|------|-------------|
+| `POST` | `/fn/add` | `{ name, cwd, entry?, user?, envFile?, hot?, max? }` | Register a function (assets come from the project config; no `main` makes it assets-only) |
+| `POST` | `/fn/settings` | `{ name, hot?, max?, log? }` | Warm instances, instance cap, request log (`true`, `"meta"` or `false`) |
+| `POST` | `/fn/deploy` | `{ name }` | Bundle, snapshot and pin |
+| `POST` | `/fn/rollback` | `{ name, id? }` | Pin an earlier snapshot (the previous one if no `id`) |
+| `POST` | `/fn/dev` | `{ name }` | Unpin, back to the live source |
+| `GET` | `/fn/deploys?name=` | — | `{ deploys, current }` |
+| `GET` | `/fn/instances?name=` | — | Live instances: id, pid, hot, in flight, started, ready |
+| `GET` | `/fn/requests?name=&status=&path=&since=&before=&limit=` | — | Request log summaries |
+| `GET` | `/fn/request?name=&id=` | — | One logged request in full |
+| `GET` | `/fn/tail?name=` | — | SSE, one summary per finished request |
+| `POST` | `/fn/replay` | `{ name, id, allowPartial? }` | Re-send a logged request to the current code |
+| `POST` | `/fn/kv` | `{ name, binding, op, key?, value?, prefix?, limit? }` | KV `get` / `put` / `list` / `delete` |
+| `POST` | `/fn/d1` | `{ name, binding, sql, params? }` | Run SQL against a D1 binding |
+
+`GET /configs` entries carry `fn: { entry, deploy, hot, max, log, assets }` for functions. `assets` is `null` or `{ directory, binding, notFound, html, runWorkerFirst }`; `entry` is `null` for an assets-only site. Deploys carry `entry` and `assets` (the snapshot's asset folder, or `null`); request log rows carry `kind` and `rule`. Delete, start, stop and logs use the usual routes.
 
 #### Logs and Stats
 
@@ -622,7 +852,7 @@ Requires `~/.config/candy/domains.json` with zone and tunnel configuration.
 
 | Page | Purpose |
 |------|---------|
-| `portal.html` | Dashboard (routes, processes, configs, portals, bound domains) with a log viewer that passes keystrokes to the process |
+| `portal.html` | Dashboard (routes, processes, configs, portals, bound domains) with a log viewer that passes keystrokes to the process. Functions get an `fn` badge and a panel for deploys, rollback, hot/max, instances and the request log with replay |
 | `candy.html` | Registration page (quick route mode + lazy server config mode) |
 | `starting.html` | Startup progress with live log SSE, manual port assignment, variant chooser |
 | `crashed.html` | Crash page with recent logs and restart action |
@@ -707,7 +937,9 @@ Runs as the installing user with `CAP_NET_BIND_SERVICE` for port 53 — not root
 | `~/.config/caddy/caddy.log` | Caddy process stdout/stderr |
 | `~/.config/caddy/candy.pid` | Daemon PID |
 | `/run/candy/users/<user>/secret` | Per-user bootstrap secret (root mode) |
-| `/var/lib/candy/<name>/` | A sandboxed server's state folder (`CANDY_STATE_DIR`) |
+| `/var/lib/candy/<name>/` | A sandboxed server's state folder (`CANDY_STATE_DIR`). For a function: KV/D1 SQLite files and `deploys/` (`~/.local/state/candy/fn/<name>/` as a normal user) |
+| `/var/lib/candy-daemon/fn-log/<name>.sqlite` | A function's 24h request log, daemon-only (`~/.local/state/candy/fn-log/` as a normal user) |
+| `/run/candy/fn/<name>.sock` | Socket a function's instances dial in on (`$XDG_RUNTIME_DIR/candy/fn/` as a normal user) |
 | `/var/log/candy/<name>.log` | Process logs when run as root (cleared on daemon start) |
 | `/tmp/candy-logs/<name>.log` | Process logs when run as a normal user |
 | `/tmp/candy-logs/_audit.log` | Operation audit log (`/var/log/candy` as root) |

@@ -12,10 +12,10 @@ export const MAX_RW_PATHS = 16
 
 // "wa" -> "candy-wa-3f9a1c.service". Names are DNS-safe labels already; the
 // suffix keeps a restart from colliding with a unit that is still stopping.
-export const unitName = (name: string, kind: "srv" | "cron" = "srv"): string => {
+export const unitName = (name: string, kind: "srv" | "cron" | "fn" = "srv"): string => {
   const safe = name.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 80)
   const rand = [...crypto.getRandomValues(new Uint8Array(3))].map(b => b.toString(16).padStart(2, "0")).join("")
-  return `candy-${kind === "cron" ? "cron-" : ""}${safe}-${rand}.service`
+  return `candy-${kind === "srv" ? "" : `${kind}-`}${safe}-${rand}.service`
 }
 
 // StateDirectory= value (relative to /var/lib) and the resulting path
@@ -65,8 +65,13 @@ export interface SandboxSpec {
   env: Record<string, string | undefined>
   script: string            // run as: bash -ic <script> [candy <args...>]
   args?: string[]
-  mode: "pty" | "pipe"      // pty for servers, pipe for cron runs
+  mode: "pty" | "pipe"      // pty for servers, pipe for cron runs and function instances
   bindsTo?: string | null   // the candy daemon's own unit
+  // Functions: the daemon's socket the instance dials in on (bound into the
+  // unit), and the code folder stays read-only. Deploy snapshots under the
+  // state folder are read-only too; the rest of the state folder is writable.
+  fn?: { socket?: string | null } | null
+  description?: string
 }
 
 // What the app is told about its writable places. Caches that normally land
@@ -82,6 +87,8 @@ export const sandboxEnv = (name: string): Record<string, string> => {
     npm_config_cache: `${state}/cache/npm`,
   }
 }
+
+export const FN_STOP_TIMEOUT_S = 35
 
 export const sandboxProperties = (spec: SandboxSpec): string[] => {
   const props = [
@@ -107,13 +114,23 @@ export const sandboxProperties = (spec: SandboxSpec): string[] => {
     "RestrictRealtime=yes",
     "SystemCallArchitectures=native",
     "KeyringMode=private",
-    "TimeoutStopSec=10",
+    // A function gets its 30s waitUntil grace (fn-host SHUTDOWN_WAIT_MS) before SIGKILL
+    `TimeoutStopSec=${spec.fn ? FN_STOP_TIMEOUT_S : 10}`,
   ]
   // ...and the code folder, plus any extra paths the owner listed. A folder
   // under /tmp is hidden by the private /tmp, so it is bound back in instead.
-  for (const path of [spec.codeDir, ...(spec.extraRw ?? [])]) {
+  // A function only reads its code; it writes to its state folder.
+  for (const path of [...(spec.fn ? [] : [spec.codeDir]), ...(spec.extraRw ?? [])]) {
     const tmp = isUnder(path, "/tmp") || isUnder(path, "/var/tmp")
     props.push(tmp ? `BindPaths=${path}` : `ReadWritePaths=${path}`)
+  }
+  if (spec.fn) {
+    // A function's code under /tmp would be hidden by the private /tmp: bind it back, read-only
+    if (isUnder(spec.codeDir, "/tmp") || isUnder(spec.codeDir, "/var/tmp")) props.push(`BindReadOnlyPaths=${spec.codeDir}`)
+    // Snapshots are immutable once built. The daemon creates deploys/ before
+    // any launch, so this always applies (code can't plant snapshots first).
+    props.push(`ReadOnlyPaths=${stateDirPath(spec.name)}/deploys`)
+    if (spec.fn.socket) props.push(`BindPaths=${spec.fn.socket}`)
   }
   if (spec.envFile) props.push(`EnvironmentFile=${spec.envFile}`)
   if (spec.bindsTo) props.push(`BindsTo=${spec.bindsTo}`, `After=${spec.bindsTo}`)
@@ -131,7 +148,7 @@ export const systemdRunCommand = (spec: SandboxSpec): string[] => {
     "--service-type=exec",
     `--uid=${spec.uid}`, `--gid=${spec.gid}`,
     `--working-directory=${spec.cwd}`,
-    `--description=candy ${spec.mode === "pty" ? "server" : "cron run"}: ${spec.name}`,
+    `--description=candy ${spec.description ?? (spec.mode === "pty" ? "server" : "cron run")}: ${spec.name}`,
   ]
   for (const prop of sandboxProperties(spec)) cmd.push(`--property=${prop}`)
   for (const [key, value] of Object.entries(env)) {

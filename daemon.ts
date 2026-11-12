@@ -7,16 +7,28 @@
 
 import { $, spawn, type Subprocess } from "bun"
 import { existsSync, readFileSync, watch, type FSWatcher } from "node:fs"
-import { appendFile, chmod, chown, mkdir, stat, unlink, writeFile } from "node:fs/promises"
+import { appendFile, chmod, chown, lchown, lstat, mkdir, stat, unlink, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
 import { userInfo } from "node:os"
 import { SHARED_GROUP, SHARED_SECRET_FILE } from "./secret.ts"
 import { AccessLogTail, activityFromAccessLog, countEstablished, idleVerdict, IDLE_TIMEOUT_MS, listeningPortsOf, localNameCandidates, readMemoryState, tailscaleServeTargets, validateTtlMinutes, type MemoryState } from "./activity.ts"
-import { findCodeDir, parseEnvFile, stateDirPath, systemdRunCommand, unitName, unitOfCgroup, userEnvDir, validateEnvFilePath, validateRwPath, MAX_RW_PATHS, SANDBOX_SLICE } from "./sandbox.ts"
+import { findCodeDir, parseEnvFile, stateDirPath, systemdRunCommand, unitName, unitOfCgroup, userEnvDir, validateEnvFilePath, validateRwPath, MAX_RW_PATHS, SANDBOX_SLICE, STATE_ROOT } from "./sandbox.ts"
 import { OAuthServer, type OAuthPersisted } from "./mcp-oauth.ts"
-import { handleRequest as handleMcpRequest } from "./mcp.ts"
+import { handlePublicRequest as handlePublicMcpRequest } from "./mcp.ts"
 import { applyAdguardUpstreams, upstreamRule, type AdguardConfig } from "./adguard.ts"
 import { CRON_JOB_ENV, LAUNCH_WRAPPER, cronMatches, cronScript, DEFAULT_CRON_TIMEOUT_S, MAX_CRON_JOBS, parseCron, validateCronJob, type CronJob } from "./cron.ts"
+import { FnRuntime, type FnLaunched } from "./fn-runtime.ts"
+import { FnLog, replayRequest } from "./fn-log.ts"
+import { cronJobsFor } from "./fn-cron.ts"
+import { checkToolResult, runFnTool, type FnToolOp } from "./fn-tool.ts"
+import {
+  fnFileName, fnLaunchArgs, fnLaunchEnv, fnLimits, fnRequestHeaders, fnSocketPath as fnSocketPathIn, fnTargetForRequest, fnToolCommand,
+  normalizeFnSettings, pinnedBun, FN_DEFAULT_LINGER_S, FN_DEFAULT_MAX, FN_MAX_INSTANCES, FN_MAX_LINGER_S, type FnSettings,
+  fnAssetsPlan, fnShimProject, fnSummaryOf, logAssetResponse, routeFunctionRequest, FnRoutingCache, type FnAssetsPlan,
+} from "./fn-daemon.ts"
+import { AssetServer, userCanRead, type AssetsConfig } from "./fn-assets.ts"
+import { isDeployId, type DeployInfo } from "./fn-deploy.ts"
+import { CONFIG_FILES as FN_CONFIG_FILES, type FnProjectConfig } from "./fn-config.ts"
 import { JtiBloom, readCredential, signJwt, stripCandyCredentials, verifyJwt, JWT_AUDIENCE, MAX_TOKEN_LIFETIME_S, type AuthResult, ipAllowed, isLoopback, parseCidr, TAILSCALE_RANGES } from "./server-auth.ts"
 
 import {
@@ -62,7 +74,11 @@ interface ServerConfig {
   rw?: string[]     // extra writable paths inside the sandbox
   envFile?: string  // KEY=VALUE file handed to the server as environment at launch
   ttl?: number      // its own idle limit in minutes (default: one hour)
+  fn?: FnSettings   // a function (candy-functions): no port, dispatched by the daemon
 }
+
+// A route either goes to a port/URL, or to a function the daemon dispatches itself
+type RouteTarget = number | string | { fn: string }
 
 type ProcessStatus = 'starting' | 'running' | 'dead' | 'errored'
 
@@ -965,7 +981,8 @@ const handlePublicMcp = async (req: Request, url: URL, server: any): Promise<Res
       if (item.method === "tools/call") {
         auditLog('MCP_PUBLIC_CALL', `${item.params?.name ?? '?'} by "${token.clientName}" (approved by ${token.approver ?? 'unknown'})`, 'AI')
       }
-      const reply = await handleMcpRequest(item)
+      // The public host gets a subset: no request logs, replay, KV or D1
+      const reply = await handlePublicMcpRequest(item)
       if (reply && item.id !== undefined && item.id !== null) replies.push(reply)
     }
     if (replies.length === 0) return new Response(null, { status: 202, headers: MCP_PUBLIC_CORS })
@@ -1103,17 +1120,18 @@ const restartCloudflared = async () => {
 // State Maps
 // ============================================================================
 
-const routes = new Map<string, { target: number | string, persistent: boolean }>()
+const routes = new Map<string, { target: RouteTarget, persistent: boolean }>()
 
 // Where a bound public domain sends its traffic. A site candy starts itself goes to its
 // running process (or to the daemon, which starts it). A plain route goes straight to
 // its port or external URL.
 const bindingUpstream = (serverName: string): string | null => {
+  if (fnConfigOf(serverName)) return null  // functions are always served by the daemon
   const managed = processes.get(serverName)
   if (managed?.status === 'running' && managed.port) return `localhost:${managed.port}`
   if (managed || serverConfigs.has(serverName)) return null
   const route = routes.get(serverName)
-  if (!route) return null
+  if (!route || typeof route.target === "object") return null
   const target = String(route.target)
   return /^\d+$/.test(target) ? `localhost:${target}` : target
 }
@@ -2259,6 +2277,12 @@ const loadServerConfigs = async () => {
             const jobs = (item as any).cron.map(validateCronJob).filter((v: any) => v.ok).map((v: any) => v.job as CronJob)
             if (jobs.length > 0) cfg.cron = jobs.slice(0, MAX_CRON_JOBS)
           }
+          if ((item as any).fn !== undefined) {
+            const fn = normalizeFnSettings((item as any).fn)
+            if (!fn) continue  // a broken fn entry must not turn into a plain server
+            cfg.fn = fn
+            cfg.api = true  // functions are API mode: no loading page, requests are held
+          }
           normalized.push(cfg)
         }
         if (normalized.length > 0) {
@@ -2310,6 +2334,13 @@ const addServerConfig = async (name: string, cwd: string, cmd: string, actor: Ac
 
 // Remove a server config
 const removeServerConfig = async (name: string, actor: Actor = 'Portal', configId?: string) => {
+  // A function: stop its instances, close its socket and log, drop its route
+  const fnConfig = fnConfigOf(name)
+  if (fnConfig && (!configId || fnConfig.id === configId)) {
+    await teardownFn(name)
+    await removeFnLogFiles(name)
+    if (typeof routes.get(name)?.target === "object") routes.delete(name)
+  }
   // Stop the process if running
   const proc = processes.get(name)
   if (proc && (proc.status === 'running' || proc.status === 'starting')) {
@@ -2334,7 +2365,7 @@ const removeServerConfig = async (name: string, actor: Actor = 'Portal', configI
   }
   await saveServerConfigs()
   auditLog('CONFIG_REMOVE', configId ? `${name}:${configId}` : name, actor)
-  if (await forgetLanPublishedIfGone(name)) await syncCaddy()
+  if (await forgetLanPublishedIfGone(name) || fnConfig) await syncCaddy()
 }
 
 // ============================================================================
@@ -2463,23 +2494,28 @@ const forwardApiModeRequest = async (req: Request, url: URL, name: string, confi
 // cd as that user (so a cwd they couldn't reach on their own fails).
 // A cron run passes `cron`: its args reach the command as "$@" (positional
 // parameters), never as shell text, so they can't add commands.
-const launchSpec = async (config: ServerConfig, cron?: { job: string; args: string[] }, name = ''): Promise<{ cmd: string[]; cwd: string; env: Record<string, string | undefined>; unit: string | null }> => {
+// A function launch (`fnInstance` for one that dials in; a cron run passes
+// `cron`) runs `bun <shim> <entry> [--scheduled <expr>]`, all of it as argv:
+// the script is just `exec "$@"`.
+const launchSpec = async (config: ServerConfig, cron?: { job: string; args: string[] }, name = '', fnInstance?: FnInstanceLaunch): Promise<{ cmd: string[]; cwd: string; env: Record<string, string | undefined>; unit: string | null }> => {
   const extra: Record<string, string> = cron
     ? { TERM: 'dumb', [CRON_JOB_ENV]: cron.job }
     : { FORCE_COLOR: '1', TERM: 'xterm-256color', [CANDY_RUNTIME_MAGIC_ENV]: config.id }
-  const script = cron ? cronScript(config.cmd) : config.cmd
-  const args = cron ? ['candy', ...cron.args] : []
-  let fileEnv: Record<string, string> = {}
   if (config.envFile) {
     const problem = await envFileProblem(configUser(config), config.envFile)
     if (problem) throw new Error(`Refusing to start: ${problem}`)
-    // Sandboxed launches let systemd read the file; the others get it merged here
-    if (!(SANDBOX_AVAILABLE && config.sandbox !== false && name)) {
-      fileEnv = parseEnvFile(await Bun.file(config.envFile).text())
-    }
+  }
+  const fn = config.fn ? await fnLaunchParts(name, config, cron, fnInstance) : null
+  if (fn) Object.assign(extra, fn.env, { TERM: 'dumb' })
+  const script = fn ? fn.script : cron ? cronScript(config.cmd) : config.cmd
+  const args = fn ? ['candy', ...fn.args] : cron ? ['candy', ...cron.args] : []
+  let fileEnv: Record<string, string> = {}
+  // Sandboxed launches let systemd read the file; the others get it merged here
+  if (config.envFile && !(SANDBOX_AVAILABLE && config.sandbox !== false && name)) {
+    fileEnv = parseEnvFile(await readFnEnvFile(config))
   }
   if (!RUNNING_AS_ROOT) {
-    return { cmd: ['bash', '-ic', script, ...args], cwd: config.cwd, env: { ...process.env, ...fileEnv, ...extra }, unit: null }
+    return { cmd: ['bash', fn ? '-c' : '-ic', script, ...args], cwd: config.cwd, env: { ...process.env, ...fileEnv, ...extra }, unit: null }
   }
   const account = await lookupUser(configUser(config))
   if (!account || account.uid === 0) {
@@ -2498,7 +2534,7 @@ const launchSpec = async (config: ServerConfig, cron?: { job: string; args: stri
   // Sandboxed: its own systemd unit, as the config's user. Read-only
   // everywhere except the code folder, the state folder and a private /tmp.
   if (SANDBOX_AVAILABLE && config.sandbox !== false && name) {
-    const unit = unitName(name, cron ? 'cron' : 'srv')
+    const unit = unitName(name, cron ? 'cron' : fn ? 'fn' : 'srv')
     return {
       cmd: systemdRunCommand({
         name,
@@ -2511,9 +2547,11 @@ const launchSpec = async (config: ServerConfig, cron?: { job: string; args: stri
         envFile: config.envFile,
         env,
         script,
-        args: cron?.args,
-        mode: cron ? 'pipe' : 'pty',
+        args: fn ? fn.args : cron?.args,
+        mode: cron || fn ? 'pipe' : 'pty',
         bindsTo: OWN_UNIT,
+        fn: fn ? { socket: fn.socket } : null,
+        description: fn ? (cron ? 'function cron run' : 'function') : undefined,
       }),
       cwd: '/',
       env: process.env,
@@ -2556,6 +2594,858 @@ const envFileProblem = async (user: string, path: string): Promise<string | null
   return readable.exitCode === 0 ? null : `${user} can't read ${path}. Make it readable to them, or have root put it in ${dir}/.`
 }
 
+// ============================================================================
+// Functions (candy-functions, see FUNCTIONS_DESIGN.md)
+// ============================================================================
+// A function never listens anywhere. Caddy sends its hosts here, the daemon
+// owns a unix socket per function that instances dial in on, and FnRuntime
+// (pool + dispatch) serves each request. Instances are launched through
+// launchSpec like any server (sandboxed and as the config's user in root
+// mode). Anything touching the function's own files (project config, deploy
+// bundles, KV/D1 from the API) runs as that user through fn-tool.ts.
+
+interface FnInstanceLaunch { id: string; token: string; socketPath: string }
+
+const FN_KEEP_DEPLOYS = 10
+const FN_ROOT_MODULE_DIR = "/usr/lib/candy"
+const FN_TOOL_TIMEOUT_MS = 120 * 1000
+// fn-tool prints one JSON line; anything near this is a runaway (or hostile) process
+const FN_TOOL_MAX_OUTPUT = 8 * 1024 * 1024
+// Cloudflare cuts a request with no response after 100s; do the same
+const FN_HEADER_TIMEOUT_MS = 100 * 1000
+const FN_LOG_SWEEP_INTERVAL = 60 * 60 * 1000
+const FN_SOCKET_DIR = RUNNING_AS_ROOT
+  ? "/run/candy/fn"
+  : `${process.env.XDG_RUNTIME_DIR || `/tmp/candy-${process.getuid?.() ?? "user"}`}/candy/fn`
+const FN_LOG_DIR = RUNNING_AS_ROOT ? "/var/lib/candy-daemon/fn-log" : `${process.env.HOME}/.local/state/candy/fn-log`
+
+const fnStateDir = (name: string): string =>
+  RUNNING_AS_ROOT ? stateDirPath(name) : `${process.env.HOME}/.local/state/candy/fn/${fnFileName(name)}`
+const fnSocketPath = (name: string): string => fnSocketPathIn(FN_SOCKET_DIR, name)
+const fnLogPath = (name: string): string => `${FN_LOG_DIR}/${fnFileName(name)}.sqlite`
+// Where the shim and its sibling modules live: installed copies in root mode
+// (readable by every user), this checkout otherwise
+const fnModuleDir = (): string =>
+  RUNNING_AS_ROOT && existsSync(`${FN_ROOT_MODULE_DIR}/fn-host.ts`) ? FN_ROOT_MODULE_DIR : import.meta.dir
+
+const fnConfigOf = (name: string): ServerConfig | null => getConfigsForName(name).find(c => c.fn) ?? null
+
+// A bun the function's user can't swap: fn-tool's output is trusted only as
+// far as checkToolResult goes, but root should not run the user's binary at all
+const FN_TOOL_BUN = pinnedBun(process.execPath, ['/opt/bun/bin/bun', '/usr/local/bin/bun', '/usr/bin/bun'], existsSync)
+
+// Reads a child's stream up to `max` bytes; past that it is killed
+const readCapped = async (stream: ReadableStream<Uint8Array>, max: number, onOverflow: () => void): Promise<string> => {
+  const parts: Uint8Array[] = []
+  let size = 0
+  for await (const chunk of stream) {
+    size += chunk.length
+    if (size > max) {
+      onOverflow()
+      throw new Error(`output larger than ${max} bytes`)
+    }
+    parts.push(chunk)
+  }
+  return new TextDecoder().decode(Buffer.concat(parts))
+}
+
+// Run one fn-tool op as the config's user. In user mode the daemon is that user already.
+// Either way the result is checked (deploy ids, no control characters) before use.
+const fnTool = async <T>(config: Pick<ServerConfig, "user">, op: FnToolOp, args: Record<string, unknown>): Promise<T> => {
+  if (!RUNNING_AS_ROOT) return checkToolResult(op, await runFnTool(op, args), args) as T
+  const account = await lookupUser(configUser(config as ServerConfig))
+  if (!account || account.uid === 0) throw new Error(`'${configUser(config as ServerConfig)}' is not a usable non-root account`)
+  const proc = spawn({
+    cmd: fnToolCommand({
+      account, op, moduleDir: fnModuleDir(),
+      // No system bun: fall back to the user's own (output is still checked)
+      bun: FN_TOOL_BUN ?? 'bun',
+      path: FN_TOOL_BUN ? undefined : `${account.home}/.bun/bin:${account.home}/.local/bin:/opt/bun/bin:/usr/local/bin:/usr/bin:/bin`,
+    }),
+    cwd: '/',
+    stdin: new Blob([JSON.stringify(args)]),
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  const kill = () => { try { proc.kill('SIGKILL') } catch {} }
+  const timer = setTimeout(kill, FN_TOOL_TIMEOUT_MS)
+  let out: string, err: string
+  try {
+    [out, err] = await Promise.all([
+      readCapped(proc.stdout, FN_TOOL_MAX_OUTPUT, kill),
+      readCapped(proc.stderr, 64 * 1024, kill).catch(() => ''),
+      proc.exited,
+    ])
+  } catch (e) {
+    kill()
+    throw new Error(`fn-tool ${op} failed: ${fnErrorText(e)}`)
+  } finally {
+    clearTimeout(timer)
+  }
+  const last = out.trim().split("\n").pop() ?? ""
+  let parsed: { ok?: boolean; result?: unknown; error?: string } | null = null
+  try { parsed = JSON.parse(last) } catch {}
+  const clean = (t: string) => t.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ' ').slice(0, 2000)
+  if (!parsed) throw new Error(`fn-tool ${op} failed: ${clean(err.trim() || out.trim() || "no output")}`)
+  if (!parsed.ok) throw new Error(clean(typeof parsed.error === 'string' && parsed.error ? parsed.error : `fn-tool ${op} failed`))
+  return checkToolResult(op, parsed.result, args) as T
+}
+
+// Why the state folder can't be handed to `uid`, or null. A folder still
+// owned by another user holds their KV/D1 data and snapshots (a removed
+// function of theirs); it is never given away.
+const fnStateDirProblem = async (name: string, uid: number): Promise<string | null> => {
+  if (!RUNNING_AS_ROOT) return null
+  const info = await lstat(fnStateDir(name)).catch(() => null)
+  if (!info) return null
+  if (info.isSymbolicLink() || !info.isDirectory()) return `${fnStateDir(name)} is not a folder`
+  if (info.uid !== 0 && info.uid !== uid) return `${fnStateDir(name)} still holds another user's data for '${name}'. Pick another name, or have root remove that folder.`
+  return null
+}
+
+// The function's state folder must exist (and be the user's) before a tool
+// or an instance touches it. /var/lib/candy is root's, so users can't plant
+// anything there; a symlink is refused anyway. deploys/ is made here too, so
+// the sandbox can always mount it read-only (code can't plant snapshots).
+const ensureFnStateDir = async (name: string, config: ServerConfig): Promise<string> => {
+  const dir = fnStateDir(name)
+  if (!RUNNING_AS_ROOT) {
+    await mkdir(`${dir}/deploys`, { recursive: true, mode: 0o700 })
+    return dir
+  }
+  const account = await lookupUser(configUser(config))
+  if (!account || account.uid === 0) throw new Error(`'${configUser(config)}' is not a usable non-root account`)
+  await mkdir(STATE_ROOT, { recursive: true, mode: 0o755 })
+  const problem = await fnStateDirProblem(name, account.uid)
+  if (problem) throw new Error(problem)
+  let info = await lstat(dir).catch(() => null)
+  if (!info) {
+    await mkdir(dir, { mode: 0o700 })
+    info = await lstat(dir)
+  }
+  if (info.uid !== account.uid || info.gid !== account.gid) await chown(dir, account.uid, account.gid)
+  // The folder is the user's now: only a deploys/ we just made is chowned, and
+  // lchown never follows a symlink they could swap in
+  const made = await mkdir(`${dir}/deploys`, { mode: 0o755 }).then(() => true, () => false)
+  if (made) await lchown(`${dir}/deploys`, account.uid, account.gid)
+  return dir
+}
+
+// Env file key names (the values reach the shim through systemd or launchSpec).
+// Root reads only files under /etc/candy/env/<user>; anything else is read
+// as the user, so a path swapped for a symlink can't expose root's files.
+const readFnEnvFile = async (config: ServerConfig): Promise<string> => {
+  if (!config.envFile) return ''
+  const user = configUser(config)
+  const dir = userEnvDir(user)
+  if (!RUNNING_AS_ROOT || (config.envFile.startsWith(dir + '/') && !config.envFile.slice(dir.length + 1).includes('/'))) {
+    return await Bun.file(config.envFile).text().catch(() => '')
+  }
+  const account = await lookupUser(user)
+  if (!account || account.uid === 0) return ''
+  const res = await $`setpriv --reuid=${account.uid} --regid=${account.gid} --init-groups -- head -c 262144 -- ${config.envFile}`.quiet().nothrow()
+  return res.exitCode === 0 ? res.stdout.toString() : ''
+}
+
+// Project config (candy.fn.json / wrangler.*), read as the user and cached
+// until one of those files changes
+const fnProjects = new Map<string, { cfg: FnProjectConfig; stamp: string; cwd: string; entry: string | null }>()
+const fnConfigStamp = async (dir: string): Promise<string> =>
+  (await Promise.all(FN_CONFIG_FILES.map(f => stat(`${dir}/${f}`).then(s => `${f}:${s.mtimeMs}:${s.size}`, () => "")))).join("|")
+
+const fnProject = async (name: string, config: ServerConfig, force = false): Promise<FnProjectConfig> => {
+  const stamp = await fnConfigStamp(config.cwd)
+  const cached = fnProjects.get(name)
+  if (cached && !force && cached.stamp === stamp && cached.cwd === config.cwd && cached.entry === config.fn!.entry) return cached.cfg
+  // An assets-only function has no explicit entry: the project file decides
+  const cfg = await fnTool<FnProjectConfig>(config, 'config', { dir: config.cwd, entry: config.fn!.entry ?? undefined })
+  fnProjects.set(name, { cfg, stamp, cwd: config.cwd, entry: config.fn!.entry })
+  return cfg
+}
+
+// Cron triggers become ordinary cron jobs; their args are fixed by candy
+const syncFnCron = (config: ServerConfig, project: FnProjectConfig) => {
+  // fn-tool refuses this first; an assets-only function has nothing to run on a schedule
+  if (!project.main && project.crons.length > 0) throw new Error("cron triggers need a main module: an assets-only function never runs code")
+  const jobs = cronJobsFor(project)
+  if (jobs.length > 0) config.cron = jobs
+  else delete config.cron
+}
+
+const fnLaunchParts = async (name: string, config: ServerConfig, cron?: { job: string; args: string[] }, instance?: FnInstanceLaunch) => {
+  const fn = config.fn!
+  if (!name) throw new Error("a function launch needs its name")
+  const project = await fnProject(name, config)
+  const stateDir = await ensureFnStateDir(name, config)
+  const routing = await fnRoutingFor(name, config)
+  // Assets-only functions are served by the daemon alone: no instance, no cron run
+  if (!routing.hasWorker) throw new Error(`${name} serves static assets only: it never starts an instance`)
+  // A pinned deploy runs its snapshot; dev runs the live entry (checked to stay inside cwd)
+  const entry = fn.deploy ? `${stateDir}/deploys/${fn.deploy}/worker.js` : project.main
+  if (!entry) throw new Error(`${name} has no entry module`)
+  // Only the names: the values reach the shim through the env file (systemd or merged here)
+  const secretKeys = Object.keys(parseEnvFile(await readFnEnvFile(config)))
+  const assets = routing.assetsDir ? { dir: routing.assetsDir, mode: routing.mode } : null
+  // The shim's assets block matches what the daemon routes with (the deploy's own when pinned)
+  const env = fnLaunchEnv({ stateDir, project: fnShimProject(project, routing.plan), secretKeys, lingerS: fn.linger, instance, assets })
+  // As root, bun comes from the user's PATH (it runs their own code anyway); otherwise it is the daemon's own
+  const bun = RUNNING_AS_ROOT ? 'bun' : process.execPath
+  return {
+    script: 'exec "$@"',
+    args: fnLaunchArgs({ bun, moduleDir: fnModuleDir(), entry, cronArgs: cron?.args }),
+    env,
+    socket: instance?.socketPath ?? null,
+  }
+}
+
+// One instance: launched like a server (pipes, not a PTY), output into the function's log
+const launchFnInstance = async (name: string, instance: FnInstanceLaunch): Promise<FnLaunched> => {
+  const config = fnConfigOf(name)
+  if (!config) throw new Error(`No function named ${name}`)
+  const launch = await launchSpec(config, undefined, name, instance)
+  const proc = spawn({ cmd: launch.cmd, cwd: launch.cwd, env: launch.env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' })
+  auditLog('FN_INSTANCE_START', `${name}: ${instance.id} (pid ${proc.pid})${launch.unit ? ` [${launch.unit}]` : ''}`, 'System')
+  const pump = async (stream: ReadableStream<Uint8Array>, tag: string) => {
+    const decoder = new TextDecoder()
+    let partial = ''
+    for await (const chunk of stream) {
+      const lines = (partial + stripAnsi(decoder.decode(chunk, { stream: true }))).split(/\r?\n/)
+      partial = lines.pop() ?? ''
+      const ts = new Date().toISOString()
+      for (const line of lines) if (line.trim()) await processLog(name, `[${ts}] [${tag}] ${line}\n`)
+    }
+    if (partial.trim()) await processLog(name, `[${new Date().toISOString()}] [${tag}] ${partial}\n`)
+  }
+  const tag = instance.id.slice(name.length + 1)
+  Promise.all([pump(proc.stdout, tag), pump(proc.stderr, tag)]).catch(() => {})
+  const exited = proc.exited.then(code => {
+    auditLog('FN_INSTANCE_EXIT', `${name}: ${instance.id} code ${code}`, 'System')
+    return code
+  })
+  return {
+    pid: proc.pid,
+    exited,
+    kill: () => {
+      if (launch.unit) stopUnit(launch.unit).catch(() => {})
+      else try { proc.kill('SIGTERM') } catch {}
+    },
+  }
+}
+
+// How requests for a function are routed: whether it has a worker (live main,
+// or the pinned deploy's worker.js) and its asset server. Opened on first use
+// and reopened when the folder, deploy or project config changes (the key);
+// resetFnRouting drops it on deploy/rollback/dev/settings/add/remove.
+interface FnRouting {
+  hasWorker: boolean
+  deploy: string | null
+  assets: AssetServer | null
+  assetsDir: string | null      // what the shim's env.ASSETS reads
+  assetsConfig: AssetsConfig | null  // the deploy's recorded config when pinned, else the live one
+  mode: 'dev' | 'snapshot'
+  plan: FnAssetsPlan
+}
+const fnRoutings = new FnRoutingCache<FnRouting>(r => r.assets?.close())
+
+// Root serves the files: only what the function's user could read themselves.
+// Groups are looked up once a minute per user, not on every open.
+const FN_GIDS_TTL_MS = 60_000
+const fnGidsCache = new Map<string, { at: number; gids: number[] }>()
+const fnUserGids = async (account: UserAccount): Promise<number[]> => {
+  const hit = fnGidsCache.get(account.name)
+  if (hit && Date.now() - hit.at < FN_GIDS_TTL_MS) return hit.gids
+  const res = await $`id -G -- ${account.name}`.quiet().nothrow()
+  const gids = res.exitCode === 0 ? res.stdout.toString().trim().split(/\s+/).map(Number).filter(Number.isInteger) : [account.gid]
+  fnGidsCache.set(account.name, { at: Date.now(), gids })
+  return gids
+}
+const fnAssetReader = async (config: ServerConfig): Promise<((path: string) => boolean) | undefined> => {
+  if (!RUNNING_AS_ROOT) return undefined  // the daemon is that user already
+  const account = await lookupUser(configUser(config))
+  if (!account || account.uid === 0) throw new Error(`'${configUser(config)}' is not a usable non-root account`)
+  const gids = await fnUserGids(account)
+  return path => userCanRead(path, account.uid, gids)
+}
+
+const openFnRouting = async (name: string, config: ServerConfig, project: FnProjectConfig, deploy: string | null): Promise<FnRouting> => {
+  let info: DeployInfo | null = null
+  if (deploy) {
+    // Read as the user and checked (assetsConfig included) by checkToolResult
+    info = await fnTool<DeployInfo | null>(config, 'resolve', { stateDir: fnStateDir(name), id: deploy })
+    if (!info) throw new Error(`deploy ${deploy} of ${name} is gone`)
+  }
+  const plan = fnAssetsPlan(project, info)
+  if (plan.source === 'live-fallback' || plan.source === 'default') {
+    auditLog('FN_ASSETS_WARN', `${name}: deploy ${deploy} has no recorded assets routing, using the ${plan.source === 'default' ? 'defaults' : 'live project config'}`, 'System')
+  }
+  const cfg = plan.config
+  if (!cfg) return { hasWorker: plan.hasWorker, deploy, assets: null, assetsDir: null, assetsConfig: null, mode: plan.mode, plan }
+  // canRead in snapshot mode too: the user owns deploys/ and could swap a file for a symlink.
+  // No index or watcher: dev lookups stat the disk, snapshots use the manifest. A missing
+  // folder (dev before the first build) is an empty asset set, picked up when it appears.
+  const assets = await AssetServer.open(cfg, { mode: plan.mode, canRead: await fnAssetReader(config) })
+  if (!assets.attached) auditLog('FN_ASSETS_WARN', `${name}: assets directory ${cfg.directory} does not exist yet, every lookup misses until it does`, 'System')
+  for (const w of assets.warnings.slice(0, 20)) auditLog('FN_ASSETS_WARN', `${name}: ${w}`, 'System')
+  return { hasWorker: plan.hasWorker, deploy, assets, assetsDir: cfg.directory, assetsConfig: cfg, mode: plan.mode, plan }
+}
+
+const fnRoutingFor = (name: string, config: ServerConfig): Promise<FnRouting> =>
+  fnRoutings.get(name, async () => {
+    const project = await fnProject(name, config)
+    const deploy = config.fn?.deploy ?? null
+    return {
+      key: JSON.stringify([config.cwd, configUser(config), deploy, project.main, project.assets]),
+      open: () => openFnRouting(name, config, project, deploy),
+    }
+  // Removed or replaced while the project config loaded: don't store a routing for it
+  }, () => fnConfigOf(name) === config)
+
+const resetFnRouting = (name: string) => fnRoutings.reset(name)
+
+const fnRuntimes = new Map<string, FnRuntime>()
+const fnLogs = new Map<string, FnLog>()
+
+// The request log of a function; `fn.log` decides whether requests are captured
+const fnLogOf = (name: string, config: ServerConfig): FnLog => {
+  let log = fnLogs.get(name)
+  if (!log) {
+    log = new FnLog(fnLogPath(name), { mode: config.fn?.log === "meta" ? "meta" : "full" })
+    fnLogs.set(name, log)
+  }
+  return log
+}
+const closeFnLog = (name: string) => {
+  try { fnLogs.get(name)?.close() } catch {}
+  fnLogs.delete(name)
+}
+// A removed function's traffic must not go to whoever takes the name next
+const removeFnLogFiles = async (name: string) => {
+  closeFnLog(name)
+  for (const suffix of ['', '-wal', '-shm']) await unlink(fnLogPath(name) + suffix).catch(() => {})
+}
+
+const fnRuntimeFor = async (name: string): Promise<FnRuntime | null> => {
+  const existing = fnRuntimes.get(name)
+  if (existing) return existing
+  const config = fnConfigOf(name)
+  if (!config?.fn) return null
+  const account = RUNNING_AS_ROOT ? await lookupUser(configUser(config)) : null
+  if (RUNNING_AS_ROOT && (!account || account.uid === 0)) throw new Error(`'${configUser(config)}' is not a usable non-root account`)
+  // Another request may have created it while we looked the user up
+  const raced = fnRuntimes.get(name)
+  if (raced) return raced
+  const { hot, max } = fnLimits(config.fn)
+  const rt = new FnRuntime({
+    name,
+    socketPath: fnSocketPath(name),
+    socketOwner: account ? { uid: account.uid, gid: account.gid } : null,
+    hot,
+    max,
+    launch: instance => launchFnInstance(name, instance),
+    log: () => {
+      const current = fnConfigOf(name)
+      return current?.fn && current.fn.log !== false ? fnLogOf(name, current) : null
+    },
+  })
+  fnRuntimes.set(name, rt)
+  try {
+    await rt.listen()
+  } catch (e) {
+    fnRuntimes.delete(name)
+    throw e
+  }
+  return rt
+}
+
+// Instances finish what they're serving and exit; queued and new requests go
+// to fresh ones (new code, new settings). Hot instances are replaced at once.
+// Doesn't wait for the old instances (a long stream can keep one for 30s).
+const restartFn = async (name: string) => {
+  const rt = fnRuntimes.get(name)
+  const config = fnConfigOf(name)
+  // Now assets-only (e.g. main removed, or an assets-only deploy): its instances just go
+  const routing = config?.fn ? await fnRoutingFor(name, config).catch(() => null) : null
+  if (rt && routing && !routing.hasWorker) {
+    fnRuntimes.delete(name)
+    rt.close().catch(() => {})
+    return
+  }
+  if (rt) {
+    rt.restart(config?.fn ? fnLimits(config.fn) : undefined).catch(e => auditLog('FN_RESTART_FAIL', `${name}: ${fnErrorText(e)}`, 'System'))
+    return
+  }
+  await warmFn(name)
+}
+
+// Hot instances up (creating the runtime if needed); nothing else changes
+const warmFn = async (name: string) => {
+  const config = fnConfigOf(name)
+  if (!config?.fn || fnLimits(config.fn).hot === 0) return
+  // hot is ignored for an assets-only function: it never starts an instance
+  if (!(await fnRoutingFor(name, config)).hasWorker) return
+  const rt = await fnRuntimeFor(name)
+  rt?.pool.ensureHot().catch(e => auditLog('FN_HOT_FAIL', `${name}: ${fnErrorText(e)}`, 'System'))
+}
+
+const teardownFn = async (name: string) => {
+  const rt = fnRuntimes.get(name)
+  fnRuntimes.delete(name)
+  fnProjects.delete(name)
+  resetFnRouting(name)
+  closeFnLog(name)
+  if (rt) await rt.close().catch(() => {})
+}
+
+// Which function a request is for: its .localhost / .candy name or a bound domain
+const fnForRequest = (host: string, path: string): { name: string; binding: DomainBinding | null } | null =>
+  fnTargetForRequest(host, path, {
+    binding: resolveBindingFromHost,
+    localName: resolveLocalCandyDomain,
+    isFn: name => !!fnConfigOf(name),
+  })
+
+// Serve a request for a function host. Bound domains keep their auth,
+// lockouts and allowlist exactly like other sites (API mode: header auth).
+const serveFunction = async (req: Request, url: URL, name: string, binding: DomainBinding | null, server: any): Promise<Response> => {
+  if (binding) {
+    const denied = await requireBoundDomainAuth(req, server, binding)
+    if (denied) return denied
+  }
+  const config = fnConfigOf(name)
+  if (!config?.fn) return Response.json({ error: `No function named ${name}` }, { status: 404, headers: { 'X-Candy': 'fn' } })
+  let routing: FnRouting
+  try {
+    routing = await fnRoutingFor(name, config)
+  } catch (e) {
+    return Response.json({ error: `Could not start ${name}`, reason: String((e as Error)?.message ?? e) }, { status: 502, headers: { 'X-Candy': 'fn' } })
+  }
+
+  const headers = fnRequestHeaders(req.headers, { stripCredentials: !!binding && hasBindingAuth(binding) })
+  const host = req.headers.get('host') || `${name}.localhost`
+  const cleanHost = host.replace(/:\d+$/, '')
+  // Everything reaches the visitor over https (Caddy, or Cloudflare for bound domains)
+  const proto = binding ? 'https' : (req.headers.get('x-forwarded-proto') === 'http' ? 'http' : 'https')
+  const headerTimeout = new AbortController()
+  let timedOut = false
+  const timer = setTimeout(() => { timedOut = true; headerTimeout.abort(new DOMException('No response headers in time', 'TimeoutError')) }, FN_HEADER_TIMEOUT_MS)
+  const hasBody = req.method !== 'GET' && req.method !== 'HEAD'
+  // Method, Range and conditional headers ride along: the asset router answers HEAD, 206 and 304 itself
+  const target = new Request(`${proto}://${host}${url.pathname}${url.search}`, {
+    method: req.method,
+    headers,
+    body: hasBody ? req.body : null,
+    signal: AbortSignal.any([req.signal, headerTimeout.signal]),
+    redirect: 'manual',
+    // @ts-ignore streaming request bodies
+    duplex: 'half',
+  })
+  // A cold start and a long stream both outlast the default 10s idle limit
+  try { server.timeout(req, 0) } catch {}
+  if (url.pathname === '/' || url.pathname === '') domainHits.set(name, (domainHits.get(name) || 0) + 1)
+  const { ip } = getFingerprint(req, server)
+  const startedAt = performance.now()
+  try {
+    // Assets first (no instance, no port); only "worker" touches the pool
+    const routed = await routeFunctionRequest(target, {
+      assets: routing.assets,
+      hasWorker: routing.hasWorker,
+      private: !!binding && hasBindingAuth(binding),
+      worker: async (workerReq, rule) => {
+        let rt: FnRuntime | null
+        try {
+          rt = await fnRuntimeFor(name)
+        } catch (e) {
+          return Response.json({ error: `Could not start ${name}`, reason: String((e as Error)?.message ?? e) }, { status: 502, headers: { 'X-Candy': 'fn' } })
+        }
+        if (!rt) return Response.json({ error: `No function named ${name}` }, { status: 404, headers: { 'X-Candy': 'fn' } })
+        const res = await rt.handle(workerReq, { clientIp: ip, host: cleanHost, showStack: !binding && cleanHost.endsWith('.localhost'), rule })
+        if (timedOut) return Response.json({ error: `${name} sent no response within ${FN_HEADER_TIMEOUT_MS / 1000}s` }, { status: 504, headers: { 'X-Candy': 'fn' } })
+        return res
+      },
+    })
+    if (routed.kind !== 'worker') {
+      const log = config.fn.log !== false ? fnLogOf(name, config) : null
+      logAssetResponse(log, { requestId: crypto.randomUUID(), fn: name, host: cleanHost, req: target, clientIp: ip, rule: routed.rule, startedAt }, routed.response)
+    }
+    return routed.response
+  } catch (e) {
+    return Response.json({ error: `${name}: ${fnErrorText(e)}` }, { status: 500, headers: { 'X-Candy': 'fn' } })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+// Why `requester` can't put a new config on `name` although no config has it,
+// or null: a route someone registered (/register, SDK) or a bound public
+// domain still points at it. Only the owner may take those over.
+const nameTakenWithoutConfig = (name: string, requester: string): string | null => {
+  if (!RUNNING_AS_ROOT || requester === OWNER || getConfigsForName(name).length > 0) return null
+  const route = routes.get(name)
+  if (route && !(typeof route.target === 'object' && route.target.fn === name)) return `'${name}' is already routed. Pick another name.`
+  const bound = Object.values(domainConfig?.bindings ?? {}).some(b => b.serverName === name)
+  if (bound) return `A public domain is bound to '${name}'. Pick another name.`
+  return null
+}
+
+// The function's routes go to the daemon; called at startup and on add
+const routeFunction = (name: string) => routes.set(name, { target: { fn: name }, persistent: false })
+
+// From the routing in use (a pinned deploy's own config), opened here if it isn't yet
+const fnSummary = async (config: ServerConfig, name: string) => {
+  if (!config.fn) return undefined
+  const routing = await fnRoutingFor(name, config).catch(() => null)
+  return fnSummaryOf(config.fn, routing, fnProjects.get(name)?.cfg ?? null)
+}
+// The server list is polled: it shows the routing as it stands and refreshes it in the
+// background (a project config edit, e.g. main added, shows on the next poll)
+const fnSummaryNow = (name: string) => {
+  const config = fnConfigOf(name)
+  if (!config?.fn) return undefined
+  fnRoutingFor(name, config).catch(() => {})
+  return fnSummaryOf(config.fn, fnRoutings.current(name) ?? null, fnProjects.get(name)?.cfg ?? null)
+}
+
+const fnErrorText = (e: unknown) => String((e as Error)?.message ?? e)
+
+// HTTP API for functions (/fn/*). Owner only: every route checks mayChangeConfig.
+const handleFnApi = async (req: Request, url: URL, corsHeaders: Record<string, string>, server: any): Promise<Response> => {
+  const ok = (body: Record<string, unknown>) => Response.json({ success: true, ...body }, { headers: corsHeaders })
+  const fail = (error: string, status = 400) => Response.json({ success: false, error }, { status, headers: corsHeaders })
+  const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+  const requester = requestUser(req)
+  const body: Record<string, any> = req.method === 'POST' ? await req.json().catch(() => ({})) : Object.fromEntries(url.searchParams)
+  const name = typeof body.name === 'string' ? body.name : ''
+  const route = url.pathname
+
+  // ---- add (creates or updates the function) ----
+  if (req.method === 'POST' && route === '/fn/add') {
+    if (!name || isReserved(name)) return fail(isSafeName(name) ? "That name is reserved." : "Names can only use letters, numbers, dashes, underscores and dots.", isSafeName(name) ? 403 : 400)
+    let user = requester
+    if (body.user && body.user !== requester) {
+      if (!RUNNING_AS_ROOT || requester !== OWNER) return fail(`You can only add functions that run as ${requester}.`, 403)
+      if (!(await runAsUsers()).some(u => u.name === body.user)) return fail(`${body.user} isn't in the ${SHARED_GROUP} group, so functions can't run as them.`)
+      user = String(body.user)
+    }
+    const others = getConfigsForName(name)
+    const otherOwner = RUNNING_AS_ROOT ? others.find(cfg => configUser(cfg) !== user) : undefined
+    if (otherOwner) return fail(`'${name}' already belongs to ${configUser(otherOwner)}. Pick another name.`, 403)
+    if (others.some(cfg => !cfg.fn)) return fail(`'${name}' is already a server. Remove it first or pick another name.`, 409)
+    const taken = nameTakenWithoutConfig(name, requester)
+    if (taken) return fail(taken, 409)
+    const account = RUNNING_AS_ROOT ? await lookupUser(user) : null
+    const stateProblem = account ? await fnStateDirProblem(name, account.uid) : null
+    if (stateProblem) return fail(stateProblem, 409)
+    if (typeof body.cwd !== 'string' || !body.cwd) return fail("cwd is required")
+    const home = RUNNING_AS_ROOT ? (await lookupUser(user))?.home : process.env.HOME
+    const cwd = body.cwd.replace(/^~(?=$|\/)/, home || '')
+    if (!cwd.startsWith('/') || /[\x00-\x1f]/.test(cwd)) return fail("cwd must be an absolute path")
+    if (!(await stat(cwd).catch(() => null))?.isDirectory()) return fail(`${cwd} is not a folder`)
+    for (const key of ['hot', 'max'] as const) {
+      if (body[key] !== undefined && (!Number.isInteger(body[key]) || body[key] < (key === 'max' ? 1 : 0) || body[key] > FN_MAX_INSTANCES)) return fail(`${key} must be a whole number from ${key === 'max' ? 1 : 0} to ${FN_MAX_INSTANCES}`)
+    }
+    if (body.linger !== undefined && (!Number.isInteger(body.linger) || body.linger < 0 || body.linger > FN_MAX_LINGER_S)) return fail(`linger must be a whole number of seconds from 0 to ${FN_MAX_LINGER_S}`)
+    if (body.envFile !== undefined && body.envFile !== null) {
+      const problem = await envFileProblem(user, String(body.envFile))
+      if (problem) return fail(problem)
+    }
+    if (body.entry !== undefined && (typeof body.entry !== 'string' || !body.entry)) return fail("entry must be a path")
+    let project: FnProjectConfig
+    try {
+      project = await fnTool<FnProjectConfig>({ user }, 'config', { dir: cwd, entry: body.entry })
+    } catch (e) {
+      return fail(fnErrorText(e))
+    }
+    if (!project.main && !project.assets) return fail(`No entry module: set "main" (or "assets") in candy.fn.json or wrangler, or pass entry. ${project.warnings.join('; ')}`)
+    if (!project.main) {
+      // Assets-only: served by the daemon, never an instance. fn-tool refuses most of this first.
+      if (body.hot !== undefined && body.hot > 0) return fail("hot needs a main module: an assets-only function never starts an instance")
+      const rwf = project.assets!.runWorkerFirst
+      if (rwf === true || (Array.isArray(rwf) && rwf.some(p => !p.startsWith('!')))) return fail("run_worker_first needs a main module")
+      if (project.crons.length > 0) return fail("cron triggers need a main module")
+    }
+    let config = others.find(cfg => cfg.fn)
+    const fn: FnSettings = { ...(config?.fn ?? {}), entry: project.main || null }
+    for (const key of ['hot', 'max', 'linger'] as const) if (body[key] !== undefined) fn[key] = body[key]
+    if (fnLimits(fn).hot !== (fn.hot ?? 0)) return fail("hot can't be more than max")
+    if (config) {
+      // Re-adding from another folder unpins the deploy, which was built from the old one
+      if (config.cwd !== cwd) delete fn.deploy
+      config.cwd = cwd
+      config.fn = fn
+    } else {
+      config = { id: makeConfigId(), cwd, cmd: '', api: true, fn }
+      if (user !== OWNER) config.user = user
+      serverConfigs.set(name, [config])
+    }
+    // shown in lists; never run as shell text
+    config.cmd = fn.entry ? `fn-host.ts ${fn.entry}` : `assets ${project.assets!.directory}`
+    if (body.envFile !== undefined) {
+      if (body.envFile) config.envFile = String(body.envFile)
+      else delete config.envFile
+    }
+    try {
+      syncFnCron(config, project)
+    } catch (e) {
+      return fail(fnErrorText(e))
+    }
+    fnProjects.set(name, { cfg: project, stamp: await fnConfigStamp(cwd), cwd, entry: fn.entry })
+    await saveServerConfigs()
+    routeFunction(name)
+    await syncCaddy()
+    resetFnRouting(name)
+    await restartFn(name)
+    auditLog('FN_ADD', `${name}: ${fn.entry ?? `assets ${project.assets!.directory}`} in ${cwd}${RUNNING_AS_ROOT ? ` as ${user}` : ''}`, actor)
+    return ok({ name, url: makeLocalhostUrl(name), warnings: project.warnings, fn: await fnSummary(config, name) })
+  }
+
+  if (!route.startsWith('/fn/')) return fail("Not found", 404)
+  if (!name) return fail("name is required")
+  const config = fnConfigOf(name)
+  if (!config?.fn) return fail(`No function named '${name}'.`, 404)
+  if (!mayChangeConfig(requester, config)) return fail(`${name} runs as ${configUser(config)}. Only they can use this.`, 403)
+  const fn = config.fn
+  const stateDir = fnStateDir(name)
+
+  if (req.method === 'POST' && route === '/fn/settings') {
+    const next: FnSettings = { ...fn }
+    for (const key of ['hot', 'max'] as const) {
+      if (body[key] === undefined) continue
+      if (!Number.isInteger(body[key]) || body[key] < (key === 'max' ? 1 : 0) || body[key] > FN_MAX_INSTANCES) return fail(`${key} must be a whole number from ${key === 'max' ? 1 : 0} to ${FN_MAX_INSTANCES}`)
+      next[key] = body[key]
+    }
+    if (body.linger !== undefined) {
+      if (!Number.isInteger(body.linger) || body.linger < 0 || body.linger > FN_MAX_LINGER_S) return fail(`linger must be a whole number of seconds from 0 to ${FN_MAX_LINGER_S}`)
+      next.linger = body.linger
+    }
+    if (body.log !== undefined) {
+      if (body.log === true) delete next.log
+      else if (body.log === false || body.log === 'meta') next.log = body.log
+      else return fail('log must be true, "meta" or false')
+    }
+    if ((next.hot ?? 0) > (next.max ?? FN_DEFAULT_MAX)) return fail("hot can't be more than max")
+    if (body.hot !== undefined && body.hot > 0) {
+      const routing = await fnRoutingFor(name, config).catch(() => null)
+      if (routing && !routing.hasWorker) return fail("hot needs a main module: an assets-only function never starts an instance")
+    }
+    const logChanged = (next.log ?? true) !== (fn.log ?? true)
+    config.fn = next
+    try {
+      syncFnCron(config, await fnProject(name, config, true))
+    } catch (e) {
+      auditLog('FN_CONFIG_FAIL', `${name}: ${fnErrorText(e)}`, actor)
+    }
+    await saveServerConfigs()
+    // Open tails stay subscribed; requests from now on use the new mode
+    if (logChanged && next.log !== false) fnLogs.get(name)?.setMode(next.log === 'meta' ? 'meta' : 'full')
+    resetFnRouting(name)
+    const rt = fnRuntimes.get(name)
+    rt?.setLimits(fnLimits(next))
+    if (fnLimits(next).hot > 0) await warmFn(name).catch(() => {})
+    auditLog('FN_SETTINGS', `${name}: hot ${fnLimits(next).hot}, max ${fnLimits(next).max}, linger ${next.linger ?? FN_DEFAULT_LINGER_S}s, log ${next.log ?? 'full'}`, actor)
+    return ok({ fn: await fnSummary(config, name) })
+  }
+
+  if (req.method === 'POST' && route === '/fn/deploy') {
+    try { server.timeout(req, 0) } catch {}  // bundling can take a while
+    let info: DeployInfo
+    try {
+      await ensureFnStateDir(name, config)
+      const project = await fnProject(name, config, true)
+      // The already-checked assets block goes along; main is null for an assets-only project
+      info = await fnTool<DeployInfo>(config, 'deploy', { name, srcDir: config.cwd, main: project.main, assets: project.assets ?? null, stateDir })
+      // /fn/settings may have replaced config.fn while the bundle ran
+      if (!config.fn) throw new Error(`${name} is no longer a function`)
+      config.fn.deploy = info.id
+      syncFnCron(config, project)
+    } catch (e) {
+      auditLog('FN_DEPLOY_FAIL', `${name}: ${fnErrorText(e).split('\n')[0]}`, actor)
+      return fail(fnErrorText(e))
+    }
+    await saveServerConfigs()
+    await fnTool(config, 'prune', { stateDir, keep: FN_KEEP_DEPLOYS, pinned: info.id }).catch(e => auditLog('FN_PRUNE_FAIL', `${name}: ${fnErrorText(e)}`, 'System'))
+    resetFnRouting(name)  // code and assets switch together
+    await restartFn(name)
+    auditLog('FN_DEPLOY', `${name}: ${info.id}${info.gitRev ? ` (${info.gitRev})` : ''}`, actor)
+    return ok({ deploy: info })
+  }
+
+  if (req.method === 'POST' && route === '/fn/rollback') {
+    let target: DeployInfo | null = null
+    try {
+      if (body.id !== undefined) {
+        if (!isDeployId(body.id)) return fail("That isn't a deploy id.")
+        target = await fnTool<DeployInfo | null>(config, 'resolve', { stateDir, id: body.id })
+        if (!target) return fail(`No deploy ${body.id} for ${name}.`, 404)
+      } else {
+        // The snapshot before the current one (or the newest, from dev)
+        const deploys = await fnTool<DeployInfo[]>(config, 'deploys', { stateDir })
+        const at = fn.deploy ? deploys.findIndex(d => d.id === fn.deploy) : -1
+        target = fn.deploy ? (at >= 0 ? deploys[at + 1] ?? null : deploys[0] ?? null) : deploys[0] ?? null
+        if (!target) return fail(`No earlier deploy of ${name} to roll back to.`, 404)
+      }
+    } catch (e) {
+      return fail(fnErrorText(e))
+    }
+    if (!config.fn) return fail(`${name} is no longer a function`, 404)
+    config.fn.deploy = target.id
+    await saveServerConfigs()
+    resetFnRouting(name)
+    await restartFn(name)
+    auditLog('FN_ROLLBACK', `${name}: ${target.id}`, actor)
+    return ok({ deploy: target })
+  }
+
+  if (req.method === 'POST' && route === '/fn/dev') {
+    delete config.fn!.deploy
+    try { syncFnCron(config, await fnProject(name, config, true)) } catch {}
+    await saveServerConfigs()
+    resetFnRouting(name)
+    await restartFn(name)
+    auditLog('FN_DEV', `${name}: live code`, actor)
+    return ok({})
+  }
+
+  if (req.method === 'GET' && route === '/fn/deploys') {
+    try {
+      const deploys = await fnTool<DeployInfo[]>(config, 'deploys', { stateDir })
+      return ok({ deploys, current: fn.deploy ?? null, fn: await fnSummary(config, name) })
+    } catch (e) {
+      return fail(fnErrorText(e))
+    }
+  }
+
+  if (req.method === 'GET' && route === '/fn/instances') {
+    await fnProject(name, config).catch(() => {})  // fresh assets block for the summary
+    return ok({ instances: fnRuntimes.get(name)?.instances() ?? [], fn: await fnSummary(config, name) })
+  }
+
+  if (req.method === 'GET' && route === '/fn/requests') {
+    const num = (v: unknown) => v === undefined || v === '' ? undefined : Number(v)
+    const filter = { status: body.status || undefined, path: body.path || undefined, since: num(body.since), before: num(body.before), limit: num(body.limit) }
+    for (const key of ['since', 'before', 'limit'] as const) {
+      if (filter[key] !== undefined && !Number.isFinite(filter[key])) return fail(`${key} must be a number (epoch ms for since/before)`)
+    }
+    try {
+      return ok({ requests: fnLogOf(name, config).query(filter) })
+    } catch (e) {
+      return fail(fnErrorText(e))
+    }
+  }
+
+  if (req.method === 'GET' && route === '/fn/request') {
+    const detail = typeof body.id === 'string' ? fnLogOf(name, config).get(body.id) : null
+    if (!detail) return fail(`No logged request ${body.id ?? ''} for ${name}.`, 404)
+    return Response.json(detail, { headers: corsHeaders })
+  }
+
+  if (req.method === 'GET' && route === '/fn/tail') {
+    const log = fnLogOf(name, config)
+    const enc = new TextEncoder()
+    let unsubscribe = () => {}
+    let ping: ReturnType<typeof setInterval> | undefined
+    const stop = () => { unsubscribe(); clearInterval(ping) }
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const send = (text: string) => { try { controller.enqueue(enc.encode(text)) } catch { stop() } }
+        send(`: tail ${name}\n\n`)
+        unsubscribe = log.subscribe(s => send(`data: ${JSON.stringify(s)}\n\n`))
+        ping = setInterval(() => send(': ping\n\n'), 15 * 1000)
+        req.signal.addEventListener('abort', () => { stop(); try { controller.close() } catch {} }, { once: true })
+      },
+      cancel: stop,
+    })
+    try { server.timeout(req, 0) } catch {}
+    return new Response(stream, { headers: { ...corsHeaders, 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' } })
+  }
+
+  if (req.method === 'POST' && route === '/fn/replay') {
+    const detail = typeof body.id === 'string' ? fnLogOf(name, config).get(body.id) : null
+    if (!detail) return fail(`No logged request ${body.id ?? ''} for ${name}.`, 404)
+    let replay: Request
+    try {
+      replay = replayRequest(detail, { allowPartial: body.allowPartial === true })
+    } catch (e) {
+      return fail(fnErrorText(e))
+    }
+    const routing = await fnRoutingFor(name, config).catch(() => null)
+    if (!routing) return fail(`Could not start ${name}`, 502)
+    try { server.timeout(req, 0) } catch {}
+    const requestId = crypto.randomUUID()
+    // Same routing as live traffic: an asset hit replays against the files, not the worker
+    const res = (await routeFunctionRequest(replay, {
+      assets: routing.assets,
+      hasWorker: routing.hasWorker,
+      worker: async (workerReq, rule) => {
+        const rt = await fnRuntimeFor(name).catch(() => null)
+        if (!rt) return Response.json({ error: `Could not start ${name}` }, { status: 502 })
+        return rt.handle(workerReq, { clientIp: '127.0.0.1', host: detail.host, requestId, showStack: true, rule })
+      },
+    })).response
+    // Replies are for reading in a terminal or the portal: cap what comes back
+    const LIMIT = 1024 * 1024
+    const reader = res.body?.getReader()
+    const parts: Uint8Array[] = []
+    let size = 0
+    let truncated = false
+    while (reader) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (size + value.length > LIMIT) {
+        parts.push(value.subarray(0, LIMIT - size))
+        truncated = true
+        await reader.cancel().catch(() => {})
+        break
+      }
+      parts.push(value)
+      size += value.length
+    }
+    auditLog('FN_REPLAY', `${name}: ${detail.id} -> ${requestId} (${res.status})`, actor)
+    return Response.json({
+      status: res.status,
+      headers: [...res.headers],
+      body: new TextDecoder().decode(Buffer.concat(parts)),
+      truncated,
+      requestId,
+    }, { headers: corsHeaders })
+  }
+
+  if (req.method === 'POST' && route === '/fn/kv') {
+    if (!['get', 'put', 'list', 'delete'].includes(body.op)) return fail("op must be get, put, list or delete")
+    if (typeof body.binding !== 'string' || !body.binding) return fail("binding is required")
+    try {
+      await ensureFnStateDir(name, config)
+      const result = await fnTool<Record<string, unknown>>(config, 'kv', {
+        stateDir, binding: body.binding, op: body.op, key: body.key, value: body.value, prefix: body.prefix, limit: body.limit, cursor: body.cursor,
+      })
+      if (body.op === 'put' || body.op === 'delete') auditLog('FN_KV', `${name}: ${body.op} ${body.binding}/${String(body.key).slice(0, 200)}`, actor)
+      return Response.json(result, { headers: corsHeaders })
+    } catch (e) {
+      return fail(fnErrorText(e))
+    }
+  }
+
+  if (req.method === 'POST' && route === '/fn/d1') {
+    if (typeof body.binding !== 'string' || !body.binding) return fail("binding is required")
+    if (typeof body.sql !== 'string' || !body.sql.trim()) return fail("sql is required")
+    try {
+      await ensureFnStateDir(name, config)
+      const result = await fnTool<Record<string, unknown>>(config, 'd1', { stateDir, binding: body.binding, sql: body.sql, params: body.params })
+      auditLog('FN_D1', `${name}: ${body.binding} ${body.sql.slice(0, 200).replace(/\s+/g, ' ')}`, actor)
+      return Response.json(result, { headers: corsHeaders })
+    } catch (e) {
+      return fail(fnErrorText(e))
+    }
+  }
+
+  return fail("Not found", 404)
+}
+
+setInterval(() => {
+  for (const [name, log] of fnLogs) {
+    try { log.sweep() } catch (e) { console.error(`[fn] ${name}: log sweep failed`, e) }
+  }
+}, FN_LOG_SWEEP_INTERVAL)
+
 // Port detection fallback for servers that don't print their port
 const SOCKET_SCAN_AFTER = 1500
 const SOCKET_SCAN_EVERY = 500
@@ -2589,6 +3479,7 @@ const spawnProcess = async (name: string, actor: Actor = 'System', configId?: st
   if (!config) {
     throw new Error(`No config found for server: ${name}`)
   }
+  if (config.fn) throw new Error(`${name} is a function: it starts on its first request`)
   const launch = await launchSpec(config, undefined, name)
 
   const logFile = getLogFile(name)
@@ -3092,7 +3983,7 @@ const getPidOwnedRoutePort = async (name: string, pid: number): Promise<number |
     return null
   }
   const route = routes.get(name)
-  if (!route || typeof route.target === "string") return null
+  if (!route || typeof route.target !== "number") return null
   return route.target
 }
 
@@ -3186,6 +4077,8 @@ const stopCaddy = async (force = false) => {
       }
     }
     await cleanupManagedProcesses()
+    // Functions: ask instances to finish, but don't hold the shutdown for long
+    await Promise.race([Promise.all([...fnRuntimes.keys()].map(teardownFn)), Bun.sleep(3000)])
 	  await stopCaddy(true)
 	  await $`rm -f ${PID_FILE}`.quiet().nothrow()
   }
@@ -3236,7 +4129,7 @@ const loadPersistentRoutes = async () => {
 const savePersistentRoutes = async () => {
   const data: Record<string, number | string> = {}
   for (const [name, route] of routes) {
-    if (route.persistent) {
+    if (route.persistent && typeof route.target !== "object") {
       data[name] = route.target
     }
   }
@@ -3379,7 +4272,8 @@ const setTsServe = async (name: string, port: number | null, actor: Actor): Prom
 // Where a route's site block proxies to. An API-mode server that isn't running
 // goes to the daemon instead of its (dead) port, so a request can start it;
 // this matters for persistent routes, which outlive the process.
-const routeProxyTarget = (name: string, route: { target: number | string }): string => {
+const routeProxyTarget = (name: string, route: { target: RouteTarget }): string => {
+  if (typeof route.target === "object") return 'localhost:9999'  // function: the daemon dispatches by Host
   const status = processes.get(name)?.status
   if (apiModeConfig(name) && status !== 'running') return 'localhost:9999'
   return typeof route.target === "number" ? `localhost:${route.target}` : route.target
@@ -3494,8 +4388,8 @@ const syncCaddy = async () => {
     for (const [name, port] of [...lanHttps].sort(([a], [b]) => a.localeCompare(b))) {
       const route = routes.get(name)
       if (!route && !serverConfigs.has(name)) continue
-      // Not running yet: the daemon's lazy-start page picks the server by Host.
-      const proxy = route
+      // Not running yet (or a function): the daemon picks the server by Host.
+      const proxy = route && typeof route.target !== "object"
         ? `reverse_proxy ${typeof route.target === "number" ? `localhost:${route.target}` : route.target}`
         : `reverse_proxy localhost:9999 {
     header_up Host ${name}.candy
@@ -3868,6 +4762,13 @@ const controlServer = Bun.serve({
     const requestHostname = (req.headers.get("host") || "").replace(/:\d+$/, "").toLowerCase()
     if (requestHostname && requestHostname === publicMcpFqdn()) {
       return await handlePublicMcp(req, url, controlServer)
+    }
+
+    // Functions: every request for a function's host is the function's,
+    // whatever its method or path (bound-domain login pages excepted)
+    const fnTarget = fnForRequest(requestHostname, url.pathname)
+    if (fnTarget) {
+      return await serveFunction(req, url, fnTarget.name, fnTarget.binding, controlServer)
     }
 
     // Handle CORS preflight
@@ -4367,6 +5268,18 @@ const controlServer = Bun.serve({
       }
     }
 
+    // === Functions API ===
+    // Request logs hold request data: never on a bound domain's host, and the
+    // GET routes need a token or key too (other GETs on *.localhost don't)
+    if (url.pathname.startsWith("/fn/")) {
+      if (isBoundDomain) return Response.json({ error: "not found" }, { status: 404, headers: corsHeaders })
+      if (isWebRoute && !isMCP) {
+        const token = req.headers.get("X-Candy-Token")
+        if (!token || !consumeToken(token)) return unauthorizedResponse(corsHeaders)
+      }
+      return await handleFnApi(req, url, corsHeaders, controlServer)
+    }
+
     // === Unprotected Bound Domain Proxy (non-GET methods) ===
     // For unprotected bound domains, all traffic routes through daemon for rate limiting
     if (isBoundDomain && req.method !== "GET") {
@@ -4590,6 +5503,9 @@ const controlServer = Bun.serve({
         return Response.json({ error: isSafeName(name) ? "That name is reserved." : "Names can only use letters, numbers, dashes, underscores and dots.", details: name }, { status: isSafeName(name) ? 403 : 400, headers: corsHeaders })
       }
 
+      if (fnConfigOf(name)) {
+        return Response.json({ error: `'${name}' is a function; it has no port to route to.`, details: name }, { status: 409, headers: corsHeaders })
+      }
       const isRestricted = body.target && (body.target.startsWith("http://") || body.target.startsWith("https://"))
       if (!isRestricted && (!Number.isInteger(body.port) || body.port! < 1 || body.port! > 65535)) {
         return Response.json({ error: "A route needs a port (1-65535) or an http(s) address.", details: String(body.port ?? body.target ?? "") }, { status: 400, headers: corsHeaders })
@@ -4650,6 +5566,9 @@ const controlServer = Bun.serve({
       if (!routes.has(oldName)) {
         return Response.json({ error: msg.notFound, details: oldName }, { status: 404, headers: corsHeaders })
       }
+      if (fnConfigOf(oldName) || fnConfigOf(newName)) {
+        return Response.json({ error: "Functions can't be renamed. Add it under the new name and remove the old one." }, { status: 409, headers: corsHeaders })
+      }
       if (routes.has(newName)) {
         return Response.json({ error: `A route named '${newName}' already exists.`, details: newName }, { status: 409, headers: corsHeaders })
       }
@@ -4694,7 +5613,7 @@ const controlServer = Bun.serve({
     }
 
     if (req.method === "GET" && url.pathname === "/routes") {
-      const routeList: Record<string, { target: number | string, isRestricted: boolean, persistent: boolean, lan: boolean, lanHttps: string | null, tsServe: string | null }> = {}
+      const routeList: Record<string, { target: RouteTarget, isRestricted: boolean, persistent: boolean, lan: boolean, lanHttps: string | null, tsServe: string | null }> = {}
       for (const [name, route] of routes) {
         if (isReserved(name)) continue  // hide reserved
         routeList[name] = {
@@ -4952,7 +5871,7 @@ const controlServer = Bun.serve({
 
       if (!targets || targets.length === 0) {
         for (const [name, route] of routes) {
-          if (typeof route.target === "string") continue
+          if (typeof route.target !== "number") continue
           if (!portals.has(name)) batchTargets.push({ name, port: route.target as number })
         }
         if (batchTargets.length === 0) {
@@ -4969,7 +5888,7 @@ const controlServer = Bun.serve({
             batchTargets.push({ name: `anon-${anonCounter}`, port })
           } else {
             const routeData = routes.get(arg)
-            if (!routeData || typeof routeData.target === "string") continue
+            if (!routeData || typeof routeData.target !== "number") continue
             if (portals.has(arg)) continue
             const routePort = routeData.target as number
             const existingPortal = [...portals.entries()].find(([, p]) => p.port === routePort)
@@ -5240,6 +6159,27 @@ const controlServer = Bun.serve({
       return Response.json({ success: true, processes: processList }, { headers: corsHeaders })
     }
 
+    // Functions have no process of their own: start warms the hot instances,
+    // stop and restart send every instance DRAIN
+    if (req.method === "POST" && /^\/process\/(start|stop|restart)\//.test(url.pathname) && fnConfigOf(url.pathname.split("/")[3])) {
+      const name = url.pathname.split("/")[3]
+      const op = url.pathname.split("/")[2]
+      const config = fnConfigOf(name)!
+      if (!mayChangeConfig(requestUser(req), config)) {
+        return Response.json({ success: false, error: `${name} runs as ${configUser(config)}. Only they can change it.` }, { status: 403, headers: corsHeaders })
+      }
+      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      if (op === "stop") await fnRuntimes.get(name)?.stop()
+      else if (op === "start") await warmFn(name)  // never disturbs instances that are serving
+      else await restartFn(name)
+      auditLog(`FN_${op.toUpperCase()}`, name, actor)
+      return Response.json({
+        success: true,
+        data: { name, status: "function", instances: fnRuntimes.get(name)?.instances() ?? [] },
+        message: op === "stop" ? `${name}'s instances are stopping; the next request starts one` : `${name} starts on its next request`,
+      }, { headers: corsHeaders })
+    }
+
     if (req.method === "POST" && url.pathname.startsWith("/process/start/")) {
       const name = url.pathname.split("/")[3]
       if (!serverConfigs.has(name)) {
@@ -5424,6 +6364,7 @@ const controlServer = Bun.serve({
           lan: isLanPublished(name),
           lanHttps: isLanPublished(name) ? lanHttpsUrl(name) : null,
           tsServe: tsServeUrl(name),
+          fn: fnSummaryNow(name),
         }
       }
       return Response.json({ success: true, configs }, { headers: corsHeaders })
@@ -5452,6 +6393,12 @@ const controlServer = Bun.serve({
       if (otherOwner) {
         return Response.json({ error: `'${name}' already belongs to ${configUser(otherOwner)}. Pick another name.` }, { status: 403, headers: corsHeaders })
       }
+      // A function's name serves only the function (requests go to it by Host)
+      if (fnConfigOf(name)) {
+        return Response.json({ error: `'${name}' is a function. Remove it first or pick another name.` }, { status: 409, headers: corsHeaders })
+      }
+      const taken = nameTakenWithoutConfig(name, requester)
+      if (taken) return Response.json({ error: taken }, { status: 409, headers: corsHeaders })
       if (envFile !== undefined && envFile !== null) {
         const problem = await envFileProblem(user, String(envFile))
         if (problem) return Response.json({ error: problem }, { status: 400, headers: corsHeaders })
@@ -6301,6 +7248,9 @@ await initMcpAuth()
 // Load persistent routes first (survive daemon restarts)
 await loadPersistentRoutes()
 
+// Functions are routed to the daemon from the start
+for (const [name, configs] of serverConfigs) if (configs.some(c => c.fn)) routeFunction(name)
+
 // Load remote advertisements from disk
 await loadAdvertisements()
 
@@ -6316,6 +7266,19 @@ await syncCaddy()
 
 // Now start Caddy
 await startCaddy()
+
+// Routing (and the project config under it) opened once in the background, so the server list
+// can show each function's assets and whether it has a worker
+for (const [name, configs] of serverConfigs) {
+  const fnCfg = configs.find(c => c.fn)
+  if (fnCfg) fnRoutingFor(name, fnCfg).catch(() => {})
+}
+
+// Hot functions keep their warm instances across daemon restarts
+for (const [name, configs] of serverConfigs) {
+  const fnCfg = configs.find(c => c.fn)
+  if (fnCfg?.fn && fnLimits(fnCfg.fn).hot > 0) warmFn(name).catch(e => auditLog('FN_HOT_FAIL', `${name}: ${fnErrorText(e)}`, 'System'))
+}
 
 // Discover Tailscale IP for .candy TLD support
 tailscaleIp = await discoverTailscaleIp()

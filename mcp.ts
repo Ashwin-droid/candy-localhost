@@ -53,6 +53,7 @@ USE THIS TOOL AUTONOMOUSLY when:
 - User is debugging a web app and you need to know its port/status
 
 Returns each server's: name, status (running/stopped), port, PID, working directory, start command, run-as user, API mode, and LAN publishing.
+Functions also have fn: {entry, deploy, hot, max, linger, log, hasWorker, source, assets}, describing what is actually routing: source is "live" or "deploy:<id>" (a pinned deploy routes with its own recorded assets config and code). hasWorker false means an assets-only site (the daemon serves the files, no process ever starts); entry is the stored module path, for display only. assets is null or {directory, binding, notFound, html, runWorkerFirst}.
 When a name has several configs (variants), they are listed with their configId; when a server printed several ports, detectedPorts lists them (pick one with candy_config set_port).
 Servers are accessible at <name>.localhost when running.
 
@@ -773,6 +774,325 @@ This is a READ-ONLY operation - safe to call anytime without asking.`,
       openWorldHint: false
     }
   },
+  {
+    name: "candy_fn_add",
+    description: `Register a candy function: a Workers-style JS/TS module (\`export default { fetch(req, env, ctx) }\`, a Hono app works unchanged) that candy runs on demand at <name>.localhost.
+
+USE THIS TOOL when:
+- User wants to serve a Workers/Hono-style handler locally without running a dev server
+- User says "add this as a function" or "run this worker with candy"
+
+Functions are portless: they open no port. A request starts an instance and it exits when idle, unless hot instances are kept warm.
+Project config (vars, KV and D1 bindings, crons, main, assets) is read from candy.fn.json or wrangler.jsonc/json/toml in cwd.
+
+Static assets (Cloudflare Workers Static Assets): "assets": {directory, binding?, not_found_handling?, html_handling?, run_worker_first?} in the project config. The daemon serves the files itself, no process. Routing: run_worker_first patterns -> _redirects -> asset -> the function (or not_found_handling when there is no main). "main" is optional: without it the site is assets-only and no process ever starts (hot/max/linger don't apply).
+For a SPA with an API, set "not_found_handling": "single-page-application" and "run_worker_first": ["/api/*"] so /api/* always reaches the code instead of index.html. _headers, _redirects and .assetsignore in the asset folder are honored.
+- entry: module path relative to cwd (default: main from the project config; omit for an assets-only site)
+- hot: warm instances kept alive at all times (default 0)
+- max: cap on concurrent instances (default 4)
+- linger: seconds an idle instance stays up for the next request (default 30, 0-600)
+- user: run-as account (owner only; see candy_config users)
+- envFile: absolute path of a KEY=VALUE file whose values become secrets in env
+
+This CREATES CONFIGURATION - confirm with user if they haven't asked.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Function name; served at <name>.localhost" },
+        cwd: { type: "string", description: "Absolute path of the function's folder" },
+        entry: { type: "string", description: "Module path relative to cwd (default: main from candy.fn.json / wrangler config)" },
+        user: { type: "string", description: "Run-as account (owner only). Defaults to the caller" },
+        envFile: { type: "string", description: "Absolute path of a KEY=VALUE secrets file" },
+        hot: { type: "number", description: "Warm instances kept alive (default 0)" },
+        max: { type: "number", description: "Max concurrent instances (default 4)" },
+        linger: { type: "number", description: "Seconds an idle instance waits for the next request (default 30, 0-600)" }
+      },
+      required: ["name", "cwd"]
+    },
+    annotations: {
+      title: "Add Function",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false
+    }
+  },
+  {
+    name: "candy_fn_deploy",
+    description: `Bundle a function's current source into an immutable deploy snapshot and pin the function to it.
+
+USE THIS TOOL when:
+- User says "deploy the function" or wants to freeze the current code
+- Before risky edits, so there is a known good version to roll back to
+
+Static assets are copied into the snapshot too (filtered by .assetsignore, _headers/_redirects checked; errors fail the deploy).
+Without a deploy a function is live-linked: every cold instance imports the current source. After a deploy it runs from the snapshot until candy_fn_rollback (or its dev option) changes that. The last 10 deploys are kept.
+
+This CHANGES WHICH CODE SERVES TRAFFIC - confirm with user if they haven't asked.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Function name" }
+      },
+      required: ["name"]
+    },
+    annotations: {
+      title: "Deploy Function",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false
+    }
+  },
+  {
+    name: "candy_fn_rollback",
+    description: `Re-pin a function to an earlier deploy snapshot, or unpin it and go back to the live source.
+
+- id: the deploy to pin (see candy_fn_deploys). Omit it to go back to the deploy before the current one.
+- dev: true unpins the function so it runs the live source again (ignores id).
+
+This CHANGES WHICH CODE SERVES TRAFFIC - confirm with user if they haven't asked.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Function name" },
+        id: { type: "string", description: "Deploy id to pin (default: the previous deploy)" },
+        dev: { type: "boolean", description: "true: unpin and run the live source again" }
+      },
+      required: ["name"]
+    },
+    annotations: {
+      title: "Roll Back Function",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    }
+  },
+  {
+    name: "candy_fn_deploys",
+    description: `List a function's deploy snapshots, newest first, and which one is pinned (current; null means live-linked dev).
+
+Each deploy has: id, createdAt, entry, source, gitRev, size, main, assets. assets is the snapshot's asset folder (null without assets); for an assets-only deploy entry is null and main is "". Rollback switches code and assets together.
+
+This is a READ-ONLY operation - safe to call anytime without asking.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Function name" }
+      },
+      required: ["name"]
+    },
+    annotations: {
+      title: "List Function Deploys",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    }
+  },
+  {
+    name: "candy_fn_instances",
+    description: `List a function's live instances: id, pid, hot, in-flight requests, startedAt, ready.
+
+USE THIS TOOL AUTONOMOUSLY when debugging cold starts, load, or a function that seems stuck.
+An empty list is normal: idle functions have no process. An assets-only function (fn.hasWorker false) never has instances; the daemon serves its files.
+
+This is a READ-ONLY operation - safe to call anytime without asking.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Function name" }
+      },
+      required: ["name"]
+    },
+    annotations: {
+      title: "List Function Instances",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    }
+  },
+  {
+    name: "candy_fn_settings",
+    description: `Change a function's instance limits and request logging.
+
+- hot: warm instances kept alive at all times (0 = none; requests cold start)
+- max: cap on concurrent instances
+- linger: seconds an idle instance stays up for the next request (0-600)
+- log: true records full requests (bodies up to 64 KB, secrets redacted), "meta" records everything but bodies, false turns the request log off
+
+hot, max and linger don't apply to an assets-only function (no process ever starts). Assets config lives in the project file, not here.
+
+Pass only what should change. This MODIFIES CONFIGURATION - confirm with user if they haven't asked.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Function name" },
+        hot: { type: "number", description: "Warm instances kept alive" },
+        max: { type: "number", description: "Max concurrent instances" },
+        linger: { type: "number", description: "Seconds an idle instance waits for the next request (0-600)" },
+        log: { type: ["boolean", "string"], enum: [true, false, "meta"], description: "Request log mode: true, \"meta\" or false" }
+      },
+      required: ["name"]
+    },
+    annotations: {
+      title: "Function Settings",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    }
+  },
+  {
+    name: "candy_fn_requests",
+    description: `List recent requests to a function from candy's request log (last 24h), newest first.
+
+USE THIS TOOL AUTONOMOUSLY when:
+- User reports a function erroring or behaving oddly: look at the real traffic
+- You changed a function and want to see what hit it since
+
+Filters:
+- status: "5xx", "4xx", "404", etc.
+- path: path prefix, e.g. "/api"
+- since: a duration back from now ("15m", "1h", "2d") or an epoch time in ms
+- before: epoch time in ms
+- limit: default 50, max 500
+
+Each row has kind ("worker": the code answered, "asset": the daemon served a file) and rule: the routing reason, e.g. "worker-first:/api/*", "spa-navigate", a _redirects line, "404-page", or null.
+
+Use candy_fn_request with an id for headers, bodies, console output and errors.
+
+This is a READ-ONLY operation - safe to call anytime without asking.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Function name" },
+        status: { type: "string", description: "Status filter like \"5xx\" or \"404\"" },
+        path: { type: "string", description: "Path prefix filter" },
+        since: { type: ["string", "number"], description: "Duration (\"1h\") or epoch ms" },
+        before: { type: "number", description: "Epoch ms" },
+        limit: { type: "number", description: "How many (default 50, max 500)" }
+      },
+      required: ["name"]
+    },
+    annotations: {
+      title: "List Function Requests",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    }
+  },
+  {
+    name: "candy_fn_request",
+    description: `Full detail of one logged function request: method, URL, headers, request and response bodies (as text, truncated if huge), status, timings, cold/warm, instance, outcome with error stack, and the console lines the request printed.
+
+Secret headers and fields are stored as [redacted]. Non-text bodies are stored as size + sha256 only. kind and rule say whether the code or the static assets answered and why (asset hits are meta only, no bodies).
+
+This is a READ-ONLY operation - safe to call anytime without asking.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Function name" },
+        id: { type: "string", description: "Request id (from candy_fn_requests)" }
+      },
+      required: ["name", "id"]
+    },
+    annotations: {
+      title: "Function Request Detail",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    }
+  },
+  {
+    name: "candy_fn_replay",
+    description: `Re-send a logged request to the function's current code and return the new response (status, headers, body as text).
+
+USE THIS TOOL when you just fixed a function and want to check it against the request that failed.
+
+Redacted values (Authorization, cookies, tokens) are not restored, so authenticated requests may fail. Requests whose logged body was truncated are refused unless allowPartial is true.
+Replay runs the request again: it can WRITE DATA (KV, D1, outside APIs) - confirm with user for non-GET requests.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Function name" },
+        id: { type: "string", description: "Request id to replay" },
+        allowPartial: { type: "boolean", description: "Replay even if the logged body was truncated" }
+      },
+      required: ["name", "id"]
+    },
+    annotations: {
+      title: "Replay Function Request",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true
+    }
+  },
+  {
+    name: "candy_fn_kv",
+    description: `Read and write a function's KV namespace (the local store behind a kv_namespaces binding).
+
+Ops:
+- get: value of key
+- list: keys, optionally by prefix (limit default 1000)
+- put: set key to value (string)
+- delete: remove key
+
+binding is the binding name from the project config, e.g. "KV".
+get and list are read-only. put and delete CHANGE THE FUNCTION'S DATA - confirm with user if they haven't asked.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Function name" },
+        binding: { type: "string", description: "KV binding name, e.g. \"KV\"" },
+        op: { type: "string", enum: ["get", "put", "list", "delete"], description: "Operation" },
+        key: { type: "string", description: "get / put / delete: the key" },
+        value: { type: "string", description: "put: the value" },
+        prefix: { type: "string", description: "list: key prefix" },
+        limit: { type: "number", description: "list: max keys" }
+      },
+      required: ["name", "binding", "op"]
+    },
+    annotations: {
+      title: "Function KV",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false
+    }
+  },
+  {
+    name: "candy_fn_d1",
+    description: `Run SQL against a function's D1 database (the local SQLite behind a d1_databases binding).
+
+Returns the D1 result shape: { results, success, meta: { changes, last_row_id, duration, rows_read, rows_written } }.
+Use ? placeholders with params instead of pasting values into sql.
+
+binding is the binding name from the project config, e.g. "DB".
+SELECTs are safe. INSERT/UPDATE/DELETE/DROP CHANGE THE FUNCTION'S DATA - confirm with user if they haven't asked.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Function name" },
+        binding: { type: "string", description: "D1 binding name, e.g. \"DB\"" },
+        sql: { type: "string", description: "SQL statement" },
+        params: { type: "array", items: {}, description: "Values for ? placeholders" }
+      },
+      required: ["name", "binding", "sql"]
+    },
+    annotations: {
+      title: "Function D1 SQL",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false
+    }
+  },
   ]
 
 // ============================================================================
@@ -944,6 +1264,7 @@ async function handleServers(): Promise<any> {
       ...(proc?.detectedPorts?.length > 1 ? { detectedPorts: proc.detectedPorts } : {}),
       ...(config.count > 1 ? { variants: config.variants } : {}),
       ...(config.lan ? { lan: true, lanHttps: config.lanHttps ?? null } : {}),
+      ...(config.fn ? { fn: config.fn } : {}),
     })
   }
 
@@ -1117,7 +1438,7 @@ async function handleRoute(params: any): Promise<any> {
       const res = await daemonFetch("/routes")
       if (fail(res)) return fail(res)
       const entries = Object.entries((res || {}) as Record<string, any>)
-      return entries.length === 0 ? "No routes" : entries.map(([n, r]: [string, any]) => `${n}.localhost -> ${typeof r.target === "string" ? r.target : ":" + r.target}${r.persistent ? " [persistent]" : ""}${r.lan ? " [lan]" : ""}${r.lanHttps ? ` [${r.lanHttps}]` : ""}`).join("\n")
+      return entries.length === 0 ? "No routes" : entries.map(([n, r]: [string, any]) => `${n}.localhost -> ${routeTargetText(r.target)}${r.persistent ? " [persistent]" : ""}${r.lan ? " [lan]" : ""}${r.lanHttps ? ` [${r.lanHttps}]` : ""}`).join("\n")
     }
     case "add": {
       if (!name || (!port && !target)) return "Error: name and a port (or target URL) are required for add"
@@ -1251,8 +1572,188 @@ async function handleLogs(params: any): Promise<any> {
 }
 
 // ============================================================================
+// Function Tool Handlers
+// ============================================================================
+
+// Bodies past this are cut so one huge request can't flood the agent's context
+export const FN_BODY_LIMIT = 16 * 1024
+
+const intOrUndef = (value: unknown) => {
+  if (value === undefined || value === null || value === "") return undefined
+  const n = Number(value)
+  return Number.isInteger(n) && n >= 0 ? n : NaN
+}
+
+/** "15m", "1h", "2d" back from now, or a plain epoch ms number. NaN when it is neither. */
+export function parseSince(value: unknown, now = Date.now()): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined
+  if (typeof value === "number") return value
+  const s = String(value).trim()
+  if (/^\d+$/.test(s)) return Number(s)
+  const m = s.match(/^(\d+(?:\.\d+)?)\s*(s|m|h|d)$/i)
+  if (!m) return NaN
+  const unit = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2].toLowerCase() as "s" | "m" | "h" | "d"]
+  return Math.round(now - Number(m[1]) * unit)
+}
+
+/** Whatever shape a body arrives in (string, byte array, base64 marker), as text cut to the limit. */
+export function bodyText(body: unknown, limit = FN_BODY_LIMIT): string | null {
+  if (body === undefined || body === null) return null
+  let text: string
+  if (typeof body === "string") text = body
+  else if (Array.isArray(body) && body.every(b => typeof b === "number")) text = new TextDecoder().decode(new Uint8Array(body))
+  else if (typeof body === "object" && (body as any).type === "Buffer" && Array.isArray((body as any).data)) text = new TextDecoder().decode(new Uint8Array((body as any).data))
+  // The daemon's request log: {kind: "text", text, size, truncated}
+  else if (typeof body === "object" && typeof (body as any).text === "string") {
+    text = (body as any).text + ((body as any).truncated ? `\n[logged body truncated; ${(body as any).size} bytes in total]` : "")
+  }
+  else if (typeof body === "object" && typeof (body as any).base64 === "string") {
+    try { text = new TextDecoder().decode(Uint8Array.from(atob((body as any).base64), c => c.charCodeAt(0))) } catch { text = (body as any).base64 }
+  } else return JSON.stringify(body, null, 2)
+  return text.length > limit ? `${text.slice(0, limit)}\n[... ${text.length - limit} more characters cut]` : text
+}
+
+/** JSON for the metadata, then each body as plain text so the agent reads it as-is. */
+export function formatWithBodies(obj: Record<string, unknown>): string {
+  const meta: Record<string, unknown> = {}
+  const bodies: [string, string][] = []
+  for (const [key, value] of Object.entries(obj)) {
+    // Binary bodies logged as {size, sha256} stay in the metadata
+    const textual = typeof value === "string" || Array.isArray(value)
+      || (!!value && typeof value === "object" && (typeof (value as any).base64 === "string" || (value as any).type === "Buffer" || typeof (value as any).text === "string"))
+    if (/body$/i.test(key) && textual) bodies.push([key, bodyText(value)!])
+    else meta[key] = value
+  }
+  let out = JSON.stringify(meta, null, 2)
+  for (const [key, text] of bodies) out += `\n\n--- ${key} ---\n${text.length ? text : "(empty)"}`
+  return out
+}
+
+async function handleFn(tool: string, params: any): Promise<any> {
+  const { name } = params
+  if (!name || typeof name !== "string") return { error: "name is required" }
+  const q = (fields: Record<string, unknown>) => {
+    const sp = new URLSearchParams()
+    for (const [k, v] of Object.entries(fields)) if (v !== undefined && v !== null && v !== "") sp.set(k, String(v))
+    return sp.toString()
+  }
+
+  switch (tool) {
+    case "candy_fn_add": {
+      const { cwd, entry, user, envFile } = params
+      if (!cwd) return { error: "cwd is required" }
+      const hot = intOrUndef(params.hot), max = intOrUndef(params.max), linger = intOrUndef(params.linger)
+      if (Number.isNaN(hot) || Number.isNaN(max) || Number.isNaN(linger)) return { error: "hot, max and linger must be whole numbers >= 0" }
+      return await post("/fn/add", {
+        name, cwd: String(cwd),
+        ...(entry ? { entry: String(entry) } : {}),
+        ...(user ? { user: String(user) } : {}),
+        ...(envFile ? { envFile: String(envFile) } : {}),
+        ...(hot !== undefined ? { hot } : {}),
+        ...(max !== undefined ? { max } : {}),
+        ...(linger !== undefined ? { linger } : {}),
+      })
+    }
+    case "candy_fn_deploy":
+      return await post("/fn/deploy", { name })
+    case "candy_fn_rollback":
+      if (params.dev === true) return await post("/fn/dev", { name })
+      return await post("/fn/rollback", { name, ...(params.id ? { id: String(params.id) } : {}) })
+    case "candy_fn_deploys":
+      return await daemonFetch(`/fn/deploys?${q({ name })}`)
+    case "candy_fn_instances":
+      return await daemonFetch(`/fn/instances?${q({ name })}`)
+    case "candy_fn_settings": {
+      const hot = intOrUndef(params.hot), max = intOrUndef(params.max), linger = intOrUndef(params.linger)
+      if (Number.isNaN(hot) || Number.isNaN(max) || Number.isNaN(linger)) return { error: "hot, max and linger must be whole numbers >= 0" }
+      const { log } = params
+      if (log !== undefined && log !== true && log !== false && log !== "meta") return { error: 'log must be true, false or "meta"' }
+      if (hot === undefined && max === undefined && linger === undefined && log === undefined) return { error: "pass at least one of hot, max, linger, log" }
+      return await post("/fn/settings", {
+        name,
+        ...(hot !== undefined ? { hot } : {}),
+        ...(max !== undefined ? { max } : {}),
+        ...(linger !== undefined ? { linger } : {}),
+        ...(log !== undefined ? { log } : {}),
+      })
+    }
+    case "candy_fn_requests": {
+      const since = parseSince(params.since)
+      if (Number.isNaN(since)) return { error: 'since must be a duration like "15m", "1h", "2d" or an epoch time in ms' }
+      const before = params.before === undefined ? undefined : Number(params.before)
+      if (Number.isNaN(before)) return { error: "before must be an epoch time in ms" }
+      const limit = Math.min(Math.max(Math.floor(Number(params.limit) || 50), 1), 500)
+      return await daemonFetch(`/fn/requests?${q({ name, status: params.status, path: params.path, since, before, limit })}`)
+    }
+    case "candy_fn_request": {
+      if (!params.id) return { error: "id is required" }
+      const res = await daemonFetch(`/fn/request?${q({ name, id: params.id })}`)
+      // A logged request that threw has error: {message, stack}; only a string is a failed call
+      if (!res || typeof res !== "object" || typeof res.error === "string") return res
+      return formatWithBodies(res)
+    }
+    case "candy_fn_replay": {
+      if (!params.id) return { error: "id is required" }
+      const res = await post("/fn/replay", { name, id: String(params.id), ...(params.allowPartial === true ? { allowPartial: true } : {}) })
+      if (!res || typeof res !== "object" || typeof res.error === "string") return res
+      return formatWithBodies(res)
+    }
+    case "candy_fn_kv": {
+      const { binding, op, key, value, prefix } = params
+      if (!binding) return { error: "binding is required" }
+      if (!["get", "put", "list", "delete"].includes(op)) return { error: "op must be get, put, list or delete" }
+      if (op !== "list" && (key === undefined || key === null || key === "")) return { error: `key is required for ${op}` }
+      if (op === "put" && value === undefined) return { error: "value is required for put" }
+      const limit = intOrUndef(params.limit)
+      if (Number.isNaN(limit)) return { error: "limit must be a whole number" }
+      return await post("/fn/kv", {
+        name, binding: String(binding), op,
+        ...(op !== "list" ? { key: String(key) } : {}),
+        ...(op === "put" ? { value: typeof value === "string" ? value : JSON.stringify(value) } : {}),
+        ...(op === "list" && prefix ? { prefix: String(prefix) } : {}),
+        ...(op === "list" && limit !== undefined ? { limit } : {}),
+      })
+    }
+    case "candy_fn_d1": {
+      const { binding, sql, params: sqlParams } = params
+      if (!binding || !sql) return { error: "binding and sql are required" }
+      if (sqlParams !== undefined && !Array.isArray(sqlParams)) return { error: "params must be an array" }
+      return await post("/fn/d1", { name, binding: String(binding), sql: String(sql), ...(sqlParams ? { params: sqlParams } : {}) })
+    }
+    default:
+      return { error: `Unknown function tool: ${tool}` }
+  }
+}
+
+// ============================================================================
 // MCP Protocol Handlers
 // ============================================================================
+
+/** A route target as text: a URL, ":port", or "fn" for a function the daemon serves. */
+export function routeTargetText(target: unknown): string {
+  if (typeof target === "string") return target
+  if (target && typeof target === "object") return "fn"
+  return ":" + target
+}
+
+// Tools the public MCP endpoint (https://<sub>.<zone>/mcp) never offers: the
+// request log holds visitors' traffic and is never on a public host, and
+// KV/D1 are the function's data. They stay available over stdio.
+export const PUBLIC_HIDDEN_TOOLS: ReadonlySet<string> = new Set([
+  "candy_fn_requests", "candy_fn_request", "candy_fn_replay", "candy_fn_kv", "candy_fn_d1",
+])
+
+/** handleRequest for the public HTTP endpoint: same, minus PUBLIC_HIDDEN_TOOLS (in tools/list and tools/call). */
+export async function handlePublicRequest(request: MCPRequest): Promise<MCPResponse | null> {
+  if (request?.method === "tools/call" && PUBLIC_HIDDEN_TOOLS.has(request.params?.name)) {
+    return { jsonrpc: "2.0", id: request.id ?? null, error: { code: -32601, message: `Unknown tool: ${request.params.name}` } }
+  }
+  const res = await handleRequest(request)
+  if (request?.method === "tools/list" && res?.result?.tools) {
+    return { ...res, result: { ...res.result, tools: res.result.tools.filter((t: { name: string }) => !PUBLIC_HIDDEN_TOOLS.has(t.name)) } }
+  }
+  return res
+}
 
 export async function handleRequest(request: MCPRequest): Promise<MCPResponse | null> {
   const { method, params } = request
@@ -1336,6 +1837,19 @@ export async function handleRequest(request: MCPRequest): Promise<MCPResponse | 
             break
           case "candy_input":
             result = await handleInput(toolArgs)
+            break
+          case "candy_fn_add":
+          case "candy_fn_deploy":
+          case "candy_fn_rollback":
+          case "candy_fn_deploys":
+          case "candy_fn_instances":
+          case "candy_fn_settings":
+          case "candy_fn_requests":
+          case "candy_fn_request":
+          case "candy_fn_replay":
+          case "candy_fn_kv":
+          case "candy_fn_d1":
+            result = await handleFn(toolName, toolArgs)
             break
           default:
             return {

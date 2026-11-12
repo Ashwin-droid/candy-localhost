@@ -1,0 +1,4 @@
+# gitignore syntax
+secret.txt
+drafts/
+*.log

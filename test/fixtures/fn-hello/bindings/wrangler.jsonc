@@ -1,0 +1,16 @@
+// A wrangler config using every binding candy supports.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "fn-bindings-demo",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-01-01",
+  "vars": {
+    "GREETING": "hi", // inline comment
+    "LIMITS": { "max": 3 },
+  },
+  /* KV and D1 live in the function's state folder */
+  "kv_namespaces": [{ "binding": "KV", "id": "ignored-by-candy" }],
+  "d1_databases": [{ "binding": "DB", "database_name": "demo", "database_id": "ignored" }],
+  "triggers": { "crons": ["*/5 * * * *", "0 3 * * *"] },
+  "routes": ["example.com/*"],
+}

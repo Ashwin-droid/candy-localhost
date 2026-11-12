@@ -187,6 +187,74 @@ export async function registerServer(options: RegisterServerOptions): Promise<Re
   }
 }
 
+export interface RegisterFunctionOptions {
+  /** Absolute path of the function's folder */
+  cwd: string
+  /** Module path relative to cwd. Defaults to main from candy.fn.json / wrangler config. */
+  entry?: string
+  /** Defaults to the folder's name (e.g. /srv/my-api -> my-api) */
+  namespace?: string
+  name?: string
+  /** Warm instances kept alive at all times (default 0) */
+  hot?: number
+  /** Cap on concurrent instances (default 4) */
+  max?: number
+  /** Seconds an idle instance waits for the next request (default 30, 0-600) */
+  linger?: number
+}
+
+export interface RegisterFunctionResult {
+  name: string
+  url: string
+}
+
+// A candy name from a folder: its last part, lowercased, other characters as dashes
+export const nameFromFolder = (cwd: string): string => {
+  const base = cwd.trim().replace(/\/+$/, "").split("/").pop() ?? ""
+  const name = base.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63)
+  if (!name) throw new Error("name is required (the folder's name can't be used)")
+  return name
+}
+
+const optionalCount = (value: number | undefined, label: string): number | undefined => {
+  if (value === undefined) return undefined
+  if (!Number.isInteger(value) || value < 0) throw new Error(`${label} must be a whole number >= 0`)
+  return value
+}
+
+/**
+ * Register a Workers-style module (`export default { fetch }`, or a Hono app)
+ * as a candy function served at <name>.localhost. Functions open no port: candy
+ * starts an instance per request burst and it exits when idle.
+ */
+export async function registerFunction(options: RegisterFunctionOptions): Promise<RegisterFunctionResult> {
+  if (!options.cwd || options.cwd.trim().length === 0) throw new Error("cwd is required")
+  const name = options.namespace !== undefined || options.name !== undefined
+    ? resolveNamespace(options)
+    : nameFromFolder(options.cwd)
+  const hot = optionalCount(options.hot, "hot")
+  const max = optionalCount(options.max, "max")
+  const linger = optionalCount(options.linger, "linger")
+  if (linger !== undefined && linger > 600) throw new Error("linger must be 0 to 600 seconds")
+
+  const response = await daemonFetch<{ name?: string; url?: string }>("/fn/add", {
+    method: "POST",
+    body: JSON.stringify({
+      name,
+      cwd: options.cwd,
+      ...(options.entry ? { entry: options.entry } : {}),
+      ...(hot !== undefined ? { hot } : {}),
+      ...(max !== undefined ? { max } : {}),
+      ...(linger !== undefined ? { linger } : {}),
+    })
+  })
+
+  return {
+    name: response?.name || name,
+    url: response?.url || makeLocalhostUrl(name),
+  }
+}
+
 export async function getLocalhostUrl(options: GetLocalhostUrlOptions = {}): Promise<string> {
   const explicitNamespace = options.namespace ?? options.name
   if (explicitNamespace) {
@@ -313,6 +381,7 @@ export function cronJob(): string | null {
 const candySdk = {
   checkRuntime,
   registerServer,
+  registerFunction,
   getLocalhostUrl,
   openPortal,
   registerPort,

@@ -28,6 +28,21 @@ describe("sandbox", () => {
     expect(props.some(p => p.startsWith("ReadWritePaths="))).toBe(false)
   })
 
+  it("keeps a function's code and deploy snapshots read-only and binds its socket in", () => {
+    const props = sandboxProperties(spec({ mode: "pipe", fn: { socket: "/run/candy/fn/wa.sock" }, extraRw: ["/srv/data"] }))
+    expect(props.filter(p => p.startsWith("ReadWritePaths="))).toEqual(["ReadWritePaths=/srv/data"])
+    expect(props).toContain("StateDirectory=candy/wa")
+    expect(props).toContain(`ReadOnlyPaths=${stateDirPath("wa")}/deploys`)
+    expect(props).toContain("TimeoutStopSec=35")
+    expect(props).not.toContain("TimeoutStopSec=10")
+    expect(props).toContain("BindPaths=/run/candy/fn/wa.sock")
+    expect(sandboxProperties(spec({ codeDir: "/tmp/demo", fn: {} }))).toContain("BindReadOnlyPaths=/tmp/demo")
+    const cmd = systemdRunCommand(spec({ mode: "pipe", fn: {}, description: "function", script: 'exec bun "$@"', args: ["/usr/lib/candy/fn-host.ts", "index.ts"] }))
+    expect(cmd).toContain("--description=candy function: wa")
+    expect(cmd.slice(cmd.indexOf("--") + 1)).toEqual(["bash", "-ic", 'exec bun "$@"', "candy", "/usr/lib/candy/fn-host.ts", "index.ts"])
+    expect(unitName("wa", "fn")).toMatch(/^candy-fn-wa-[0-9a-f]{6}\.service$/)
+  })
+
   it("builds the systemd-run command, with args as plain argv", () => {
     const cmd = systemdRunCommand(spec({ mode: "pipe", script: 'bun start "$@"', args: ["--sync", "; rm -rf ~"] }))
     expect(cmd[0]).toBe("systemd-run")

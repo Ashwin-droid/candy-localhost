@@ -1,0 +1,3 @@
+# old links
+/old / 301
+/blog/* /news/:splat 302

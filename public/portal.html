@@ -354,6 +354,93 @@
     .toast.error::before { background: var(--cherry); }
     @keyframes toast-in { from { transform: translateY(6px); opacity: 0; } }
 
+    /* ---------- Functions ---------- */
+    .badge-fn {
+      display: inline-flex; align-items: center; height: 18px; padding: 0 6px;
+      border-radius: 5px; background: var(--grape); color: var(--sheet);
+      font-family: var(--font-host); font-stretch: 87.5%; font-size: 11px; font-weight: 600;
+      letter-spacing: 0.02em; align-self: center;
+    }
+    .dialog.fn { width: 1100px; height: 86vh; display: flex; flex-direction: column; overflow: hidden; }
+    .badge-fn.assets { background: var(--mint); }
+    .fn .dialog-head { padding-bottom: 12px; }
+    .fn .segmented { margin: 0 22px; flex: none; }
+    .fn-pane { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 22px 22px; }
+    .fn-pane[hidden] { display: none; }
+    .fn-section + .fn-section { margin-top: 24px; }
+    .fn-section h3 { display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+    .fn-section h3 .n { color: var(--ink-3); font-weight: 400; }
+    .fn-section h3 .btn { margin-left: auto; }
+    .fn-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .fn-table th { text-align: left; font-size: 12px; font-weight: 500; color: var(--ink-3); padding: 6px 8px; border-bottom: 1px solid var(--line-2); }
+    .fn-table td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+    .fn-table td.mono, .fn-table td .mono { font-size: 12px; }
+    .fn-table tr.current td { background: var(--cherry-soft); }
+    .fn-table td.right, .fn-table th.right { text-align: right; }
+    .fn-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+    .fn-form .field { width: 120px; }
+    .fn-form .field.wide { width: 180px; }
+    .fn-form select.input-field { padding: 0 8px; }
+    .fn-muted { color: var(--ink-3); font-size: 12.5px; }
+    .fn-assets .fn-kv { font-size: 12.5px; }
+    .fn-wf { display: flex; flex-wrap: wrap; gap: 6px; }
+    .fn-wf code { font-family: var(--font-host); font-stretch: 87.5%; font-size: 12px; padding: 1px 7px; border-radius: 5px; background: var(--lemon-soft); color: var(--ink); }
+    .fn-wf code.neg { background: var(--sheet-2); color: var(--ink-2); }
+    .fn-kind { display: inline-flex; align-items: center; height: 16px; padding: 0 5px; border-radius: 4px; font-family: var(--font-host); font-stretch: 87.5%; font-size: 10.5px; font-weight: 600; background: var(--sheet-2); color: var(--ink-2); }
+    .fn-kind.asset { background: var(--mint-soft); color: var(--mint); }
+    .fn-rule { display: inline-block; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+
+    .fn-req { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); gap: 16px; height: 100%; }
+    .fn-req-left { display: flex; flex-direction: column; min-height: 0; }
+    .fn-filters { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+    .fn-filters .input-field { height: 32px; width: auto; }
+    .fn-filters #fn-req-path { flex: 1; min-width: 120px; }
+    .fn-live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-3); }
+    .fn-live .lamp { width: 8px; height: 8px; }
+    .fn-req-list { flex: 1; min-height: 0; overflow-y: auto; border: 1px solid var(--line); border-radius: 9px; }
+    .fn-req-row {
+      display: grid; grid-template-columns: 56px 40px minmax(0, 1fr) auto; gap: 8px; align-items: center;
+      width: 100%; padding: 7px 10px; border: 0; border-bottom: 1px solid var(--line); background: none;
+      text-align: left; cursor: pointer; font-size: 12.5px;
+    }
+    .fn-req-row:hover { background: var(--sheet-2); }
+    .fn-req-row.sel { background: var(--cherry-soft); }
+    .fn-req-row.fresh { animation: fn-fresh 1.2s ease-out; }
+    @keyframes fn-fresh { from { background: var(--mint-soft); } }
+    .fn-req-row .t { font-family: var(--font-host); font-stretch: 87.5%; font-size: 11.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+    .fn-req-row .p { font-family: var(--font-host); font-stretch: 87.5%; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fn-req-row .p b { font-weight: 600; color: var(--ink-2); margin-right: 6px; }
+    .fn-req-row .d { font-family: var(--font-host); font-stretch: 87.5%; font-size: 11.5px; color: var(--ink-3); display: flex; align-items: center; gap: 6px; justify-content: flex-end; min-width: 0; }
+    .st { font-family: var(--font-host); font-stretch: 87.5%; font-weight: 600; font-size: 12px; }
+    .st.s2 { color: var(--mint); }
+    .st.s3 { color: var(--ink-2); }
+    .st.s4 { color: var(--lemon); }
+    .st.s5, .st.bad { color: var(--cherry); }
+    .fn-req-detail { min-height: 0; overflow-y: auto; border: 1px solid var(--line); border-radius: 9px; padding: 14px 16px; }
+    .fn-req-detail .empty { padding: 8px 0; }
+    .fn-detail-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+    .fn-detail-head .p { font-family: var(--font-host); font-stretch: 87.5%; font-size: 13px; overflow-wrap: anywhere; flex: 1; min-width: 0; }
+    .fn-facts { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 12.5px; color: var(--ink-2); }
+    .fn-block { margin-top: 16px; }
+    .fn-block h4 { font-size: 12px; font-weight: 600; color: var(--ink-3); margin-bottom: 6px; display: flex; gap: 8px; }
+    .fn-block h4 span { font-weight: 400; }
+    .fn-kv { display: grid; grid-template-columns: minmax(90px, max-content) minmax(0, 1fr); gap: 2px 12px; font-family: var(--font-host); font-stretch: 87.5%; font-size: 12px; }
+    .fn-kv dt { color: var(--ink-3); }
+    .fn-kv dd { overflow-wrap: anywhere; }
+    .fn-pre {
+      margin: 0; padding: 10px 12px; max-height: 280px; overflow: auto; border-radius: 8px;
+      background: var(--log-bg); color: var(--log-ink);
+      font: 12px/1.55 var(--font-host); font-stretch: 87.5%; white-space: pre-wrap; word-break: break-all;
+    }
+    .fn-pre .lv-warn { color: #f2c14e; }
+    .fn-pre .lv-error { color: #ff7a90; }
+    .fn-pre .lv-debug { color: #8a90a8; }
+
+    @media (max-width: 760px) {
+      .fn-req { grid-template-columns: minmax(0, 1fr); height: auto; }
+      .fn-req-list { max-height: 320px; }
+    }
+
     @media (prefers-reduced-motion: reduce) {
       *, *::before { animation: none !important; transition: none !important; }
     }
@@ -607,6 +694,94 @@
     </div>
   </div>
 
+  <!-- Function detail: deploys, settings, instances, request log -->
+  <div id="fn-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="fn-modal-title">
+    <div class="dialog fn">
+      <div class="dialog-head">
+        <h2><span id="fn-modal-title" class="mono">Function</span>
+          <div class="logs-sub" id="fn-modal-sub"></div>
+        </h2>
+        <button class="btn quiet dots" onclick="hideFn()" aria-label="Close">&times;</button>
+      </div>
+      <div class="segmented" role="tablist">
+        <button type="button" role="tab" id="fn-tab-overview" aria-selected="true" onclick="setFnTab('overview')">Overview</button>
+        <button type="button" role="tab" id="fn-tab-requests" aria-selected="false" onclick="setFnTab('requests')">Requests</button>
+      </div>
+
+      <div class="fn-pane" id="fn-pane-overview">
+        <section class="fn-section fn-assets" id="fn-assets-section" hidden>
+          <h3>Static assets <span class="n" id="fn-assets-mode"></span></h3>
+          <div id="fn-assets"></div>
+        </section>
+
+        <section class="fn-section">
+          <h3>Deploys <span class="n" id="fn-deploy-current"></span>
+            <button class="btn small" id="fn-dev-btn" onclick="fnBackToDev()">Back to dev</button>
+            <button class="btn small primary" id="fn-deploy-btn" style="margin-left: 0;" onclick="fnDeploy()">Deploy</button>
+          </h3>
+          <div id="fn-deploys"><div class="fn-muted">Loading…</div></div>
+        </section>
+
+        <section class="fn-section">
+          <h3>Settings</h3>
+          <form class="fn-form" onsubmit="fnSaveSettings(event)">
+            <div class="field fn-proc-only">
+              <label for="fn-hot">Hot</label>
+              <input type="number" id="fn-hot" class="input-field code" min="0" step="1">
+            </div>
+            <div class="field fn-proc-only">
+              <label for="fn-max">Max</label>
+              <input type="number" id="fn-max" class="input-field code" min="1" step="1">
+            </div>
+            <div class="field fn-proc-only">
+              <label for="fn-linger">Linger (s)</label>
+              <input type="number" id="fn-linger" class="input-field code" min="0" max="600" step="1">
+            </div>
+            <div class="field wide">
+              <label for="fn-log">Request log</label>
+              <select id="fn-log" class="input-field">
+                <option value="full">Full (bodies)</option>
+                <option value="meta">Metadata only</option>
+                <option value="off">Off</option>
+              </select>
+            </div>
+            <button type="submit" class="btn primary" style="height: 38px;">Save</button>
+          </form>
+          <div class="hint" id="fn-settings-hint">Hot instances stay warm and take the first request with no cold start. With hot at 0, an instance starts on a request and exits as soon as it's idle. Max caps how many run at once. Linger is how long an idle instance waits for the next request before it exits.</div>
+        </section>
+
+        <section class="fn-section" id="fn-instances-section">
+          <h3>Instances <span class="n" id="fn-inst-count"></span>
+            <button class="btn small quiet" onclick="fnLoadInstances()">Refresh</button>
+          </h3>
+          <div id="fn-instances"><div class="fn-muted">Loading…</div></div>
+        </section>
+      </div>
+
+      <div class="fn-pane" id="fn-pane-requests" hidden>
+        <div class="fn-req">
+          <div class="fn-req-left">
+            <div class="fn-filters">
+              <select id="fn-req-status" class="input-field" onchange="fnLoadRequests()" aria-label="Status">
+                <option value="">Any status</option>
+                <option value="2xx">2xx</option>
+                <option value="3xx">3xx</option>
+                <option value="4xx">4xx</option>
+                <option value="5xx">5xx</option>
+              </select>
+              <input type="text" id="fn-req-path" class="input-field code" placeholder="/path prefix" spellcheck="false" autocomplete="off" aria-label="Path">
+              <span class="fn-live" title="New requests appear as they finish"><span class="lamp" id="fn-live-dot"></span><span id="fn-live-text">Live</span></span>
+            </div>
+            <div class="fn-req-list" id="fn-req-list"><div class="empty" style="padding: 14px;">Loading…</div></div>
+          </div>
+          <div class="fn-req-detail" id="fn-req-detail">
+            <div class="empty">Pick a request to see its headers, bodies, logs and timings.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="toast-container" id="toast-container" role="status" aria-live="polite"></div>
 
   <script>
@@ -682,10 +857,15 @@
         .replace(/'/g, '&#39;');
     }
 
+    // For a value inside a single-quoted JS string in an onclick="..." attribute.
+    // Every character that means something to HTML or JS becomes a \xNN escape:
+    // the browser decodes entities (&#39;) before the JS runs, so a value from
+    // the daemon (deploy ids, request ids) must not carry quotes, & or < at all.
     function escapeJsSingle(value) {
-      return String(value ?? '')
-        .replace(/\\/g, '\\\\')
-        .replace(/'/g, "\\'");
+      return String(value ?? '').replace(/[\\'"&<>`\u0000-\u001f\u2028\u2029]/g, ch => {
+        const code = ch.charCodeAt(0);
+        return code > 0xff ? '\\u' + code.toString(16).padStart(4, '0') : '\\x' + code.toString(16).padStart(2, '0');
+      });
     }
 
     function formatUptime(seconds) {
@@ -1431,7 +1611,7 @@
         .map(s => {
           const [st, label] = siteStatus(s);
           const v = variantsOf(s.config)[0];
-          const detail = s.route ? (s.route.isRestricted ? s.route.target : ':' + s.route.target) : v ? v.cmd : '';
+          const detail = fnOf(s) ? 'fn' : s.route ? (s.route.isRestricted ? s.route.target : ':' + s.route.target) : v ? v.cmd : '';
           return { value: s.name, state: st, label, detail };
         });
       ddSetOptions('bind-server', options, 'Choose a site', preselect);
@@ -1844,6 +2024,7 @@
       if (p === 'errored') return ['crashed', 'Crashed'];
       if (p === 'dead' || p === 'stopped') return ['stopped', 'Stopped'];
       if (p) return ['idle', p.charAt(0).toUpperCase() + p.slice(1)];
+      if (fnOf(s)) return ['idle', 'Starts on request'];
       if (s.config) return ['idle', s.config.api ? 'Starts on first request' : 'Starts when opened'];
       if (s.route?.isRestricted) return ['ext', 'External URL'];
       if (s.traffic?.alive) return ['running', 'Listening'];
@@ -1870,14 +2051,22 @@
       const route = s.route;
       const variants = variantsOf(s.config);
       const active = s.proc && (s.proc.status === 'running' || s.proc.status === 'starting');
+      const fn = fnOf(s);
       const port = s.proc?.port || (route && !route.isRestricted ? route.target : null);
-      const target = route ? (route.isRestricted ? route.target : ':' + route.target) : (s.proc?.port ? ':' + s.proc.port : '');
+      // A function's route points at the daemon, not a port: show nothing there
+      const target = fn ? '' : route ? (route.isRestricted ? route.target : ':' + route.target) : (s.proc?.port ? ':' + s.proc.port : '');
 
       const meta = [`<span class="state ${st}">${escapeHtml(label)}</span>`];
       if (active && s.proc.pid) meta.push(`<span>pid ${escapeHtml(s.proc.pid)}</span>`);
       if (s.traffic) meta.push(`<span>${plural(s.traffic.total, 'request')}</span>`);
       if (variants.length > 1) meta.push(`<span>${variants.length} variants</span>`);
-      if (variants[0]) {
+      if (fn) {
+        // An assets-only function never starts a process, so hot/max mean nothing for it
+        if (fn.hasWorker !== false) meta.push(`<span title="Warm instances / most at once">hot ${Number(fn.hot) || 0} / max ${Number(fn.max) || 4}</span>`);
+        if (fn.assets) meta.push(`<span class="cmd" title="Static assets served by the daemon${fnWorkerFirstText(fn.assets) ? ' · worker first: ' + escapeHtml(fnWorkerFirstText(fn.assets)) : ''}">assets <b>${escapeHtml(shortPath(fn.assets.directory || ''))}</b></span>`);
+        meta.push(`<span class="cmd" title="${fn.deploy ? 'Pinned deploy snapshot' : 'Live-linked to the source folder'}"><b>${escapeHtml(fn.deploy || 'dev')}</b></span>`);
+        if (variants[0]) meta.push(`<span class="cmd" title="${escapeHtml(variants[0].cwd)}">${escapeHtml(shortPath(variants[0].cwd))} <b>${escapeHtml(fn.entry || '')}</b></span>`);
+      } else if (variants[0]) {
         const v = variants[0];
         meta.push(`<span class="cmd" title="${escapeHtml(v.cwd)}">${escapeHtml(shortPath(v.cwd))} <b>${escapeHtml(v.cmd)}</b></span>`);
       }
@@ -1911,9 +2100,11 @@
 
       const items = [];
       if (s.proc) items.push(menuItem('Restart', `restartProcess('${js}')`));
-      if (s.proc) items.push(menuItem('Set port…', `setProcessPort('${js}', ${Number(s.proc.port) || 'null'})`));
-      if (route) items.push(menuItem('Rename…', `renameRoute('${js}')`));
-      if (route && !route.isRestricted && !s.portal) items.push(menuItem('Open public portal', `openPortal('${js}', ${Number(route.target)})`));
+      if (fn) items.push(menuItem('Deploy now', `fnDeployNamed('${js}')`));
+      if (fn) items.push(menuItem('Requests…', `showFn('${js}', 'requests')`));
+      if (s.proc && !fn) items.push(menuItem('Set port…', `setProcessPort('${js}', ${Number(s.proc.port) || 'null'})`));
+      if (route && !fn) items.push(menuItem('Rename…', `renameRoute('${js}')`));
+      if (route && !fn && !route.isRestricted && !s.portal) items.push(menuItem('Open public portal', `openPortal('${js}', ${Number(route.target)})`));
       if (domainZone && (route || s.config)) items.push(menuItem('Bind public domain…', `showBindDomain('${js}')`));
       if (variants.length > 1) variants.forEach(v => items.push(menuItem(`Start ${v.id}`, `startProcess('${js}', '${escapeJsSingle(v.id)}')`)));
       const toggles = [];
@@ -1922,12 +2113,14 @@
       if (lan) toggles.push(menuItem(lanHttps ? 'Turn off LAN HTTPS' : 'Serve LAN over HTTPS', `toggleLanHttps('${js}', ${!lanHttps})`));
       if (route || s.config) toggles.push(menuItem(tsServe ? 'Change Tailscale port…' : 'Serve on Tailscale…', `serveOnTailscale('${js}', '${escapeJsSingle(tsServe || '')}')`));
       if (tsServe) toggles.push(menuItem('Stop serving on Tailscale', `stopTailscaleServe('${js}')`));
-      if (s.config) toggles.push(menuItem('Idle time…', `setIdleLimit('${js}', ${Number(ttl) || 'null'})`));
-      if (s.config) toggles.push(menuItem(s.config.api ? 'Turn off API mode' : 'API mode', `toggleApiMode('${js}', ${!s.config.api})`));
+      // Functions exit when idle and always hold requests while starting, so these don't apply
+      if (s.config && !fn) toggles.push(menuItem('Idle time…', `setIdleLimit('${js}', ${Number(ttl) || 'null'})`));
+      if (s.config && !fn) toggles.push(menuItem(s.config.api ? 'Turn off API mode' : 'API mode', `toggleApiMode('${js}', ${!s.config.api})`));
       if (s.config && state.status?.multiUser) toggles.push(menuItem(s.config.sandbox === false ? 'Turn on sandbox' : 'Run without sandbox', `toggleSandbox('${js}', ${s.config.sandbox === false})`));
       const danger = [];
-      if (route) danger.push(menuItem('Delete route', `deleteRoute('${js}')`, true));
-      if (s.config) variants.forEach(v => danger.push(menuItem(variants.length > 1 ? `Delete command ${v.id}` : 'Delete start command', `deleteConfig('${js}', '${escapeJsSingle(v.id)}')`, true)));
+      if (route && !fn) danger.push(menuItem('Delete route', `deleteRoute('${js}')`, true));
+      if (fn) danger.push(menuItem('Delete function', `deleteConfig('${js}')`, true));
+      else if (s.config) variants.forEach(v => danger.push(menuItem(variants.length > 1 ? `Delete command ${v.id}` : 'Delete start command', `deleteConfig('${js}', '${escapeJsSingle(v.id)}')`, true)));
       const menu = items.length || toggles.length || danger.length ? `
         <div class="menu-wrap">
           <button class="btn dots" aria-haspopup="menu" aria-expanded="false" aria-label="More for ${safe}" onclick="toggleMenu(event, this)">&middot;&middot;&middot;</button>
@@ -1935,9 +2128,11 @@
         </div>` : '';
 
       const buttons = [];
+      if (fn) buttons.push(`<button class="btn" onclick="showFn('${js}')">Function</button>`);
       if (s.proc) buttons.push(`<button class="btn" onclick="showLogs('${js}')">Logs</button>`);
       if (active) buttons.push(`<button class="btn stop" onclick="stopProcess('${js}')">Stop</button>`);
-      else if (s.proc || s.config) buttons.push(`<button class="btn go" onclick="startProcess('${js}'${variants.length > 1 ? `, '${escapeJsSingle(variants[0].id)}'` : ''})">Start</button>`);
+      // A function starts on its own when a request comes in
+      else if (!fn && (s.proc || s.config)) buttons.push(`<button class="btn go" onclick="startProcess('${js}'${variants.length > 1 ? `, '${escapeJsSingle(variants[0].id)}'` : ''})">Start</button>`);
 
       const href = TLD ? `${SCHEME}://${safe}.${TLD}` : '#';
       return `
@@ -1946,6 +2141,9 @@
           <div style="min-width: 0;">
             <div class="host-line">
               <a class="host" href="${href}" target="_blank"><span class="sub">${safe}</span><span class="tld">.${escapeHtml(TLD || '')}</span></a>
+              ${fn ? (fn.hasWorker === false
+                ? '<span class="badge-fn assets" title="Static site: the daemon serves the files, no process ever starts">assets-only</span>'
+                : '<span class="badge-fn" title="candy function: no port, started per request">fn</span>') : ''}
               ${target ? `<span class="target">${escapeHtml(target)}</span>` : ''}
             </div>
             <div class="meta">${meta.join('')}</div>
@@ -2058,6 +2256,660 @@
     // Click outside a dialog to close it
     document.getElementById('add-route-modal').addEventListener('click', (e) => {
       if (e.target.id === 'add-route-modal') hideAddRoute();
+    });
+
+
+    // =========================================
+    // FUNCTIONS
+    // =========================================
+
+    // Functions come back from /configs with an `fn` field; a route that targets
+    // a function still marks it even before its config has loaded.
+    function fnOf(s) {
+      if (s?.config?.fn) return s.config.fn;
+      if (s?.proc?.fn) return s.proc.fn;
+      const t = s?.route?.target;
+      if (t && typeof t === 'object' && t.fn) return {};
+      return null;
+    }
+
+    function fnQuery(params) {
+      const q = new URLSearchParams();
+      for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '') q.set(k, String(v));
+      const s = q.toString();
+      return s ? '?' + s : '';
+    }
+
+    async function fnResult(res) {
+      const data = await res.json().catch(() => ({}));
+      // A logged request's detail has its own `error` field, so only a string error without an id is a failure
+      if (!res.ok || data.success === false || (typeof data.error === 'string' && data.id === undefined)) {
+        const err = new Error((typeof data.error === 'string' && data.error) || `Request failed (${res.status})`);
+        err.data = data;
+        throw err;
+      }
+      return data;
+    }
+
+    async function fnGet(path, params) {
+      return fnResult(await apiCall(path + fnQuery(params)));
+    }
+
+    async function fnPost(path, body) {
+      return fnResult(await apiCall(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }));
+    }
+
+    function fmtClock(t, ms = false) {
+      const d = new Date(t);
+      if (isNaN(d)) return '';
+      const s = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+      return ms ? `${s}.${String(d.getMilliseconds()).padStart(3, '0')}` : s;
+    }
+
+    function fmtBytes(n) {
+      n = Number(n);
+      if (!Number.isFinite(n)) return '';
+      if (n < 1024) return `${n} B`;
+      if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB`;
+      return `${(n / 1024 / 1024).toFixed(1)} MB`;
+    }
+
+    function fmtMs(n) {
+      n = Number(n);
+      if (!Number.isFinite(n)) return '';
+      return n >= 1000 ? `${(n / 1000).toFixed(2)} s` : `${Math.round(n)} ms`;
+    }
+
+    const fnState = {
+      name: null,
+      tab: 'overview',
+      requests: [],
+      selected: null,
+      tailAbort: null,
+      tailRetry: null,
+      instTimer: null,
+      pathTimer: null,
+      replay: null,
+      detail: null,
+      assetsOnly: false,
+    };
+
+    function fnConfig(name) {
+      return state.configs[name]?.fn || state.processes[name]?.fn || {};
+    }
+
+    const FN_NOT_FOUND = {
+      'single-page-application': 'Single-page app: unknown paths get /index.html',
+      '404-page': 'Nearest 404.html, status 404',
+      none: 'Empty 404',
+    };
+
+    // run_worker_first as text: "always", the patterns, or '' when off
+    function fnWorkerFirstText(a) {
+      const wf = a?.runWorkerFirst;
+      if (wf === true) return 'always';
+      return Array.isArray(wf) ? wf.join(' ') : '';
+    }
+
+    // The assets config the function routes with (fn.assets: a pinned deploy's own), run_worker_first up front:
+    // it decides which paths reach the code instead of a file or index.html.
+    function fnRenderAssets(fn) {
+      const section = document.getElementById('fn-assets-section');
+      const a = fn.assets;
+      section.hidden = !a;
+      if (!a) return;
+      const assetsOnly = fn.hasWorker === false;
+      document.getElementById('fn-assets-mode').textContent = assetsOnly ? 'assets-only: no code, no process' : 'served by the daemon before the code';
+      const wf = a.runWorkerFirst;
+      const wfHtml = wf === true
+        ? '<div class="fn-wf"><code>always</code></div><div class="fn-muted">Every request goes to the code first; it serves files through env.' + escapeHtml(a.binding || 'ASSETS') + '.fetch().</div>'
+        : Array.isArray(wf) && wf.length
+          ? `<div class="fn-wf">${wf.map(p => `<code class="${String(p).startsWith('!') ? 'neg' : ''}">${escapeHtml(p)}</code>`).join('')}</div>`
+          : `<div class="fn-muted">Off. ${assetsOnly ? '' : 'For a SPA with an API, set "run_worker_first": ["/api/*"] so /api/* reaches the code instead of index.html.'}</div>`;
+      const rows = [
+        ['Folder', `<span class="mono" title="${escapeHtml(a.directory || '')}">${escapeHtml(shortPath(a.directory || ''))}</span>`],
+        ['Worker first', wfHtml],
+        ['Not found', escapeHtml(FN_NOT_FOUND[a.notFound] || a.notFound || 'Empty 404')],
+        ['HTML', `<span class="mono">${escapeHtml(a.html || 'auto-trailing-slash')}</span>`],
+        ['Binding', a.binding ? `<span class="mono">env.${escapeHtml(a.binding)}</span>` : '<span class="fn-muted">None</span>'],
+      ];
+      document.getElementById('fn-assets').innerHTML = `<dl class="fn-kv">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
+        <div class="hint">Order: worker-first patterns, then _redirects, then a matching file (with _headers), then ${assetsOnly ? 'the not-found rule' : 'the code'}. Edit "assets" in candy.fn.json or wrangler to change this.</div>`;
+    }
+
+    function showFn(name, tab = 'overview') {
+      fnState.name = name;
+      fnState.requests = [];
+      fnState.selected = null;
+      fnState.replay = null;
+      const fn = fnConfig(name);
+      document.getElementById('fn-modal-title').textContent = `${name}.${TLD || 'localhost'}`;
+      // hasWorker comes from what's routing (a pinned deploy's worker, or main added since); entry is display only
+      const assetsOnly = fn.hasWorker === false;
+      const plus = fn.assets ? ' + assets' : '';
+      document.getElementById('fn-modal-sub').textContent = assetsOnly ? 'Static site · assets only' : fn.entry ? `Function · ${fn.entry}${plus}` : `Function${plus}`;
+      fnState.assetsOnly = assetsOnly;
+      fnRenderAssets(fn);
+      for (const el of document.querySelectorAll('#fn-modal .fn-proc-only')) el.hidden = assetsOnly;
+      document.getElementById('fn-instances-section').hidden = assetsOnly;
+      document.getElementById('fn-settings-hint').textContent = assetsOnly
+        ? 'Assets-only: the daemon serves the files itself and no process ever starts, so hot, max and linger don’t apply.'
+        : 'Hot instances stay warm and take the first request with no cold start. With hot at 0, an instance starts on a request and exits as soon as it’s idle. Max caps how many run at once. Linger is how long an idle instance waits for the next request before it exits.';
+      document.getElementById('fn-hot').value = Number(fn.hot) || 0;
+      document.getElementById('fn-max').value = Number(fn.max) || 4;
+      document.getElementById('fn-linger').value = Number.isInteger(fn.linger) ? fn.linger : 30;
+      document.getElementById('fn-log').value = fn.log === false ? 'off' : fn.log === 'meta' ? 'meta' : 'full';
+      document.getElementById('fn-req-status').value = '';
+      document.getElementById('fn-req-path').value = '';
+      document.getElementById('fn-req-detail').innerHTML = '<div class="empty">Pick a request to see its headers, bodies, logs and timings.</div>';
+      document.getElementById('fn-modal').style.display = 'flex';
+      setFnTab(tab);
+      fnLoadDeploys();
+    }
+
+    function hideFn() {
+      document.getElementById('fn-modal').style.display = 'none';
+      fnStopTail();
+      clearInterval(fnState.instTimer);
+      fnState.instTimer = null;
+      fnState.name = null;
+    }
+
+    function setFnTab(tab) {
+      fnState.tab = tab;
+      const overview = tab === 'overview';
+      document.getElementById('fn-tab-overview').setAttribute('aria-selected', String(overview));
+      document.getElementById('fn-tab-requests').setAttribute('aria-selected', String(!overview));
+      document.getElementById('fn-pane-overview').hidden = !overview;
+      document.getElementById('fn-pane-requests').hidden = overview;
+      clearInterval(fnState.instTimer);
+      fnState.instTimer = null;
+      if (overview) {
+        fnStopTail();
+        if (fnState.assetsOnly) return;
+        fnLoadInstances();
+        // Instances come and go per request, so keep the list current while it's in view
+        fnState.instTimer = setInterval(() => { if (fnState.name) fnLoadInstances(true); }, 5000);
+      } else {
+        fnLoadRequests();
+        fnStartTail();
+      }
+    }
+
+    // ----- Deploys -----
+    async function fnLoadDeploys() {
+      const name = fnState.name;
+      const box = document.getElementById('fn-deploys');
+      let data;
+      try { data = await fnGet('/fn/deploys', { name }); }
+      catch (e) { if (fnState.name === name) box.innerHTML = `<div class="fn-muted">Couldn’t load deploys: ${escapeHtml(e.message)}</div>`; return; }
+      if (fnState.name !== name) return;
+      const current = data.current || null;
+      const deploys = data.deploys || [];
+      document.getElementById('fn-deploy-current').textContent = current ? `running ${current}` : 'running dev, live from the source folder';
+      document.getElementById('fn-dev-btn').disabled = !current;
+      if (!deploys.length) {
+        box.innerHTML = '<div class="fn-muted">No deploys yet. Deploy bundles the current code into a snapshot that doesn’t change when you edit the source. The last 10 are kept for rollback.</div>';
+        return;
+      }
+      const js = escapeJsSingle(name);
+      box.innerHTML = `
+        <table class="fn-table">
+          <thead><tr><th>Deploy</th><th>Created</th><th>Size</th><th>Assets</th><th>Source</th><th class="right"></th></tr></thead>
+          <tbody>${deploys.map(d => {
+            const isCur = d.id === current;
+            const created = d.createdAt ? new Date(d.createdAt) : null;
+            const src = [d.gitRev ? String(d.gitRev).slice(0, 8) : '', d.main || ''].filter(Boolean).join(' · ');
+            return `<tr class="${isCur ? 'current' : ''}">
+              <td class="mono">${escapeHtml(d.id)}</td>
+              <td title="${created ? escapeHtml(created.toLocaleString()) : ''}">${created && !isNaN(created) ? escapeHtml(created.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })) : ''}</td>
+              <td>${d.entry === null ? '<span class="fn-muted">no code</span>' : escapeHtml(fmtBytes(d.size))}</td>
+              <td>${d.assets ? `<span title="${escapeHtml(d.assets)}">Yes</span>` : '<span class="fn-muted">—</span>'}</td>
+              <td class="mono" title="${escapeHtml(d.source || '')}">${escapeHtml(src)}</td>
+              <td class="right">${isCur ? '<span class="fn-muted">Current</span>' : `<button class="btn small" onclick="fnRollback('${js}', '${escapeJsSingle(d.id)}')">Roll back</button>`}</td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table>`;
+    }
+
+    async function fnDeployNamed(name) {
+      toast(`Deploying ${name}…`, 'info');
+      try {
+        const data = await fnPost('/fn/deploy', { name });
+        toast(`${name} deployed ${data.deploy?.id || ''}`.trim(), 'success');
+        refreshConfigs();
+        return true;
+      } catch (e) {
+        toast(`Deploy failed: ${e.message}`, 'error');
+        return false;
+      }
+    }
+
+    async function fnDeploy() {
+      const name = fnState.name;
+      if (!name) return;
+      const btn = document.getElementById('fn-deploy-btn');
+      btn.disabled = true;
+      try {
+        if (await fnDeployNamed(name)) fnLoadDeploys();
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function fnRollback(name, id) {
+      if (!confirm(`Roll ${name} back to ${id}?`)) return;
+      try {
+        await fnPost('/fn/rollback', { name, id });
+        toast(`${name} is running ${id}`, 'success');
+        refreshConfigs();
+        if (fnState.name === name) fnLoadDeploys();
+      } catch (e) {
+        toast(`Rollback failed: ${e.message}`, 'error');
+      }
+    }
+
+    async function fnBackToDev() {
+      const name = fnState.name;
+      if (!name) return;
+      if (!confirm(`Unpin ${name} and serve the live source folder again?`)) return;
+      try {
+        await fnPost('/fn/dev', { name });
+        toast(`${name} is back on the live source`, 'success');
+        refreshConfigs();
+        fnLoadDeploys();
+      } catch (e) {
+        toast(`Couldn’t switch to dev: ${e.message}`, 'error');
+      }
+    }
+
+    // ----- Settings -----
+    async function fnSaveSettings(e) {
+      e.preventDefault();
+      const name = fnState.name;
+      if (!name) return;
+      if (fnState.assetsOnly) {
+        // Only the request log applies: there's no process to size
+        const sel = document.getElementById('fn-log').value;
+        try {
+          await fnPost('/fn/settings', { name, log: sel === 'off' ? false : sel === 'meta' ? 'meta' : true });
+          toast(`${name}: request log ${sel}`, 'success');
+          refreshConfigs();
+        } catch (err) {
+          toast(`Couldn’t save: ${err.message}`, 'error');
+        }
+        return;
+      }
+      const hot = Number(document.getElementById('fn-hot').value);
+      const max = Number(document.getElementById('fn-max').value);
+      if (!Number.isInteger(hot) || hot < 0) { toast('Hot must be 0 or more', 'error'); return; }
+      if (!Number.isInteger(max) || max < 1) { toast('Max must be at least 1', 'error'); return; }
+      if (hot > max) { toast('Hot can’t be more than max', 'error'); return; }
+      const linger = Number(document.getElementById('fn-linger').value);
+      if (!Number.isInteger(linger) || linger < 0 || linger > 600) { toast('Linger must be 0 to 600 seconds', 'error'); return; }
+      const logSel = document.getElementById('fn-log').value;
+      const log = logSel === 'off' ? false : logSel === 'meta' ? 'meta' : true;
+      try {
+        await fnPost('/fn/settings', { name, hot, max, linger, log });
+        toast(`${name}: hot ${hot}, max ${max}, linger ${linger}s, request log ${logSel}`, 'success');
+        refreshConfigs();
+        fnLoadInstances();
+      } catch (err) {
+        toast(`Couldn’t save: ${err.message}`, 'error');
+      }
+    }
+
+    // ----- Instances -----
+    async function fnLoadInstances(quiet = false) {
+      const name = fnState.name;
+      const box = document.getElementById('fn-instances');
+      let data;
+      try { data = await fnGet('/fn/instances', { name }); }
+      catch (e) { if (!quiet && fnState.name === name) box.innerHTML = `<div class="fn-muted">Couldn’t load instances: ${escapeHtml(e.message)}</div>`; return; }
+      if (fnState.name !== name) return;
+      const list = data.instances || [];
+      setCount('fn-inst-count', list.length ? String(list.length) : '');
+      if (!list.length) {
+        box.innerHTML = '<div class="fn-muted">None running. The next request starts one.</div>';
+        return;
+      }
+      const now = Date.now();
+      box.innerHTML = `
+        <table class="fn-table">
+          <thead><tr><th>Instance</th><th>PID</th><th>Kind</th><th>State</th><th class="right">In flight</th><th class="right">Up</th></tr></thead>
+          <tbody>${list.map(i => `<tr>
+            <td class="mono">${escapeHtml(i.id)}</td>
+            <td class="mono">${escapeHtml(i.pid ?? '')}</td>
+            <td>${i.hot ? 'Hot' : 'On demand'}</td>
+            <td><span class="state ${i.ready ? 'running' : 'starting'}">${i.ready ? 'Ready' : 'Starting'}</span></td>
+            <td class="right mono">${Number(i.inflight) || 0}</td>
+            <td class="right">${i.startedAt ? escapeHtml(formatUptimeShort((now - Number(i.startedAt)) / 1000)) : ''}</td>
+          </tr>`).join('')}</tbody>
+        </table>`;
+    }
+
+    // Instances usually live for seconds, so show seconds too
+    function formatUptimeShort(seconds) {
+      const s = Math.max(0, Math.floor(seconds || 0));
+      return s < 60 ? `${s}s` : formatUptime(s);
+    }
+
+    // ----- Requests -----
+    // The log's row shape, read loosely so a renamed field shows blank rather than breaking the list
+    function fnReqPath(u) {
+      if (!u) return '';
+      try { const x = new URL(u, 'http://x'); return x.pathname + x.search; } catch { return String(u); }
+    }
+
+    function fnSummary(r) {
+      const t = r.timings || {};
+      return {
+        id: r.id ?? r.requestId,
+        time: r.time ?? r.ts ?? r.startedAt ?? r.start,
+        method: r.method || '',
+        path: r.path ?? fnReqPath(r.url),
+        status: r.status,
+        outcome: r.outcome || 'ok',
+        ms: r.totalMs ?? r.durationMs ?? r.ms ?? t.totalMs ?? t.total,
+        cold: r.cold ?? t.cold,
+        kind: r.kind === 'asset' ? 'asset' : 'worker',
+        rule: typeof r.rule === 'string' ? r.rule : '',
+      };
+    }
+
+    // Who answered (the daemon from a file, or the code) and the routing rule
+    function fnKindHtml(s) {
+      const kind = s.kind === 'asset'
+        ? '<span class="fn-kind asset" title="Served by the daemon from the asset folder">asset</span>'
+        : `<span class="fn-kind" title="Handled by the code">worker</span>`;
+      return kind + (s.rule ? ` <span class="fn-rule mono" title="${escapeHtml(s.rule)}">${escapeHtml(s.rule)}</span>` : '');
+    }
+
+    function fnStatusHtml(status, outcome) {
+      if (outcome && outcome !== 'ok' && !status) return `<span class="st bad">${escapeHtml(outcome)}</span>`;
+      const cls = status ? 's' + String(status)[0] : 'bad';
+      return `<span class="st ${cls}" title="${escapeHtml(outcome && outcome !== 'ok' ? outcome : '')}">${escapeHtml(status ?? '—')}</span>`;
+    }
+
+    function fnFilters() {
+      return {
+        status: document.getElementById('fn-req-status').value,
+        path: document.getElementById('fn-req-path').value.trim(),
+      };
+    }
+
+    // Applied to live rows, which the server can't filter for us
+    function fnMatches(s, f) {
+      if (f.status) {
+        const want = f.status.toLowerCase();
+        const code = String(s.status ?? '');
+        if (/^\dxx$/.test(want) ? code[0] !== want[0] : code !== want) return false;
+      }
+      if (f.path && !String(s.path).startsWith(f.path)) return false;
+      return true;
+    }
+
+    async function fnLoadRequests() {
+      const name = fnState.name;
+      if (!name) return;
+      const list = document.getElementById('fn-req-list');
+      try {
+        const data = await fnGet('/fn/requests', { name, ...fnFilters(), limit: 200 });
+        if (fnState.name !== name) return;
+        fnState.requests = (data.requests || []).map(r => fnSummary(r));
+        fnRenderRequests();
+      } catch (e) {
+        if (fnState.name === name) list.innerHTML = `<div class="empty" style="padding: 14px;">Couldn’t load requests: ${escapeHtml(e.message)}</div>`;
+      }
+    }
+
+    function fnRenderRequests(freshId = null) {
+      const list = document.getElementById('fn-req-list');
+      if (!fnState.requests.length) {
+        const f = fnFilters();
+        list.innerHTML = `<div class="empty" style="padding: 14px;">${f.status || f.path ? 'No requests match.' : 'No requests in the last 24 hours. Open the site and they show up here as they finish.'}</div>`;
+        return;
+      }
+      list.innerHTML = fnState.requests.map(r => {
+        const id = String(r.id ?? '');
+        const cls = ['fn-req-row'];
+        if (id === fnState.selected) cls.push('sel');
+        if (freshId !== null && id === freshId) cls.push('fresh');
+        const dur = [fmtMs(r.ms), r.cold && r.kind !== 'asset' ? 'cold' : ''].filter(Boolean).join(' · ');
+        return `<button class="${cls.join(' ')}" onclick="fnSelect('${escapeJsSingle(id)}')" title="${escapeHtml(new Date(r.time).toLocaleString())}">
+          <span class="t">${escapeHtml(fmtClock(r.time))}</span>
+          ${fnStatusHtml(r.status, r.outcome)}
+          <span class="p"><b>${escapeHtml(r.method)}</b>${escapeHtml(r.path)}</span>
+          <span class="d">${fnKindHtml(r)}<span>${escapeHtml(dur)}</span></span>
+        </button>`;
+      }).join('');
+    }
+
+    document.getElementById('fn-req-path').addEventListener('input', () => {
+      clearTimeout(fnState.pathTimer);
+      fnState.pathTimer = setTimeout(fnLoadRequests, 300);
+    });
+
+    function fnHeaderPairs(h) {
+      if (!h) return [];
+      if (Array.isArray(h)) return h;
+      return Object.entries(h);
+    }
+
+    function fnHeadersBlock(title, h) {
+      const pairs = fnHeaderPairs(h);
+      return `<div class="fn-block"><h4>${escapeHtml(title)} <span>${pairs.length}</span></h4>${pairs.length
+        ? `<dl class="fn-kv">${pairs.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`).join('')}</dl>`
+        : '<div class="fn-muted">None</div>'}</div>`;
+    }
+
+    function fnContentType(h) {
+      const hit = fnHeaderPairs(h).find(([k]) => String(k).toLowerCase() === 'content-type');
+      return hit ? String(hit[1]) : '';
+    }
+
+    // Bodies may come as text, or as {text, size, truncated, sha256} for capped or binary ones
+    function fnBodyBlock(title, body, info, headers) {
+      const notes = [];
+      let text = null;
+      if (body && typeof body === 'object') {
+        if (typeof body.text === 'string') text = body.text;
+        else if (!body.sha256 && !('size' in body)) text = JSON.stringify(body, null, 2);
+        info = { ...body, ...Object.fromEntries(Object.entries(info).filter(([, v]) => v !== undefined && v !== null)) };
+      } else if (body !== null && body !== undefined) {
+        text = String(body);
+      }
+      const size = info.size ?? info.bytes;
+      if (size !== undefined && size !== null) notes.push(fmtBytes(size));
+      if (info.truncated) notes.push('truncated at 64 KB');
+      if (info.sha256 && text === null) notes.push(`not text, sha256 ${String(info.sha256).slice(0, 16)}…`);
+      if (text && /json/i.test(fnContentType(headers))) {
+        try { text = JSON.stringify(JSON.parse(text), null, 2); } catch {}
+      }
+      const content = text
+        ? `<pre class="fn-pre">${escapeHtml(text)}</pre>`
+        : `<div class="fn-muted">${info.sha256 ? 'Binary body, stored as size and hash only.' : 'Empty'}</div>`;
+      return `<div class="fn-block"><h4>${escapeHtml(title)} <span>${escapeHtml(notes.join(' · '))}</span></h4>${content}</div>`;
+    }
+
+    function fnLogsBlock(logs) {
+      if (!logs?.length) return '<div class="fn-block"><h4>Console</h4><div class="fn-muted">Nothing logged during this request.</div></div>';
+      return `<div class="fn-block"><h4>Console <span>${logs.length}</span></h4><pre class="fn-pre">${logs.map(l => {
+        const lv = String(l.level || 'log');
+        return `<span class="lv-${escapeHtml(lv)}">${escapeHtml(fmtClock(l.ts, true))} ${escapeHtml(lv.padEnd(5))} ${escapeHtml(l.text)}</span>`;
+      }).join('\n')}</pre></div>`;
+    }
+
+    async function fnSelect(id) {
+      const name = fnState.name;
+      if (!name) return;
+      fnState.selected = id;
+      fnState.replay = null;
+      fnRenderRequests();
+      const box = document.getElementById('fn-req-detail');
+      box.innerHTML = '<div class="empty">Loading…</div>';
+      try {
+        const d = await fnGet('/fn/request', { name, id });
+        if (fnState.name !== name || fnState.selected !== id) return;
+        fnRenderDetail(d);
+      } catch (e) {
+        if (fnState.selected === id) box.innerHTML = `<div class="empty">Couldn’t load this request: ${escapeHtml(e.message)}</div>`;
+      }
+    }
+
+    function fnRenderDetail(d) {
+      const s = fnSummary(d);
+      const t = d.timings || d;
+      const reqHeaders = d.reqHeaders ?? d.requestHeaders ?? d.request?.headers;
+      const resHeaders = d.resHeaders ?? d.responseHeaders ?? d.response?.headers;
+      const reqBody = d.reqBody ?? d.requestBody ?? d.request?.body;
+      const resBody = d.resBody ?? d.responseBody ?? d.response?.body;
+      const err = d.error && typeof d.error === 'object' ? d.error
+        : (d.error || d.errorMessage || d.stack) ? { message: d.error || d.errorMessage || '', stack: d.stack || d.errorStack } : null;
+
+      const facts = [];
+      if (s.time) facts.push(`<span>${escapeHtml(new Date(s.time).toLocaleString())}</span>`);
+      if (d.host) facts.push(`<span class="mono">${escapeHtml(d.host)}</span>`);
+      if (d.clientIp) facts.push(`<span>from <span class="mono">${escapeHtml(d.clientIp)}</span></span>`);
+      facts.push(`<span>${fnKindHtml(s)}</span>`);
+      if (d.instance && s.kind !== 'asset') facts.push(`<span>instance <span class="mono">${escapeHtml(d.instance)}</span></span>`);
+      if (s.outcome && s.outcome !== 'ok') facts.push(`<span class="st bad">${escapeHtml(s.outcome)}</span>`);
+
+      const timing = [];
+      const add = (label, v) => { if (v !== undefined && v !== null && v !== '') timing.push(`<dt>${label}</dt><dd>${escapeHtml(v)}</dd>`); };
+      add('served by', s.kind === 'asset' ? 'the daemon, from the asset folder (no process)' : 'the code');
+      add('rule', s.rule);
+      if (s.kind !== 'asset') add('start', s.cold === undefined ? '' : s.cold ? 'cold (new instance)' : 'warm');
+      add('queued', fmtMs(t.queuedMs ?? t.queued));
+      add('first byte', fmtMs(t.ttfbMs ?? t.ttfb));
+      add('total', fmtMs(s.ms));
+      if (d.waitUntil !== undefined && d.waitUntil !== null) add('waitUntil', typeof d.waitUntil === 'object' ? JSON.stringify(d.waitUntil) : d.waitUntil);
+
+      const replay = fnState.replay && fnState.replay.of === String(s.id) ? fnState.replay : null;
+      const box = document.getElementById('fn-req-detail');
+      box.innerHTML = `
+        <div class="fn-detail-head">
+          ${fnStatusHtml(s.status, s.outcome)}
+          <span class="p"><b>${escapeHtml(s.method)}</b> ${escapeHtml(s.path)}</span>
+          <button class="btn small" id="fn-replay-btn" onclick="fnReplay('${escapeJsSingle(String(s.id))}')" title="Send this request again to the code running now">Replay</button>
+        </div>
+        <div class="fn-facts">${facts.join('')}</div>
+        ${replay ? fnReplayBlock(replay) : ''}
+        ${err ? `<div class="fn-block"><h4>Error</h4><pre class="fn-pre"><span class="lv-error">${escapeHtml(err.stack || err.message || '')}</span></pre></div>` : ''}
+        ${timing.length ? `<div class="fn-block"><h4>Timings</h4><dl class="fn-kv">${timing.join('')}</dl></div>` : ''}
+        ${fnLogsBlock(d.logs)}
+        ${fnHeadersBlock('Request headers', reqHeaders)}
+        ${fnBodyBlock('Request body', reqBody, { size: d.reqSize ?? d.reqBytes, truncated: d.reqTruncated, sha256: d.reqSha256 }, reqHeaders)}
+        ${fnHeadersBlock('Response headers', resHeaders)}
+        ${fnBodyBlock('Response body', resBody, { size: d.resSize ?? d.resBytes, truncated: d.resTruncated, sha256: d.resSha256 }, resHeaders)}`;
+      fnState.detail = d;
+    }
+
+    function fnReplayBlock(r) {
+      const pairs = fnHeaderPairs(r.headers);
+      return `<div class="fn-block"><h4>Replay result <span>${escapeHtml(r.status)}${r.requestId ? ` · logged as ${escapeHtml(r.requestId)}` : ''}</span></h4>
+        ${pairs.length ? `<dl class="fn-kv" style="margin-bottom: 6px;">${pairs.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`).join('')}</dl>` : ''}
+        ${r.body ? `<pre class="fn-pre">${escapeHtml(typeof r.body === 'string' ? r.body : JSON.stringify(r.body, null, 2))}</pre>` : '<div class="fn-muted">Empty body</div>'}
+      </div>`;
+    }
+
+    async function fnReplay(id, allowPartial = false) {
+      const name = fnState.name;
+      if (!name) return;
+      const btn = document.getElementById('fn-replay-btn');
+      if (btn) btn.disabled = true;
+      try {
+        const data = await fnPost('/fn/replay', allowPartial ? { name, id, allowPartial: true } : { name, id });
+        toast(`Replayed: ${data.status}`, String(data.status)[0] === '5' ? 'error' : 'success');
+        fnState.replay = { ...data, of: id };
+        if (fnState.selected === id && fnState.detail) fnRenderDetail(fnState.detail);
+      } catch (e) {
+        // A body cut at 64 KB can't be sent as it was; offer to send what was kept
+        if (!allowPartial && /truncat|partial/i.test(e.message)) {
+          if (confirm('This request\'s body was cut off when it was logged. Replay it with the part that was kept?')) return fnReplay(id, true);
+        } else {
+          toast(`Replay failed: ${e.message}`, 'error');
+        }
+      } finally {
+        const b = document.getElementById('fn-replay-btn');
+        if (b) b.disabled = false;
+      }
+    }
+
+    // ----- Live tail: SSE over fetch, so it carries the same token as every other call -----
+    function fnSetLive(mode) {
+      const dot = document.getElementById('fn-live-dot');
+      const text = document.getElementById('fn-live-text');
+      dot.className = 'lamp ' + (mode === 'on' ? 'running' : mode === 'starting' ? 'starting' : '');
+      text.textContent = mode === 'on' ? 'Live' : mode === 'starting' ? 'Connecting…' : 'Paused';
+    }
+
+    function fnStopTail() {
+      clearTimeout(fnState.tailRetry);
+      fnState.tailRetry = null;
+      if (fnState.tailAbort) fnState.tailAbort.abort();
+      fnState.tailAbort = null;
+      fnSetLive('off');
+    }
+
+    async function fnStartTail() {
+      fnStopTail();
+      const name = fnState.name;
+      if (!name) return;
+      const ctrl = new AbortController();
+      fnState.tailAbort = ctrl;
+      fnSetLive('starting');
+      try {
+        const res = await apiCall('/fn/tail' + fnQuery({ name }), { signal: ctrl.signal, headers: { Accept: 'text/event-stream' } });
+        if (!res.ok || !res.body) throw new Error(`tail ${res.status}`);
+        if (fnState.tailAbort !== ctrl) return;
+        fnSetLive('on');
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true }).replace(/\r/g, '');
+          let i;
+          while ((i = buf.indexOf('\n\n')) >= 0) {
+            const evt = buf.slice(0, i);
+            buf = buf.slice(i + 2);
+            const data = evt.split('\n').filter(l => l.startsWith('data:')).map(l => l.slice(5).replace(/^ /, '')).join('\n');
+            if (!data) continue;
+            try { fnOnTail(JSON.parse(data)); } catch {}
+          }
+        }
+      } catch {
+        if (ctrl.signal.aborted) return;
+      }
+      if (fnState.tailAbort !== ctrl) return;
+      // Dropped (daemon restart, network): try again while the tab is still open
+      fnSetLive('off');
+      fnState.tailRetry = setTimeout(() => {
+        if (fnState.name === name && fnState.tab === 'requests' && fnState.tailAbort === ctrl) fnStartTail();
+      }, 3000);
+    }
+
+    function fnOnTail(raw) {
+      const s = fnSummary(raw);
+      if (!fnMatches(s, fnFilters())) return;
+      const id = String(s.id ?? '');
+      fnState.requests = [s, ...fnState.requests.filter(r => String(r.id) !== id)].slice(0, 500);
+      fnRenderRequests(id);
+    }
+
+    document.getElementById('fn-modal').addEventListener('click', (e) => {
+      if (e.target.id === 'fn-modal') hideFn();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape' || document.getElementById('fn-modal').style.display !== 'flex') return;
+      if (document.getElementById('prompt-modal').style.display === 'flex') return;
+      hideFn();
     });
 
 

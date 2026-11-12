@@ -1,0 +1,13 @@
+// An SPA with an API: /api/* goes to the worker first (except /api/docs/*),
+// everything else is asset-first with index.html as the SPA fallback.
+{
+  "name": "fn-spa",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-01-01",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "!/api/docs/*"],
+  },
+}

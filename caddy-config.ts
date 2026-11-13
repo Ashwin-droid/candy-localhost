@@ -187,6 +187,10 @@ ${drop}
   servers {
     trusted_proxies static 127.0.0.1/8 ::1
     client_ip_headers Cf-Connecting-Ip
+    # No fronting: over TLS the Host header must be the name the connection
+    # was opened for (SNI), or Caddy answers 421. A connection made as one
+    # site can't be used to ask for another (the portal, say).
+    strict_sni_host on
   }
 }
 `

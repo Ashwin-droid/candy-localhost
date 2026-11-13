@@ -667,6 +667,77 @@ describe("R1. Caddy never logs secrets", () => {
   }, 15_000)
 })
 
+describe("SNI fronting: a TLS connection opened as one site can't ask for another", () => {
+  const curl = Bun.which("curl")
+
+  it("the global block turns strict_sni_host on for every server", () => {
+    expect(caddyGlobalBlock({ adminSocket: "/run/candy/caddy-admin.sock", accessLog: "/tmp/a.log" })).toMatch(/servers \{[^}]*\n    strict_sni_host on\n/)
+  })
+
+  it.skipIf(!caddy)("caddy adapt carries it to each HTTPS server, whatever its bind", () => {
+    const cfg = adapt(`${caddyGlobalBlock({ adminSocket: "/run/candy/caddy-admin.sock", accessLog: "/tmp/a.log" })}
+wa.localhost {
+  bind 127.0.0.1
+  respond "wa"
+}
+portal.candy {
+  bind 127.0.0.2
+  respond "portal"
+}
+`)
+    const https = Object.values(cfg.apps.http.servers as Record<string, any>).filter(s => s.listen.some((l: string) => l.endsWith(":443")))
+    expect(https.length).toBe(2)
+    for (const s of https) expect(s.strict_sni_host).toBe(true)
+  })
+
+  it.skipIf(!caddy || !curl)("a disposable Caddy answers 421 when Host isn't the SNI name", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "candy-sni-"))
+    const port = freePort()
+    const cf = caddyGlobalBlock({ adminSocket: join(dir, "admin.sock"), accessLog: join(dir, "access.log") })
+      .replace(/^  admin .*$/m, `  admin off\n  skip_install_trust\n  auto_https disable_redirects\n  storage file_system ${dir}/data`)
+    writeFileSync(join(dir, "Caddyfile"), `${cf}
+https://wa.localhost:${port} {
+  bind 127.0.0.1
+  tls internal
+  respond "wa"
+}
+https://portal.candy:${port} {
+  bind 127.0.0.1
+  tls internal
+  respond "portal"
+}
+`)
+    const proc = Bun.spawn([caddy!, "run", "--config", join(dir, "Caddyfile"), "--adapter", "caddyfile"], {
+      stdout: "ignore", stderr: "ignore", env: { ...process.env, HOME: dir, XDG_DATA_HOME: dir, XDG_CONFIG_HOME: dir },
+    })
+    // Connect (and send SNI) as `sni`, ask for `host`
+    const ask = async (sni: string, host: string): Promise<{ status: number; body: string }> => {
+      const r = Bun.spawnSync([curl!, "-sk", "-m", "5", "--resolve", `${sni}:${port}:127.0.0.1`, "-H", `Host: ${host}`, "-w", "\n%{http_code}", `https://${sni}:${port}/`])
+      const out = r.stdout.toString()
+      const cut = out.lastIndexOf("\n")
+      return { status: Number(out.slice(cut + 1)), body: out.slice(0, Math.max(cut, 0)) }
+    }
+    try {
+      let ok = { status: 0, body: "" }
+      for (let i = 0; i < 60 && ok.status !== 200; i++) { ok = await ask("wa.localhost", "wa.localhost"); if (ok.status !== 200) await Bun.sleep(150) }
+      expect(ok).toEqual({ status: 200, body: "wa" })
+      expect(await ask("portal.candy", "portal.candy")).toEqual({ status: 200, body: "portal" })
+      // With the port in Host too
+      expect((await ask("wa.localhost", `wa.localhost:${port}`)).body).toBe("wa")
+      for (const [sni, host] of [["wa.localhost", "portal.candy"], ["wa.localhost", `portal.candy:${port}`], ["portal.candy", "wa.localhost"], ["wa.localhost", "nothing.example"]]) {
+        const res = await ask(sni, host)
+        expect(res.status, `${sni} asking for ${host}`).toBe(421)
+        expect(res.body).not.toContain("portal")
+        expect(res.body).not.toBe("wa")
+      }
+    } finally {
+      proc.kill()
+      await proc.exited
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 30_000)
+})
+
 describe("R2. the proxy tag never reaches user code", () => {
   it("stripProxyHeaders: the tag always goes; forwarding headers go unless Caddy sent them", () => {
     const caddyReq = fromCaddy()

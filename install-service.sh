@@ -49,9 +49,12 @@ if [ "$kind" = daemon ]; then
   sudo install -d -m 0755 "$fn_dir"
   sudo install -m 0644 \
     "$dir/fn-host.ts" "$dir/fn-protocol.ts" "$dir/fn-bindings.ts" "$dir/fn-cron.ts" "$dir/fn-console.ts" \
-    "$dir/fn-config.ts" "$dir/fn-deploy.ts" "$dir/fn-tool.ts" "$dir/cron.ts" \
+    "$dir/fn-config.ts" "$dir/fn-deploy.ts" "$dir/fn-tool.ts" "$dir/fn-assets.ts" "$dir/cron.ts" \
     "$fn_dir/"
   echo "Installed the function shim in $fn_dir"
+  # Portal login checks passwords through this PAM service (pam.ts)
+  sudo install -m 0644 "$dir/candy.pam" /etc/pam.d/candy
+  echo "Installed the PAM service /etc/pam.d/candy"
 fi
 
 sudo systemctl daemon-reload

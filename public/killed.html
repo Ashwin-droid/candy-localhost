@@ -292,7 +292,8 @@
       if (!actionMatch) return _host;
       return actionMatch[1] ? `${serverName}.${actionMatch[1]}${candySuffix}` : `${serverName}${candySuffix}`;
     };
-    const serviceHost = getServiceHost();
+    // Shown on the portal host (/go/kill), the daemon says which site it was
+    const serviceHost = vars.serviceHost || getServiceHost();
 
     document.getElementById('serverName').textContent = serverName;
     document.getElementById('domainLink').textContent = serviceHost;

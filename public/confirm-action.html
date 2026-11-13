@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Confirm · candy</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,400..700&family=Schibsted+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #eceef2;
+      --surface: #ffffff;
+      --surface-2: #f5f6f9;
+      --surface-3: #efeff3;
+      --border: #e1e4eb;
+      --border-bright: #c9cdd9;
+      --text: #1a1d33;
+      --text-dim: #555b75;
+      --text-muted: #8a90a8;
+      --accent: #d42a47;
+      --accent-hover: #bb1f3b;
+      --accent-soft: rgba(212, 42, 71, 0.09);
+      --accent-ink: #ffffff;
+      --violet: #6d4ae0;
+      --green: #0b9468;
+      --green-soft: rgba(11, 148, 104, 0.12);
+      --red: #d42a47;
+      --red-soft: rgba(212, 42, 71, 0.08);
+      --yellow: #b7791f;
+      --yellow-soft: rgba(183, 121, 31, 0.1);
+      --blue: #3b6fd8;
+      --blue-soft: rgba(59, 111, 216, 0.1);
+      --shadow: 0 1px 2px rgba(26, 29, 51, 0.05);
+      --log-bg: #0e0e12;
+      --log-text: #e4e4ea;
+      /* legacy names used by this page's rules */
+      --bg-deep: var(--bg); --bg-surface: var(--surface); --bg-card: var(--surface); --bg-elevated: var(--surface-2);
+      --dim: var(--text-dim);
+      --cyan: var(--accent); --cyan-dim: var(--accent-hover); --cyan-glow: var(--accent-soft);
+      --magenta: var(--accent); --magenta-dim: var(--accent-hover); --magenta-glow: var(--accent-soft);
+      --green-dim: var(--green); --red-dim: var(--red); --red-glow: var(--red-soft);
+      --font-sans: 'Schibsted Grotesk', system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --font-mono: 'Martian Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --bg: #10121a;
+        --surface: #171a25;
+        --surface-2: #1d2130;
+        --surface-3: #25252b;
+        --border: #252938;
+        --border-bright: #353a4c;
+        --text: #e7e9f2;
+        --text-dim: #a3a8c0;
+        --text-muted: #6c7290;
+        --accent: #ff5d78;
+        --accent-hover: #ff7a90;
+        --accent-soft: rgba(255, 93, 120, 0.12);
+        --accent-ink: #2a0710;
+        --violet: #a893ff;
+        --green: #3fd3a1;
+        --green-soft: rgba(63, 211, 161, 0.14);
+        --red: #ff5d78;
+        --red-soft: rgba(255, 93, 120, 0.12);
+        --yellow: #f2b84b;
+        --yellow-soft: rgba(242, 184, 75, 0.12);
+        --blue: #74a0ff;
+        --blue-soft: rgba(116, 160, 255, 0.12);
+        --shadow: none;
+        --log-bg: #0b0b0e;
+        --log-text: #e4e4ea;
+      }
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      height: 100%;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      -webkit-font-smoothing: antialiased;
+      background: var(--bg-deep);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+      position: relative;
+      overflow: hidden;
+    }
+
+
+
+    .container {
+      text-align: center;
+      max-width: 440px;
+      animation: fadeIn 0.5s ease;
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .icon-container {
+      width: 100px;
+      height: 100px;
+      margin: 0 auto 2rem;
+      position: relative;
+    }
+
+    .icon-ring {
+      position: absolute;
+      inset: 0;
+      border: 2px solid var(--border);
+      border-radius: 50%;
+      animation: ringPulse 2s ease-in-out infinite;
+    }
+
+    .icon-ring:nth-child(2) {
+      inset: 10px;
+      animation-delay: 0.3s;
+    }
+
+    .icon-ring:nth-child(3) {
+      inset: 20px;
+      animation-delay: 0.6s;
+    }
+
+    @keyframes ringPulse {
+      0%, 100% { opacity: 0.3; transform: scale(1); }
+      50% { opacity: 0.6; transform: scale(1.02); }
+    }
+
+    .icon-center {
+      position: absolute;
+      inset: 30px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .icon-center svg {
+      width: 24px;
+      height: 24px;
+      stroke: var(--text-dim);
+      stroke-width: 2;
+      fill: none;
+    }
+
+    h1 {
+      font-family: var(--font-sans);
+      font-size: 1.75rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 0.5rem;
+    }
+
+    .domain {
+      color: var(--magenta);
+    }
+
+    .subtitle {
+      font-size: 0.9rem;
+      color: var(--text-dim);
+      margin-bottom: 2.5rem;
+    }
+
+    .actions {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      padding: 1rem 1.5rem;
+      border-radius: 10px;
+      font-family: var(--font-sans);
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      text-decoration: none;
+      border: none;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: var(--accent-ink);
+      color: var(--bg-deep);
+      box-shadow: var(--shadow);
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: var(--shadow);
+    }
+
+    .btn-primary svg {
+      width: 18px;
+      height: 18px;
+      stroke: currentColor;
+      stroke-width: 2;
+      fill: none;
+    }
+
+    .btn-secondary {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--cyan-dim);
+      color: var(--text);
+    }
+
+    [hidden] { display: none !important; }
+    .btn[disabled] { opacity: 0.6; cursor: default; transform: none; }
+    .btn-danger { background: var(--red); color: var(--accent-ink); box-shadow: var(--shadow); }
+    .btn-danger:hover { transform: translateY(-2px); }
+    .msg { display: none; margin-top: 1.25rem; padding: 0.75rem 1rem; border-radius: 10px; font-size: 0.9rem; background: var(--red-soft); color: var(--red); }
+    .msg.show { display: block; }
+    .note { margin-top: 2rem; font-size: 0.8rem; color: var(--text-muted); }
+    .note code { background: var(--bg-elevated); padding: 0.2rem 0.5rem; border-radius: 4px; color: var(--text-dim); font-family: var(--font-mono); font-stretch: 87.5%; }
+    h1 .domain { color: var(--text); font-family: var(--font-mono); font-stretch: 87.5%; font-weight: 600; letter-spacing: -0.02em; }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <h1 id="title">…</h1>
+    <p class="subtitle" id="subtitle"></p>
+
+    <div class="actions">
+      <button type="button" class="btn btn-primary" id="goBtn" hidden></button>
+      <a href="#" class="btn btn-primary" id="startLink" hidden>Open it to start it</a>
+      <a href="/" class="btn btn-secondary" id="portalLink">Back to portal</a>
+    </div>
+    <div class="msg" id="msg" role="alert"></div>
+    <p class="note" id="note" hidden></p>
+  </div>
+
+  <script>
+    // Confirmation for a shortcut host (<name>.k / <name>.p), on the portal.
+    // Opening this page does nothing; the button POSTs with this page's token.
+    const vars = window.CANDY_VARS || {};
+    const action = vars.action === 'portal' ? 'portal' : 'kill';
+    const name = String(vars.name || '');
+    const serviceHost = String(vars.serviceHost || name);
+    const titleEl = document.getElementById('title');
+    const subEl = document.getElementById('subtitle');
+    const goBtn = document.getElementById('goBtn');
+    const msgEl = document.getElementById('msg');
+
+    const domainSpan = () => {
+      const span = document.createElement('span');
+      span.className = 'domain';
+      span.textContent = name;
+      return span;
+    };
+    const setTitle = (before, after) => {
+      titleEl.textContent = '';
+      titleEl.append(before, domainSpan(), after);
+    };
+    const showMsg = (text) => { msgEl.textContent = text; msgEl.classList.toggle('show', !!text); };
+
+    if (vars.error) {
+      document.title = 'candy';
+      if (vars.notRunning) {
+        setTitle('', ' isn’t running');
+        subEl.textContent = 'Start it first, then open the tunnel from the portal.';
+        const start = document.getElementById('startLink');
+        start.href = `https://${serviceHost}`;
+        start.hidden = false;
+      } else {
+        titleEl.textContent = action === 'kill' ? 'Can’t stop that' : 'Can’t open a tunnel';
+        subEl.textContent = vars.error;
+      }
+    } else {
+      if (action === 'kill') {
+        document.title = `Stop ${name}? · candy`;
+        setTitle('Stop ', '?');
+        subEl.textContent = 'The server stops now. Opening its address starts it again.';
+        goBtn.textContent = 'Stop it';
+        goBtn.className = 'btn btn-danger';
+      } else {
+        document.title = `Open a public tunnel to ${name}? · candy`;
+        setTitle('Open a public tunnel to ', '?');
+        subEl.textContent = 'Anyone with the link can reach it from the internet until the tunnel is closed.';
+        goBtn.textContent = 'Open tunnel';
+      }
+      const note = document.getElementById('note');
+      note.textContent = '';
+      const code = document.createElement('code');
+      code.textContent = serviceHost;
+      note.append('For ', code, ', as you.');
+      note.hidden = false;
+      goBtn.hidden = false;
+      goBtn.focus();
+    }
+
+    let failed = false;
+    goBtn.addEventListener('click', async () => {
+      if (failed) { location.reload(); return; }
+      goBtn.disabled = true;
+      showMsg('');
+      goBtn.textContent = action === 'kill' ? 'Stopping…' : 'Opening tunnel…';
+      try {
+        const res = await fetch(`/go/${action}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Candy-Token': window.CANDY_TOKEN || '' },
+          body: JSON.stringify({ name }),
+        });
+        if (res.status === 401 && res.headers.get('X-Candy-Login')) {
+          location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
+          return;
+        }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.details ? `${data.error}: ${data.details}` : (data.error || `Failed (HTTP ${res.status})`));
+        // The same page now shows the result (stopped, or the tunnel coming up)
+        location.replace(`/go/${action}?name=${encodeURIComponent(name)}`);
+      } catch (e) {
+        // The token was used up either way; a fresh page has a new one
+        showMsg((e instanceof TypeError ? 'Can’t reach the candy daemon.' : e.message) + ' Reload to try again.');
+        failed = true;
+        goBtn.textContent = 'Reload';
+        goBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

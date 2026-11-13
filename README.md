@@ -241,6 +241,8 @@ candy api <name> on|off          # toggle for an existing site
 
 The portal has the same toggle in each site's menu.
 
+Every request for an API-mode server's host (its bound domain, `<name>.localhost`, `<name>.candy`) belongs to the server, whatever the method or path: `/oauth/token`, `/auth/login` and `/candy/…` reach the server, not candy. A request to a stopped server waits up to 90 seconds for it to start (`CANDY_API_HOLD_SECONDS` in the daemon's environment, minimum 60), and any number of requests wait on the same start. If the server can't be reached, candy replies `503` with `Retry-After`. On a password-protected bound domain, candy keeps `/candy-auth/check` and `POST /candy-auth/login`.
+
 ### Env Files
 
 ```bash
@@ -426,7 +428,7 @@ The daemon records every request a function serves, for the last 24 hours. The f
 - Bodies: the first 64 KB each way. Non-text bodies are kept as size and sha256 only. Streaming responses keep the first 64 KB and the total size. Capture never slows the response.
 - Redacted by default: `Authorization`, `Cookie`, `Set-Cookie`, `Proxy-Authorization`, and any header or JSON/form field matching `token|secret|password|api[-_]?key`, including query parameters in the URL and in `Location` / `Content-Location`.
 - One SQLite file per function in the daemon's own state (`/var/lib/candy-daemon/fn-log/`, or `~/.local/state/candy/fn-log/`), never mounted into the sandbox. Capped at 256 MB, oldest rows first. The log can be set to metadata only, or off.
-- Only the function's owner can read it, and it's never reachable from a public host (the public MCP endpoint doesn't offer the request-log, replay, KV or D1 tools). Removing the function deletes its log.
+- Only the function's user (or a superuser) can read it, and it's never reachable from a public host (the public MCP endpoint doesn't offer the request-log, replay, KV or D1 tools). Removing the function deletes its log.
 
 **Replay** sends a logged request again to the code running now, which is handy straight after an edit. Redacted values stay redacted, and a request whose body was cut at 64 KB is refused unless you allow a partial body.
 
@@ -543,7 +545,7 @@ candy version | -v             Show version
 | `candy_servers` | List servers with status, port, PID, run-as user, API mode, variants (`configId`) and detected ports; functions add `fn` (entry, settings, `assets`) |
 | `candy_start` / `candy_restart` / `candy_stop` | Control a server. `candy_start` takes `configId` when a name has several variants |
 | `candy_logs` / `candy_input` | Read a server's output (tail, head, search) and type into its terminal |
-| `candy_register` / `candy_deregister` | Add or remove a config. Register accepts `api` (API mode) and `user` (run-as account, owner only); deregister accepts `configId` to remove one variant |
+| `candy_register` / `candy_deregister` | Add or remove a config. Register accepts `api` (API mode) and `user` (another account: only a portal superuser can, so over MCP it must be yourself); deregister accepts `configId` to remove one variant |
 | `candy_config` | `list` configs and variants, `users` (run-as accounts), `set_api` (API mode on/off), `set_port` (pick one of several detected ports), `set_sandbox` (sandbox on/off, extra writable folders), `set_env_file`, `set_ttl` (idle minutes before it stops) |
 | `candy_route` | `list`, `add` (port or URL `target`, `persistent`), `remove`, `rename`; LAN: `lan_list`, `lan_publish` (`https`: `true`, `false`, `"domain"` or `"tailscale"`, optional `port`), `lan_unpublish`; `entry` / `entry_list` (loopback entry ports), `serve` / `serve_list` (tailscale serve); AdGuard Home: `adguard_status`, `adguard_unlink` |
 | `candy_domain` | Bound domains: `list`, `bind`, `unbind`, `config`; protection: `auth_status`, `auth_generate_jwt`, `auth_token` (`ttl`, `once`), `auth_clear` (`which`: password, jwt or all), `allowlist` (`add`, `remove`, `ips`, `enabled`); the public MCP endpoint: `public_mcp_status`, `public_mcp_on`, `public_mcp_off`, `public_mcp_revoke` |
@@ -570,15 +572,15 @@ candy domain mcp revoke [clientId]  # sign one client or everyone out
 candy domain mcp off                # removes the address and signs everyone out
 ```
 
-There is no password. Sign-in is OAuth 2.1, and Tailscale decides who gets in:
+Sign-in is OAuth 2.1. Tailscale decides who can reach the consent page, and a portal login decides who approves:
 
 1. The client finds the OAuth endpoints from `/.well-known/oauth-protected-resource`, registers itself, and opens `https://candy.<zone>/authorize` in your browser.
-2. candy parks the request and sends the browser to `https://portal.candy/oauth/consent`. That page exists only on your tailnet, so only a device your Tailscale ACLs let reach this machine can open it. It shows the client's name, where it will send you back, and who Tailscale says you are.
+2. candy parks the request and sends the browser to `https://portal.candy/oauth/consent`. That page exists only on your tailnet, so only a device your Tailscale ACLs let reach this machine can open it, and it asks you to [log in](#portal-login) first. It shows the client's name, where it will send you back, who Tailscale says you are, and the account you're approving as.
 3. Pressing **Allow** sends the browser back to `https://candy.<zone>/authorize/complete` with a one-time grant, which candy exchanges for the authorization code the client redeems.
 
-Details: PKCE (S256) is required; access tokens last 1 hour and live in memory only; refresh tokens rotate, last 30 days and are stored hashed in `~/.config/candy/mcp-oauth.json`; reusing an old refresh token signs that client out. The public host serves nothing but the OAuth endpoints and `/mcp`, and `/mcp` there leaves out the function request-log, replay, KV and D1 tools (`PUBLIC_HIDDEN_TOOLS` in mcp.ts). Calls run as the owner and are recorded in the audit log (`MCP_PUBLIC_*`) with the client's name and who approved it.
+Details: PKCE (S256) is required; access tokens last 1 hour and live in memory only; refresh tokens rotate, last 30 days and are stored hashed in `~/.config/candy/mcp-oauth.json`; reusing an old refresh token signs that client out. The public host serves nothing but the OAuth endpoints and `/mcp`, and `/mcp` there leaves out the function request-log, replay, KV and D1 tools (`PUBLIC_HIDDEN_TOOLS` in mcp.ts). Calls act as the user who approved the client, user-scoped and never as a superuser, and are recorded in the audit log (`MCP_PUBLIC_*`) with that user, the client's name and who approved it. A user who can no longer log in to the portal loses their clients too. Approvals made before portal login carried no user; the daemon revokes them at startup (audited as `MCP_PUBLIC_REVOKE`), and those clients sign in again.
 
-A connected client can do what the portal can, including typing into server terminals, which means running commands on this machine. Approve only clients you trust.
+A connected client can do what you can in the portal (as a regular user), including typing into your servers' terminals, which means running commands on this machine as you. Approve only clients you trust.
 
 ### How MCP Integration Works
 
@@ -620,8 +622,10 @@ Base URL: `http://localhost:9999`
 
 Two auth modes:
 
-- **Browser token** (`X-Candy-Token`): rolling token injected into rendered HTML, rotates on each request
-- **API key** (`X-Candy-API-Key`): obtained via `POST /mcp/auth` with a bootstrap secret. Clients look in `$CANDY_SECRET_FILE`, `~/.config/candy/mcp-secret`, `/run/candy/users/<user>/secret`, then `/run/candy/secret`. Each API key belongs to the user whose secret it came from.
+- **Portal login** (`candy_portal` cookie, on `portal.localhost` / `portal.candy` only), plus the page's rolling token (`X-Candy-Token`) on every request that changes something. See [Portal login](#portal-login).
+- **API key** (`X-Candy-API-Key`): obtained via `POST /mcp/auth` with a bootstrap secret. Clients look in `$CANDY_SECRET_FILE`, `~/.config/candy/mcp-secret`, `/run/candy/users/<user>/secret`, then `/run/candy/secret`. Each API key belongs to the user whose secret it came from, and is always user-scoped.
+
+Every control route is public, user or superuser (`ROUTE_TABLE` in daemon.ts); a route missing from that table is refused. User routes only show and change the caller's own sites, unless the caller is a superuser logged in to the portal. Without a login or key the API answers `401 {"error":"login required"}`; a superuser route answers `403` to everyone else, API keys included.
 
 ### Endpoints
 
@@ -629,7 +633,12 @@ Two auth modes:
 
 | Method | Path | Body | Description |
 |--------|------|------|-------------|
-| `POST` | `/token` | `{ token }` | Refresh rolling browser token |
+| `GET` | `/login` | — | Portal login page (`?next=<path>`) |
+| `GET` | `/auth/users` | — | `{ users, available }`: accounts that can log in |
+| `POST` | `/auth/login` | `{ user, password }` | Log in; sets the cookie, returns `{ user, superuser }` |
+| `POST` | `/auth/logout` | — | End this login |
+| `GET` | `/auth/me` | — | `{ user, superuser, via }` |
+| `POST` | `/token` | `{ token }` | Refresh the page's rolling token (same login only) |
 | `POST` | `/mcp/auth` | `{ secret }` | Exchange bootstrap secret for API key |
 
 #### Routes
@@ -689,7 +698,7 @@ Two auth modes:
 
 #### Functions
 
-Only the function's owner can call these. Errors are `{ success: false, error }`.
+Only the function's user (or a portal superuser) can call these. Errors are `{ success: false, error }`.
 
 | Method | Path | Body | Description |
 |--------|------|------|-------------|
@@ -885,7 +894,19 @@ bun run install-service
 sudo systemctl enable --now candy-localhost@$USER
 ```
 
-The template unit runs the daemon as root, with the instance name as the **owner**: state lives in the owner's `~/.config/candy`, and the web portal acts as them. `install-service.sh` fills in the repo, Bun and Caddy paths for your machine (`./install-service.sh daemon --print` to preview).
+The template unit runs the daemon as root, with the instance name as the **owner**: state lives in the owner's `~/.config/candy`. The owner is just the default account; it has no special rights in the portal or the API. `install-service.sh` fills in the repo, Bun and Caddy paths for your machine (`./install-service.sh daemon --print` to preview).
+
+### Portal login
+
+The portal (`portal.localhost`, `portal.candy`) and the public MCP consent page need a login with an account on this machine. Pick the account from the list (the owner plus members of the `candy` group; in user mode, only the daemon's own user) and type its password, which is checked through PAM.
+
+- `install-service.sh` installs the PAM service `/etc/pam.d/candy` (`common-auth` + `common-account`). Without it, login fails closed and the login page says so; nothing falls back to another service.
+- Sudoers are **superusers** for their whole login: they see every user's sites and change daemon-wide settings. It's rechecked about once a minute, so removing someone from sudoers takes effect without logging them out. The CLI, the SDK, the local MCP server and public MCP clients are never superusers, sudoers included.
+- A login lasts 24 hours without use and 7 days at most. It has two halves: the `candy_portal` cookie (HttpOnly, SameSite=Strict, Secure on https) and a session secret the login page keeps in the portal's `localStorage` and sends as `X-Candy-Session`. Browsers send cookies to every port of a host, so a dev server on `portal.localhost:5555` would get the cookie, but never the secret. Opening a portal page in a browser that doesn't have the secret (cleared storage, a private window) goes to the login page. Sessions survive daemon restarts; only hashes of both halves are kept on disk, in `/var/lib/candy-daemon/portal-sessions.json` (root mode) or `~/.local/state/candy/portal-sessions.json`. At most 20 logins per account are kept (the oldest goes). Leaving the `candy` group, a locked or expired account, or a shell set to nologin ends that user's sessions within a minute.
+- Wrong passwords: an address that isn't this machine gets the Fibonacci lockout bound domains use (3 tries, then 1h, 1h, 2h, 3h…, kept in `candy-grudge.lock`). An account is slowed down per address, never locked for everyone: after 3 failures from one address, that address waits 7.5s, then 15s, then 30s at most. Browsers on this machine (loopback) only ever get those short waits, so typos can't lock out the desktop. One attempt per account and per address runs at a time, and at most 4 at once overall. An unknown account, a wrong password, a slowed-down account and a busy server get the same answer after the same delay (at least 4.5s, longer than PAM's own failure delay).
+- Requests that change something must come from a portal page (`Origin`) and carry that page's token, which belongs to one login.
+- Because the CLI and MCP are never superusers, the commands for daemon-wide settings are refused there (`403`): `candy domain config`, `candy domain mcp …`, `candy lan publish`, `candy lan adguard`, `candy route serve`, and the matching MCP actions. LAN publishing, `tailscale serve` and the public MCP address have switches in the portal for superusers; the Cloudflare zone and AdGuard Home have no portal form yet.
+- Logins, failures and logouts are in the audit log (`AUTH_LOGIN`, `AUTH_FAIL`, `AUTH_LOGOUT`) with the account and address. Passwords never are.
 
 ### Multiple Users
 
@@ -898,11 +919,10 @@ sudo usermod -aG candy alice
 
 Each member gets a secret at `/run/candy/users/<user>/secret` that only they can read (checked every minute, so no restart is needed). Servers a user registers run as that user via `setpriv`, starting in their cwd with their `$HOME`. Nothing is ever started as root.
 
-- The owner can add a site that runs as any group member (the portal's **Run as** picker, or `user` on `POST /config`); `~` in its folder means that user's home. Other members can only add sites that run as themselves. Root is never offered.
-- Only a server's own user can type into its terminal, change its API mode, or remove it (the owner can also remove any).
-- Anyone in the group can start, stop and restart any server; it still runs as its own user.
-- Only the owner can change the Cloudflare domain config or shut the daemon down.
-- The web portal acts as the owner, and anyone who can reach `localhost:9999` can use it.
+- Everyone sees and changes only their own sites: servers, functions, routes, tunnels, bound domains, logs and request logs. A superuser (see [Portal login](#portal-login)) sees and manages all of them.
+- A superuser can add a site that runs as any group member (the portal's **Run as** picker, or `user` on `POST /config`); `~` in its folder means that user's home. Everyone else, and every API key, only adds sites that run as themselves. Root is never offered.
+- Daemon-wide settings are superuser-only: the Cloudflare zone and tunnel, replacing DNS records candy didn't create, LAN publishing, `tailscale serve`, AdGuard Home, the public MCP endpoint and its clients, the audit and Caddy logs, and shutting the daemon down.
+- A site's own pages (starting, crashed, tunnel progress) still show its log and can start or restart it, as visiting its URL would. Typing into its terminal and registering a new name from those pages needs the portal.
 - Process logs move to `/var/log/candy` (root-owned) and are readable by all local users.
 
 Run as a normal user instead (`bun run daemon`), everything runs as that user. If a `candy` group exists, the secret is also written to `/run/candy/secret` for the group.
@@ -942,7 +962,7 @@ Runs as the installing user with `CAP_NET_BIND_SERVICE` for port 53 — not root
 | `/run/candy/fn/<name>.sock` | Socket a function's instances dial in on (`$XDG_RUNTIME_DIR/candy/fn/` as a normal user) |
 | `/var/log/candy/<name>.log` | Process logs when run as root (cleared on daemon start) |
 | `/tmp/candy-logs/<name>.log` | Process logs when run as a normal user |
-| `/tmp/candy-logs/_audit.log` | Operation audit log (`/var/log/candy` as root) |
+| `/tmp/candy-logs/daemon/audit.log` | Operation audit log (`/var/log/candy/daemon/` as root) |
 | `/tmp/candy-logs/cron/<name>.log` | Cron run output (`/var/log/candy/cron` as root) |
 | `/tmp/candy-logs/_dns.log` | DNS daemon log |
 

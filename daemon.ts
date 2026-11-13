@@ -6,10 +6,11 @@
  */
 
 import { $, spawn, type Subprocess } from "bun"
-import { existsSync, readFileSync, watch, type FSWatcher } from "node:fs"
-import { appendFile, chmod, chown, lchown, lstat, mkdir, stat, unlink, writeFile } from "node:fs/promises"
+import { chmodSync, closeSync, existsSync, openSync, readFileSync, statSync, watch, type FSWatcher } from "node:fs"
+import { appendFile, chmod, chown, lchown, lstat, mkdir, rename, stat, unlink, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
-import { userInfo } from "node:os"
+import { timingSafeEqual } from "node:crypto"
+import { networkInterfaces, userInfo } from "node:os"
 import { SHARED_GROUP, SHARED_SECRET_FILE } from "./secret.ts"
 import { AccessLogTail, activityFromAccessLog, countEstablished, idleVerdict, IDLE_TIMEOUT_MS, listeningPortsOf, localNameCandidates, readMemoryState, tailscaleServeTargets, validateTtlMinutes, type MemoryState } from "./activity.ts"
 import { findCodeDir, parseEnvFile, stateDirPath, systemdRunCommand, unitName, unitOfCgroup, userEnvDir, validateEnvFilePath, validateRwPath, MAX_RW_PATHS, SANDBOX_SLICE, STATE_ROOT } from "./sandbox.ts"
@@ -29,6 +30,13 @@ import {
 import { AssetServer, userCanRead, type AssetsConfig } from "./fn-assets.ts"
 import { isDeployId, type DeployInfo } from "./fn-deploy.ts"
 import { CONFIG_FILES as FN_CONFIG_FILES, type FnProjectConfig } from "./fn-config.ts"
+import { apiHoldSeconds, createApiModeGate } from "./api-mode.ts"
+import { PortalSessions, readSessionCookie, sessionCookieHeader, clearSessionCookieHeader } from "./portal-session.ts"
+import { attemptLogin, auditActor, auditSafe, cachedList, classifyRoute, clientIp, guardRequest, isPortalOrigin, LoginSlots, mayActOn, PageTokens, parseShortcutHost, safeNext, sameOrigin, shortcutConfirmUrl, SiteTokens, SoftLockout, SESSION_HEADER, userScopedFetch, wantsHtml, logSafe, type RequestAuth, type RouteRule, type ShortcutAction } from "./portal-auth.ts"
+import { caddyGlobalBlock, checkBindings, cloudflaredYaml, dedupeSiteAddresses, isCaddyUpstream, isCredentialsPath, isDnsLabel, isHostName, isIpOrCidr, isQuickTunnelUrl, isTunnelId, isTunnelName, isZoneId, isZoneName, loopbackBind, lowerName, mergeLowerCase, newNameProblem, PROXY_TAG_HEADER, stripProxyHeaders, SYSTEM_BLOCK_MARK, tagDaemonUpstreams } from "./caddy-config.ts"
+import { verifyPassword, pamAvailable } from "./pam.ts"
+import { isSuperuser, loginUsers } from "./superuser.ts"
+import { AsyncLocalStorage } from "node:async_hooks"
 import { JtiBloom, readCredential, signJwt, stripCandyCredentials, verifyJwt, JWT_AUDIENCE, MAX_TOKEN_LIFETIME_S, type AuthResult, ipAllowed, isLoopback, parseCidr, TAILSCALE_RANGES } from "./server-auth.ts"
 
 import {
@@ -97,6 +105,7 @@ interface ManagedProcess {
   terminal: any | null  // Bun.Terminal reference for PTY input
   idling: boolean  // the app said it is only waiting for events (SDK setIdling)
   unit: string | null  // transient systemd unit, when launched sandboxed
+  logStart?: number  // size of the log file when this run was spawned: a site page's excerpt starts here
 }
 
 // ============================================================================
@@ -110,6 +119,16 @@ const CADDYFILE = `${CADDY_CONFIG_DIR}/Caddyfile`
 const CADDY_LOG = `${CADDY_CONFIG_DIR}/access.log`
 const CADDY_PROC_LOG = `${CADDY_CONFIG_DIR}/caddy.log`
 const PID_FILE = `${CADDY_CONFIG_DIR}/candy.pid`
+// Caddy's admin API: a 0600 unix socket owned by Caddy's user, never localhost:2019,
+// where any local user could load a config (file_server on /) into a root Caddy
+// User mode without XDG_RUNTIME_DIR: a 0700 folder of our own, never a /tmp path
+// someone else could create first
+const USER_RUN_DIR = process.env.XDG_RUNTIME_DIR ? `${process.env.XDG_RUNTIME_DIR}/candy` : `${CANDY_CONFIG_DIR}/run`
+const CADDY_ADMIN_SOCKET = process.getuid?.() === 0
+  ? "/run/candy/caddy-admin.sock"
+  : `${USER_RUN_DIR}/caddy-admin.sock`
+const caddyAdmin = (path: string, init: RequestInit = {}) =>
+  fetch(`http://caddy${path}`, { ...init, unix: CADDY_ADMIN_SOCKET } as RequestInit)
 const SERVERS_CONFIG = `${CANDY_CONFIG_DIR}/servers.json`
 const ROUTES_FILE = `${CANDY_CONFIG_DIR}/routes.json`
 const MCP_SECRET_FILE = `${CANDY_CONFIG_DIR}/mcp-secret`
@@ -117,7 +136,8 @@ const DOMAINS_CONFIG = `${CANDY_CONFIG_DIR}/domains.json`
 const GRUDGE_FILE = `${CANDY_CONFIG_DIR}/candy-grudge.lock`
 // As root, logs live in a root-owned dir: /tmp/candy-logs could be pre-created by any user
 const LOGS_DIR = process.getuid?.() === 0 ? "/var/log/candy" : "/tmp/candy-logs"
-const AUDIT_LOG = `${LOGS_DIR}/_audit.log`
+// In a folder of its own: per-name logs are LOGS_DIR/<name>.log, so no name can map to it
+const AUDIT_LOG = `${LOGS_DIR}/daemon/audit.log`
 const DNS_CONFIG_FILE = `${CANDY_CONFIG_DIR}/candy-dns.json`
 const ADVERTISEMENTS_FILE = `${CANDY_CONFIG_DIR}/advertisements.json`
 const LAN_FILE = `${CANDY_CONFIG_DIR}/lan.json`
@@ -125,6 +145,11 @@ const ADGUARD_FILE = `${CANDY_CONFIG_DIR}/adguard.json`
 const MCP_OAUTH_FILE = `${CANDY_CONFIG_DIR}/mcp-oauth.json`
 const ENTRIES_FILE = `${CANDY_CONFIG_DIR}/entries.json`
 const SERVES_FILE = `${CANDY_CONFIG_DIR}/serves.json`
+const ROUTE_USERS_FILE = `${CANDY_CONFIG_DIR}/route-users.json`
+// Root-only: ~/.config/candy is handed back to the owner when the daemon stops
+const PORTAL_SESSIONS_FILE = process.getuid?.() === 0
+  ? "/var/lib/candy-daemon/portal-sessions.json"
+  : `${process.env.HOME}/.local/state/candy/portal-sessions.json`
 const CLOUDFLARED_SYSTEM_CONFIG = `/etc/cloudflared/config.yml`
 const CLOUDFLARED_USER_CONFIG = `${process.env.HOME}/.cloudflared/config.yml`
 const CANDY_RUNTIME_MAGIC_ENV = "X_CANDY_RUNTIME_MAGIC_STRING"
@@ -148,11 +173,35 @@ const LAN_IP_REFRESH_INTERVAL = 5 * 60 * 1000  // 5 minutes
 // Reserved domain names (cannot be used for servers/routes)
 const RESERVED_NAMES = new Set(['portal', 'k', 'kill', 'p', 'candy'])
 // Names become hostnames and file names (logs), so only DNS-safe labels are allowed.
-// Anything else is treated like a reserved name and rejected.
-const SAFE_NAME = /^[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?(\.[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?)*$/i
+// Anything else is treated like a reserved name and rejected. No leading "_" or ".":
+// those are the daemon's own log names (_audit, _caddy, _dns).
+// Lower case only: requests are lower-cased on arrival (lowerRequestNames) and
+// stored names at load (migrateNames), so "Victim" can't be a second "victim".
+const SAFE_NAME = /^[a-z0-9]([a-z0-9_-]*[a-z0-9_])?(\.[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?)*$/
 const isSafeName = (name: unknown): name is string =>
   typeof name === "string" && name.length > 0 && name.length <= 128 && SAFE_NAME.test(name)
 const isReserved = (name: string) => !isSafeName(name) || RESERVED_NAMES.has(name.toLowerCase())
+// A name nobody has yet: also not the address of a shortcut or alias host (newNameProblem)
+const newNameRefusal = (name: string): string | null => newNameProblem(name, getLocalCandyHostLabel(), RESERVED_NAMES)
+
+// Body fields and query parameters that carry a site name
+const NAME_FIELDS = ["name", "oldName", "newName", "serverName", "targets"]
+const lowerNameFields = (body: unknown): unknown => {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return body
+  const b = body as Record<string, unknown>
+  for (const k of NAME_FIELDS) {
+    if (typeof b[k] === "string") b[k] = lowerName(b[k])
+    else if (Array.isArray(b[k])) b[k] = (b[k] as unknown[]).map(lowerName)
+  }
+  return body
+}
+/** Every control route sees names in lower case, whatever the caller typed. */
+const lowerRequestNames = (req: Request, url: URL): void => {
+  const json = req.json.bind(req)
+  ;(req as any).json = async () => lowerNameFields(await json())
+  const name = url.searchParams.get("name")
+  if (name !== null && name !== lowerName(name)) url.searchParams.set("name", lowerName(name))
+}
 
 // Port detection patterns (run against process stdout/stderr)
 const PORT_PATTERNS = [
@@ -196,6 +245,8 @@ interface DomainBinding {
   fqdn: string
   serverName: string
   boundAt: string
+  owner?: string      // who bound it; bindings from before this get the name's owner at startup
+  orphaned?: boolean  // its site was removed; only the owner (or a superuser) may take the name again
   auth?: {
     password: string | null  // bcrypt hash, null = no auth (nag mode)
     enabled: boolean
@@ -276,17 +327,42 @@ const generateAuthToken = (): string => {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
+// Caddy marks what it sends the daemon with this per-boot tag (tagDaemonUpstreams),
+// so forwarding headers are believed from Caddy and from nobody else on loopback
+const CADDY_PROXY_TAG = Buffer.from(crypto.getRandomValues(new Uint8Array(24))).toString('base64url')
+const hasCaddyTag = (req: Request, peer: string): boolean => {
+  const tag = req.headers.get(PROXY_TAG_HEADER)
+  return isLoopback(peer) && !!tag && tag.length === CADDY_PROXY_TAG.length && timingSafeEqual(Buffer.from(tag), Buffer.from(CADDY_PROXY_TAG))
+}
+// Decided once per request (markProxyHeaders), before the tag is stripped
+const fromOwnCaddy = new WeakSet<Request>()
+const viaOwnCaddy = (req: Request, _peer?: string): boolean => fromOwnCaddy.has(req)
+
+// First thing for every request: note whether our Caddy sent it, then strip (stripProxyHeaders)
+const markProxyHeaders = (req: Request, peer: string): void => {
+  if (hasCaddyTag(req, peer)) fromOwnCaddy.add(req)
+  stripProxyHeaders(req.headers, fromOwnCaddy.has(req))
+}
+
+/** Headers for a request we pass on to a server: the same as a function gets (fnRequestHeaders: no hop-by-hop, no candy markers or proxy tag, and on a protected domain no candy credentials). */
+const upstreamRequestHeaders = (src: Headers, protectedDomain: boolean): Headers =>
+  fnRequestHeaders(src, { stripCredentials: protectedDomain })
+
+const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'te', 'trailer', 'upgrade']
+
 // Get fingerprint key from request
 const getFingerprint = (req: Request, server: any): { ip: string; userAgent: string } => {
-  const direct = normalizeIp(
-    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    server.requestIP(req)?.address || 'unknown'
-  )
-  // Tunnel traffic reaches Caddy from cloudflared on loopback, so every visitor
-  // would share one IP. Cloudflare's header has the real one; only trust it
-  // from loopback, so a LAN client can't pick its own.
-  const cf = req.headers.get('cf-connecting-ip')?.trim()
-  const ip = cf && isLoopback(direct) ? normalizeIp(cf) : direct
+  const peer = normalizeIp(server.requestIP(req)?.address || 'unknown')
+  // X-Forwarded-For / Cf-Connecting-Ip only from our own Caddy (see clientIp):
+  // a local process talking to :9999 directly can't pick its address
+  const ip = clientIp({
+    peer,
+    viaCaddy: viaOwnCaddy(req, peer),
+    xff: req.headers.get('x-forwarded-for'),
+    cf: req.headers.get('cf-connecting-ip'),
+    isLoopback,
+    normalize: normalizeIp,
+  })
   const userAgent = req.headers.get('user-agent') || 'unknown'
   return { ip, userAgent }
 }
@@ -467,6 +543,21 @@ const recordAuthFailure = async (key: string): Promise<{ retryAfter: number }> =
     authFailures.set(key, state)
     await saveAuthFailures()
     return { retryAfter: 0 }
+  })
+}
+
+// Undo one recordAuthFailure: a portal login counts the attempt before PAM
+// answers, and gives it back when PAM never gave a verdict
+const refundAuthFailure = async (key: string) => {
+  await withAuthFailureLock(async () => {
+    await loadAuthFailures('sync')
+    const state = authFailures.get(key)
+    if (!state) return
+    if (state.count >= 3 && state.fibIndex > 0) state.fibIndex--
+    state.count--
+    if (state.count <= 0) authFailures.delete(key)
+    else if (state.count < 3) state.blockedUntil = 0
+    await saveAuthFailures()
   })
 }
 
@@ -773,6 +864,14 @@ const loadDomainConfig = async (): Promise<DomainConfig | null> => {
     const file = Bun.file(DOMAINS_CONFIG)
     if (await file.exists()) {
       domainConfig = await file.json() as DomainConfig
+      let lowered = false
+      for (const [key, b] of Object.entries(domainConfig.bindings ?? {})) {
+        if (!b || typeof b.serverName !== "string" || b.serverName === lowerName(b.serverName)) continue
+        auditLog('NAME_LOWERCASED', `domain ${JSON.stringify(key)}: site ${JSON.stringify(b.serverName)} is now ${lowerName(b.serverName)}`, 'System')
+        b.serverName = lowerName(b.serverName)
+        lowered = true
+      }
+      if (dropInvalidBindings() || lowered) await saveDomainConfig()
       const count = Object.keys(domainConfig.bindings || {}).length
       console.log(`\x1b[90mLoaded domain config: ${domainConfig.zone?.domain || '(no zone)'} with ${count} bindings\x1b[0m`)
       return domainConfig
@@ -781,6 +880,20 @@ const loadDomainConfig = async (): Promise<DomainConfig | null> => {
     console.log(`\x1b[33mNo domain config found or invalid format\x1b[0m`)
   }
   return null
+}
+
+// The bindings that are safe to write into Caddy and cloudflared (checkBindings)
+const safeBindings = (): Record<string, DomainBinding> =>
+  domainConfig ? checkBindings(domainConfig.bindings, domainConfig.zone?.domain ?? "", isSafeName).kept : {}
+
+// Drops bindings that could inject into the Caddyfile or cloudflared's config
+// (from an older candy, or a hand-edited file), each with an audit line
+const dropInvalidBindings = (): boolean => {
+  if (!domainConfig?.bindings) return false
+  const { kept, dropped } = checkBindings(domainConfig.bindings, domainConfig.zone?.domain ?? "", isSafeName)
+  for (const d of dropped) auditLog('DOMAIN_BINDING_DROPPED', `${JSON.stringify(d.key)}: ${d.why}`, 'System')
+  if (dropped.length) domainConfig.bindings = kept
+  return dropped.length > 0
 }
 
 const saveDomainConfig = async () => {
@@ -853,6 +966,9 @@ const getMcpOAuth = async (): Promise<OAuthServer | null> => {
       onChange: (state) => { saveMcpOAuthState(state).catch(() => {}) },
     })
     mcpOAuthFor = fqdn
+    if (mcpOAuth.legacyRevoked > 0) {
+      auditLog('MCP_PUBLIC_REVOKE', `${mcpOAuth.legacyRevoked} approval(s) from before portal login carried no user and were revoked; those clients must sign in again`, 'System')
+    }
   }
   return mcpOAuth
 }
@@ -961,7 +1077,9 @@ const handlePublicMcp = async (req: Request, url: URL, server: any): Promise<Res
       return mcpJson({ error: "method_not_allowed" }, 405, { Allow: "POST, OPTIONS" })
     }
     const bearer = req.headers.get("authorization")?.match(/^Bearer\s+(\S+)$/i)?.[1]
-    const token = bearer ? oauth.verifyAccessToken(bearer) : null
+    let token = bearer ? oauth.verifyAccessToken(bearer) : null
+    // Someone who can no longer log in to the portal loses their clients too
+    if (token && !(await loginUsers().catch(() => [] as string[])).includes(token.user)) token = null
     if (!token) {
       if (!mcpRateOk(ip)) return tooMany()
       return mcpJson({ error: "invalid_token", error_description: "Sign in again to continue." }, 401, {
@@ -979,10 +1097,11 @@ const handlePublicMcp = async (req: Request, url: URL, server: any): Promise<Res
     for (const item of (batch ? message : [message]).slice(0, 50)) {
       if (!item || typeof item !== "object" || typeof item.method !== "string") continue  // responses and junk get no reply
       if (item.method === "tools/call") {
-        auditLog('MCP_PUBLIC_CALL', `${item.params?.name ?? '?'} by "${token.clientName}" (approved by ${token.approver ?? 'unknown'})`, 'AI')
+        auditLog('MCP_PUBLIC_CALL', `${item.params?.name ?? '?'} as ${token.user} by "${token.clientName}" (approved by ${token.approver ?? 'unknown'})`, 'AI')
       }
-      // The public host gets a subset: no request logs, replay, KV or D1
-      const reply = await handlePublicMcpRequest(item)
+      // The public host gets a subset: no request logs, replay, KV or D1.
+      // Its calls act as the user who approved the client, never as a superuser.
+      const reply = await publicMcpUser.run(token.user, () => handlePublicMcpRequest(item))
       if (reply && item.id !== undefined && item.id !== null) replies.push(reply)
     }
     if (replies.length === 0) return new Response(null, { status: 202, headers: MCP_PUBLIC_CORS })
@@ -1071,27 +1190,15 @@ const publicMcpStatus = async () => {
 const syncCloudflaredIngress = async () => {
   if (!domainConfig?.tunnel?.id) return
 
-  // Build ingress rules from bindings
-  const ingressRules: { hostname: string; service: string }[] = []
-  for (const binding of Object.values(domainConfig.bindings || {})) {
-    ingressRules.push({
-      hostname: binding.fqdn,
-      service: 'http://localhost:80',
-    })
-  }
+  // Only checked values reach the YAML (cloudflaredYaml drops bad hostnames)
+  const hostnames = Object.values(safeBindings()).map(b => b.fqdn)
   const mcpFqdn = publicMcpFqdn()
-  if (mcpFqdn) ingressRules.push({ hostname: mcpFqdn, service: 'http://localhost:80' })
-
-  // Build YAML content
-  let yaml = `tunnel: ${domainConfig.tunnel.id}\n`
-  yaml += `credentials-file: ${domainConfig.tunnel.credentialsFile}\n`
-  yaml += `\ningress:\n`
-  for (const rule of ingressRules) {
-    yaml += `  - hostname: ${rule.hostname}\n`
-    yaml += `    service: ${rule.service}\n`
+  if (mcpFqdn) hostnames.push(mcpFqdn)
+  const yaml = cloudflaredYaml(domainConfig.tunnel, hostnames)
+  if (!yaml) {
+    console.log(`\x1b[31mThe tunnel id or credentials file isn't valid; cloudflared's config was left as it was.\x1b[0m`)
+    return
   }
-  // Catch-all must always be last
-  yaml += `  - service: http_status:404\n`
 
   // Write to both system and user config
   try {
@@ -1186,18 +1293,16 @@ const resolveLocalCandyActionDomain = (name: string, hostLabel?: string | null):
   return resolveLocalCandyRouteName(requested, getAllLocalRouteNames(), getLocalCandyHostLabel())
 }
 
-// Rolling token chains - per-client (session) amnesiac arrays
-// Token format: sessionId:tokenValue
-// Each session has its own chain: [previous_used, current_valid]
-const sessionTokens = new Map<string, { chain: string[], created: number }>()
-
-// Clean up old sessions periodically (older than 24h)
+// Portal logins, and the per-page CANDY_TOKEN chains (CSRF tokens) tied to them
+const portalSessions = new PortalSessions(PORTAL_SESSIONS_FILE)
+const pageTokens = new PageTokens()
+// Start/restart tokens for a site's own pages (starting, crashed), per page load
+const siteTokens = new SiteTokens()
 setInterval(() => {
-  const cutoff = Date.now() - 24 * 60 * 60 * 1000
-  for (const [sessionId, data] of sessionTokens) {
-    if (data.created < cutoff) sessionTokens.delete(sessionId)
-  }
-}, 60 * 60 * 1000) // every hour
+  portalSessions.sweep()
+  pageTokens.sweep(id => portalSessions.alive(id))
+  siteTokens.sweep()
+}, 10 * 60 * 1000)
 
 // Auto-kill idle servers (1hr no activity, no portal). Activity is:
 // - a finished request in Caddy's access log, for *.localhost, *.candy and bound domains
@@ -1407,6 +1512,9 @@ const newSecretFor = (user: string): string => {
 const forgetUser = (user: string) => {
   for (const [secret, u] of secretUsers) if (u === user) secretUsers.delete(secret)
   for (const [key, u] of mcpApiKeys) if (u === user) mcpApiKeys.delete(key)
+  const oauthKey = oauthKeys.get(user)
+  if (oauthKey) { oauthKeys.delete(user); oauthKeyUsers.delete(oauthKey) }
+  if (portalSessions.destroyUser(user) > 0) auditLog('AUTH_LOGOUT', `${user}: every portal session ended (left the ${SHARED_GROUP} group)`, 'System')
 }
 
 // Root mode: one secret per member of the candy group (plus the owner).
@@ -1493,11 +1601,76 @@ const exchangeMcpSecret = (secret: string): { apiKey: string; user: string } | n
   return { apiKey, user }
 }
 
-// Who a request acts as. API keys carry their user; the web portal acts as the owner.
-const requestUser = (req: Request): string => {
-  const key = req.headers.get("X-Candy-API-Key")
-  return (key && mcpApiKeys.get(key)) || OWNER
+// API keys for the public MCP endpoint, one per user who approved a client.
+// They never leave this process: userScopedFetch puts them on mcp.ts's calls.
+const oauthKeys = new Map<string, string>()      // user -> key
+const oauthKeyUsers = new Map<string, string>()  // key -> user
+const oauthKeyFor = (user: string): string => {
+  let key = oauthKeys.get(user)
+  if (!key) {
+    key = `oauth_${crypto.randomUUID()}`
+    oauthKeys.set(user, key)
+    oauthKeyUsers.set(key, user)
+  }
+  return key
 }
+
+// The portal's own hosts: portal.localhost, portal.candy (and its tailnet alias).
+// Login cookies are only read here; on localhost:<port> they'd reach every local server.
+// Only the default port: browsers don't scope cookies by port, and portal.localhost:5555
+// is someone else's server, never the portal.
+const isPortalHost = (host: string | null | undefined): boolean => {
+  const raw = (host || "").toLowerCase()
+  const port = raw.match(/:(\d+)$/)?.[1]
+  if (port !== undefined && port !== "443") return false
+  const h = raw.replace(/:\d+$/, "")
+  if (!h.endsWith(".localhost") && !h.endsWith(".candy")) return false
+  return resolveLocalCandyDomain(h) === "portal" && !resolveBindingFromHost(h)
+}
+
+// Our Caddy sets X-Forwarded-Host to the host it was asked for (non-Caddy
+// callers have it stripped, markProxyHeaders). When that isn't the portal,
+// the request reached Caddy as another site (a bound domain whose upstream is
+// the portal, say) and must not be treated as the portal.
+const isPortalRequest = (req: Request): boolean => {
+  const host = req.headers.get("host")
+  if (!isPortalHost(host)) return false
+  const forwarded = req.headers.get("x-forwarded-host")
+  if (!forwarded) return true
+  const norm = (h: string) => h.trim().toLowerCase().replace(/:443$/, "")
+  return norm(forwarded.split(",")[0]) === norm(host || "")
+}
+
+// Who a request acts as, or null. API keys (CLI, SDK, local MCP) and public
+// MCP tokens are always user-scoped; superuser exists only in a portal login,
+// and is recomputed per request (60s cache) so losing sudo takes effect.
+const requestAuth = async (req: Request): Promise<RequestAuth | null> => {
+  const key = req.headers.get("X-Candy-API-Key")
+  if (key) {
+    const user = mcpApiKeys.get(key)
+    if (user) return { user, superuser: false, via: "apikey" }
+    const viaOauth = oauthKeyUsers.get(key)
+    if (viaOauth) return { user: viaOauth, superuser: false, via: "oauth" }
+    return null
+  }
+  if (!isPortalRequest(req)) return null
+  // The cookie alone never authenticates: other ports on this host get it too.
+  // The session secret lives in the portal origin's localStorage and comes as a header.
+  const session = portalSessions.get(readSessionCookie(req.headers.get("cookie")), req.headers.get(SESSION_HEADER))
+  if (!session) return null
+  // A removed, nologin, locked or expired account loses its logins on its next request
+  const eligible = await eligibleLoginUsers().catch(() => null)
+  if (!eligible) return null
+  if (!eligible.includes(session.user)) {
+    const n = portalSessions.destroyUser(session.user)
+    pageTokens.dropSession(session.id)
+    auditLog('AUTH_REVOKED', `${session.user}: can't log in any more, ${n} login(s) ended`, 'System')
+    return null
+  }
+  return { user: session.user, superuser: await isSuperuser(session.user).catch(() => false), via: "portal", sessionId: session.id }
+}
+// Who may log in, cached for a minute: checked on every portal request
+const eligibleLoginUsers = cachedList(() => loginUsers(), 60 * 1000)
 
 const configUser = (config: ServerConfig): string => config.user || OWNER
 
@@ -1516,9 +1689,53 @@ const runAsUsers = async (): Promise<UserAccount[]> => {
   return accounts
 }
 
-// Changing or removing a config is limited to the user it runs as (the owner may remove any).
-const mayChangeConfig = (requester: string, config: ServerConfig): boolean =>
-  !RUNNING_AS_ROOT || requester === configUser(config) || requester === OWNER
+// Changing or removing a config is limited to the user it runs as, or a superuser
+const mayChangeConfig = (auth: RequestAuth | null, config: ServerConfig): boolean =>
+  mayActOn(auth, configUser(config))
+
+// Who a name belongs to: its config's user, else whoever registered the route.
+// Routes from before ownership was tracked belong to the owner.
+const routeUsers = new Map<string, string>()
+const nameOwner = (name: string): string => {
+  const cfg = getConfigsForName(name)[0]
+  if (cfg) return configUser(cfg)
+  return routeUsers.get(name) ?? OWNER
+}
+const mayChangeName = (auth: RequestAuth | null, name: string): boolean => mayActOn(auth, nameOwner(name))
+const nameInUse = (name: string): boolean => routes.has(name) || serverConfigs.has(name) || processes.has(name)
+
+const loadRouteUsers = async () => {
+  try {
+    const data = await Bun.file(ROUTE_USERS_FILE).json() as Record<string, unknown>
+    for (const [name, user] of Object.entries(data)) if (typeof user === "string") routeUsers.set(name, user)
+    const changed = lowerCaseNames("route owner", routeUsers)
+    for (const name of [...routeUsers.keys()]) if (!isSafeName(name)) routeUsers.delete(name)
+    if (changed) await saveRouteUsers()
+  } catch {}
+}
+
+// Names from before they were lower case: lower-cased where they're stored.
+// Two spellings of one name: the first in the file stays, the others go (audited).
+const lowerCaseNames = <V>(what: string, map: Map<string, V>): boolean => {
+  const { kept, dropped, renamed } = mergeLowerCase(map)
+  if (!dropped.length && !renamed.length) return false
+  map.clear()
+  for (const [k, v] of kept) map.set(k, v)
+  for (const [from, to] of renamed) auditLog('NAME_LOWERCASED', `${what} ${JSON.stringify(from)} is now ${to}`, 'System')
+  for (const name of dropped) auditLog('NAME_DROPPED', `${what} ${JSON.stringify(name)}: another spelling of ${lowerName(name)} came first`, 'System')
+  return true
+}
+const saveRouteUsers = async () => {
+  await $`mkdir -p ${CANDY_CONFIG_DIR}`.quiet().nothrow()
+  await Bun.write(ROUTE_USERS_FILE, JSON.stringify(Object.fromEntries(routeUsers), null, 2))
+}
+const setRouteUser = async (name: string, user: string | null) => {
+  if (user === null || user === OWNER) {
+    if (!routeUsers.delete(name)) return
+  } else if (routeUsers.get(name) === user) return
+  else routeUsers.set(name, user)
+  await saveRouteUsers()
+}
 
 const getTailscaleIpv4 = (ips: string[]): string | null =>
   ips.find(ip => /^\d+\.\d+\.\d+\.\d+$/.test(ip)) || null
@@ -2040,76 +2257,11 @@ const advertiseToHub = async () => {
   } catch {} // Silent fail - hub might not exist
 }
 
-// Generate a random token value
-const generateTokenValue = () => crypto.randomUUID()
-
-// Generate a new session with initial token
-const createSession = (): string => {
-  const sessionId = crypto.randomUUID()
-  const tokenValue = generateTokenValue()
-  const fullToken = `${sessionId}:${tokenValue}`
-  sessionTokens.set(sessionId, { chain: [fullToken], created: Date.now() })
-  return fullToken
-}
-
-// Parse token into sessionId and tokenValue
-const parseToken = (token: string): { sessionId: string, tokenValue: string } | null => {
-  const parts = token.split(':')
-  if (parts.length !== 2) return null
-  return { sessionId: parts[0], tokenValue: parts[1] }
-}
-
-// Validate and consume token - returns true if valid (consumes it)
-const consumeToken = (token: string): boolean => {
-  const parsed = parseToken(token)
-  if (!parsed) return false
-
-  const session = sessionTokens.get(parsed.sessionId)
-  if (!session) return false
-
-  // Token must be the current (last) in chain
-  const currentToken = session.chain[session.chain.length - 1]
-  if (token !== currentToken) return false
-
-  // Valid! Generate next token
-  const newTokenValue = generateTokenValue()
-  const newToken = `${parsed.sessionId}:${newTokenValue}`
-
-  // Slide the window: keep max 2 tokens
-  if (session.chain.length >= 2) {
-    session.chain.shift()
-  }
-  session.chain.push(newToken)
-
-  return true
-}
-
-// Refresh token - if provided token exists in session chain, return current token
-const refreshToken = (oldToken: string): string | null => {
-  const parsed = parseToken(oldToken)
-  if (!parsed) return null
-
-  const session = sessionTokens.get(parsed.sessionId)
-  if (!session) return null
-
-  // Token must exist somewhere in the chain (current or just-used)
-  if (!session.chain.includes(oldToken)) return null
-
-  // Return the current (last) token
-  return session.chain[session.chain.length - 1]
-}
-
-// Get current token for a session (used for SSR)
-const getCurrentToken = (sessionId: string): string | null => {
-  const session = sessionTokens.get(sessionId)
-  if (!session) return null
-  return session.chain[session.chain.length - 1]
-}
-
 // Activity log (in-memory for API responses)
-const activityLog: { time: Date, action: string, details: string }[] = []
-const log = (action: string, details: string) => {
-  activityLog.push({ time: new Date(), action, details })
+// `name` is the site an entry is about: users see only entries about their own sites
+const activityLog: { time: Date, action: string, details: string, name?: string }[] = []
+const log = (action: string, details: string, name?: string) => {
+  activityLog.push({ time: new Date(), action, details, name })
   // Also write to audit log file
   auditLog(action, details)
 }
@@ -2125,9 +2277,8 @@ const domainHits = new Map<string, number>()
 const initLogs = async () => {
   await $`rm -rf ${LOGS_DIR}`.quiet().nothrow()
   await $`mkdir -p ${LOGS_DIR}`.quiet().nothrow()
-  // Create symlink to Caddy access log
-  await $`ln -sf ${CADDY_LOG} ${LOGS_DIR}/_caddy.log`.quiet().nothrow()
-  // Create empty audit log
+  // The audit log's own folder (readLogs maps _caddy to the access log directly, no symlink in the name space)
+  await $`mkdir -p ${dirname(AUDIT_LOG)}`.quiet().nothrow()
   try {
     await Bun.write(AUDIT_LOG, "")
   } catch (e: any) {
@@ -2141,12 +2292,14 @@ const initLogs = async () => {
 }
 
 // Actor types for audit logging
-type Actor = 'AI' | 'Page' | 'Portal' | 'System' | 'Network' | 'SDK'
+// 'System', 'Network', 'Page' for the daemon's own doings; otherwise auditActor(): "<user>:<label>"
+type Actor = string
 
-// Write to audit log with actor tracking
+// Write to audit log with actor tracking. Every field is made one line
+// (auditSafe), so nothing a caller sends can start a forged entry.
 const auditLog = async (action: string, details: string, actor: Actor = 'System') => {
   const timestamp = new Date().toISOString()
-  const line = `[${timestamp}] [${actor}] ${action}: ${details}\n`
+  const line = `[${timestamp}] [${auditSafe(actor)}] ${auditSafe(action)}: ${auditSafe(details)}\n`
   try {
     const file = Bun.file(AUDIT_LOG)
     const existing = await file.exists() ? await file.text() : ""
@@ -2187,7 +2340,18 @@ const processLog = async (name: string, data: string) => {
 }
 
 // Get log file path for a process
-const getLogFile = (name: string) => `${LOGS_DIR}/${name.replace(/[^\w.-]/g, '_').replace(/^\.+/, '_')}.log`
+const getLogFile = (name: string) => `${LOGS_DIR}/${name.replace(/[^\w.-]/g, '_').replace(/^[._]+/, '-')}.log`
+
+// The daemon's own logs, by the names the API uses for them
+const SYSTEM_LOGS: Record<string, string> = { _audit: AUDIT_LOG, _caddy: CADDY_LOG }
+// The file a log name reads, or null. A site's name must be a valid one whose
+// file is exactly <name>.log, so no other spelling reaches a system log.
+const logFileFor = (name: string): { file: string; system: boolean } | null => {
+  if (Object.hasOwn(SYSTEM_LOGS, name)) return { file: SYSTEM_LOGS[name], system: true }
+  if (!isSafeName(name)) return null
+  const file = getLogFile(name)
+  return file === `${LOGS_DIR}/${name}.log` ? { file, system: false } : null
+}
 
 // Clear logs for a process
 const clearLogs = async (name: string) => {
@@ -2203,14 +2367,9 @@ const readLogs = async (
   pattern?: string,
   context: number = 2
 ): Promise<{ success: boolean, data?: string, error?: string }> => {
-  let logFile: string
-  if (processName === '_caddy') {
-    logFile = CADDY_LOG
-  } else if (processName === '_audit') {
-    logFile = AUDIT_LOG
-  } else {
-    logFile = getLogFile(processName)
-  }
+  const target = logFileFor(processName)
+  if (!target) return { success: false, error: `Log file not found: ${processName}` }
+  const logFile = target.file
 
   try {
     const file = Bun.file(logFile)
@@ -2289,6 +2448,18 @@ const loadServerConfigs = async () => {
           serverConfigs.set(name, normalized)
         }
       }
+      const before = new Set(serverConfigs.keys())
+      if (lowerCaseNames("site", serverConfigs)) {
+        // A site's state folder and request log are named after it: they move with the name
+        for (const from of before) {
+          const to = lowerName(from)
+          if (to === from || !serverConfigs.has(to) || before.has(to)) continue
+          for (const [a, b] of [[fnStateDir(from), fnStateDir(to)], [fnLogPath(from), fnLogPath(to)]]) {
+            if (existsSync(a) && !existsSync(b)) await rename(a, b).catch(e => console.log(`\x1b[33mCouldn't move ${a} to ${b}: ${e}\x1b[0m`))
+          }
+        }
+        await saveServerConfigs()
+      }
       const totalConfigs = [...serverConfigs.values()].reduce((acc, cfgs) => acc + cfgs.length, 0)
       console.log(`\x1b[90mLoaded ${totalConfigs} server configs across ${serverConfigs.size} names\x1b[0m`)
     }
@@ -2329,7 +2500,7 @@ const addServerConfig = async (name: string, cwd: string, cmd: string, actor: Ac
     serverConfigs.set(name, configs)
   }
   await saveServerConfigs()
-  auditLog('CONFIG_ADD', `${name}: ${cmd} in ${expandedCwd}${RUNNING_AS_ROOT ? ` as ${user}` : ''}`, actor)
+  auditLog('CONFIG_ADD', `${name}: ${JSON.stringify(cmd)} in ${JSON.stringify(expandedCwd)}${RUNNING_AS_ROOT ? ` as ${user}` : ''}`, actor)
 }
 
 // Remove a server config
@@ -2428,67 +2599,41 @@ const fetchWithHeaderTimeout = async (target: string, init: RequestInit, req: Re
   }
 }
 
-const apiModeStarts = new Map<string, Promise<ManagedProcess>>()
-const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'te', 'trailer', 'upgrade']
+// How long a request for a stopped API-mode server waits for it to come up
+const API_START_HOLD = apiHoldSeconds(process.env.CANDY_API_HOLD_SECONDS) * 1000
 
-const apiModeError = (status: number, error: string, details: Record<string, unknown> = {}) =>
-  Response.json({ error, ...details }, { status, headers: { 'X-Candy': 'api-mode' } })
+const portListening = (port: number): Promise<boolean> => new Promise(resolve => {
+  let settled = false
+  const done = (ok: boolean) => { if (!settled) { settled = true; resolve(ok) } }
+  const timer = setTimeout(() => done(false), 1000)
+  Bun.connect({
+    hostname: 'localhost',
+    port,
+    socket: {
+      open(socket) { clearTimeout(timer); socket.end(); done(true) },
+      data() {},
+      error() { clearTimeout(timer); done(false) },
+      connectError() { clearTimeout(timer); done(false) },
+    },
+  }).catch(() => { clearTimeout(timer); done(false) })
+})
 
-const forwardApiModeRequest = async (req: Request, url: URL, name: string, config: ServerConfig, protectedDomain = false): Promise<Response> => {
-  let managed = processes.get(name)
-  if (!managed || (managed.status !== 'running' && managed.status !== 'starting')) {
-    // One start per name, however many requests arrive together
-    let starting = apiModeStarts.get(name)
-    if (!starting) {
-      starting = spawnProcess(name, 'Network', config.id).finally(() => apiModeStarts.delete(name))
-      apiModeStarts.set(name, starting)
-    }
-    try {
-      managed = await starting
-    } catch (e) {
-      return apiModeError(502, `Could not start ${name}`, { reason: String((e as Error)?.message ?? e) })
-    }
-  }
-  managed.lastActivity = Date.now()
-
-  // Port detection gives up after PORT_DETECTION_TIMEOUT; wait for it or for the process to exit
-  const deadline = managed.startedAt.getTime() + PORT_DETECTION_TIMEOUT + 500
-  if (managed.status === 'starting') { try { controlServer.timeout(req, 30) } catch {} }  // the default 10s idle limit is shorter than a start
-  while (managed.status === 'starting' && Date.now() < deadline && !req.signal.aborted) {
-    await Bun.sleep(50)
-  }
-  if (managed.status === 'errored' || managed.status === 'dead') {
-    return apiModeError(502, `${name} exited before it was ready`, { exitCode: managed.exitCode })
-  }
-  if (managed.status !== 'running' || !managed.port) {
-    const ports = managed.detectedPorts
-    return ports.length > 1
-      ? apiModeError(502, `${name} listens on several ports. Pick one in the portal (Set port…)`, { ports })
-      : apiModeError(504, `${name} started but no port was detected`)
-  }
-
-  const headers = new Headers(req.headers)
-  for (const h of HOP_BY_HOP) headers.delete(h)
-  headers.delete('x-candy-verified')
-  if (protectedDomain) stripCandyCredentials(headers)
-  const hasBody = req.method !== 'GET' && req.method !== 'HEAD'
-  try {
-    const upstream = await fetchWithHeaderTimeout(`http://localhost:${managed.port}${url.pathname}${url.search}`, {
-      method: req.method,
-      headers,
-      body: hasBody ? req.body : undefined,
-      redirect: 'manual',
-      decompress: false,
-      // @ts-ignore Bun/undici option for streaming request bodies
-      duplex: 'half',
-    } as RequestInit, req)
-    const out = new Headers(upstream.headers)
-    for (const h of HOP_BY_HOP) out.delete(h)
-    return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: out })
-  } catch (e) {
-    return apiModeError(502, `${name} did not answer`, { reason: String((e as Error)?.message ?? e) })
-  }
-}
+// Every request for an API-mode server's host: held while it starts, then forwarded (api-mode.ts)
+const apiModeGate = createApiModeGate<ServerConfig, DomainBinding>({
+  isPortal: req => isPortalRequest(req),
+  binding: host => resolveBindingFromHost(host),
+  localName: host => resolveLocalCandyDomain(host),
+  config: name => apiModeConfig(name),
+  isProtected: binding => hasBindingAuth(binding),
+  authorize: (req, binding) => requireBoundDomainAuth(req, controlServer, binding),
+  process: name => processes.get(name),
+  start: (name, configId) => spawnProcess(name, 'Network', configId),
+  upstreamHeaders: (src, protectedDomain) => upstreamRequestHeaders(src, protectedDomain),
+  fetchUpstream: (target, init, req) => fetchWithHeaderTimeout(target, init, req),
+  listening: portListening,
+  holdOpen: req => { try { controlServer.timeout(req, 0) } catch {} },  // the default 10s idle limit is shorter than a start
+  holdMs: API_START_HOLD,
+})
 
 // How to run a config. As root, drop to the config's user with setpriv and
 // cd as that user (so a cwd they couldn't reach on their own fails).
@@ -2614,9 +2759,7 @@ const FN_TOOL_MAX_OUTPUT = 8 * 1024 * 1024
 // Cloudflare cuts a request with no response after 100s; do the same
 const FN_HEADER_TIMEOUT_MS = 100 * 1000
 const FN_LOG_SWEEP_INTERVAL = 60 * 60 * 1000
-const FN_SOCKET_DIR = RUNNING_AS_ROOT
-  ? "/run/candy/fn"
-  : `${process.env.XDG_RUNTIME_DIR || `/tmp/candy-${process.getuid?.() ?? "user"}`}/candy/fn`
+const FN_SOCKET_DIR = RUNNING_AS_ROOT ? "/run/candy/fn" : `${USER_RUN_DIR}/fn`
 const FN_LOG_DIR = RUNNING_AS_ROOT ? "/var/lib/candy-daemon/fn-log" : `${process.env.HOME}/.local/state/candy/fn-log`
 
 const fnStateDir = (name: string): string =>
@@ -3075,11 +3218,50 @@ const serveFunction = async (req: Request, url: URL, name: string, binding: Doma
   }
 }
 
-// Why `requester` can't put a new config on `name` although no config has it,
-// or null: a route someone registered (/register, SDK) or a bound public
-// domain still points at it. Only the owner may take those over.
-const nameTakenWithoutConfig = (name: string, requester: string): string | null => {
-  if (!RUNNING_AS_ROOT || requester === OWNER || getConfigsForName(name).length > 0) return null
+// Why `auth` can't put a new config on `name` although no config has it,
+// or null: someone else's route (/register, SDK) or a bound public domain
+// still points at it. Only its user or a superuser may take those over.
+// Who a bound domain belongs to: recorded when it was bound (startup fills it in
+// for bindings from before), so it stays theirs after the site itself is removed
+const bindingOwner = (b: DomainBinding): string => b.owner ?? nameOwner(b.serverName)
+
+// Why `auth` can't use `name`: a public domain someone else bound still points at
+// it, and whoever registers the name would serve that domain. Null when free.
+const boundToSomeoneElse = (name: string, auth: RequestAuth | null): string | null => {
+  if (auth?.superuser) return null
+  const b = Object.values(domainConfig?.bindings ?? {}).find(b => b.serverName === name && bindingOwner(b) !== auth?.user)
+  return b ? `${b.fqdn} is bound to '${name}' and belongs to ${bindingOwner(b)}. Pick another name.` : null
+}
+
+// Records an owner on bindings from before owners were recorded (after configs and route users load)
+const assignBindingOwners = async () => {
+  let changed = false
+  for (const b of Object.values(domainConfig?.bindings ?? {})) {
+    if (!b.owner) { b.owner = nameOwner(b.serverName); changed = true }
+  }
+  if (changed) await saveDomainConfig()
+}
+
+// A binding whose site is gone is kept for its owner, marked orphaned (and
+// unmarked when the name is in use again); boundToSomeoneElse keeps others off the name.
+const refreshOrphanedBindings = async () => {
+  let changed = false
+  for (const b of Object.values(domainConfig?.bindings ?? {})) {
+    const orphaned = !nameInUse(b.serverName)
+    if (!!b.orphaned === orphaned) continue
+    if (!b.owner) b.owner = nameOwner(b.serverName)
+    if (orphaned) b.orphaned = true
+    else delete b.orphaned
+    changed = true
+    auditLog(orphaned ? 'DOMAIN_ORPHANED' : 'DOMAIN_ADOPTED', `${b.fqdn} -> ${b.serverName} (owner ${b.owner})`, 'System')
+  }
+  if (changed) await saveDomainConfig()
+}
+
+const nameTakenWithoutConfig = (name: string, auth: RequestAuth): string | null => {
+  const boundElsewhere = boundToSomeoneElse(name, auth)
+  if (boundElsewhere) return boundElsewhere
+  if (auth.superuser || getConfigsForName(name).length > 0 || nameOwner(name) === auth.user) return null
   const route = routes.get(name)
   if (route && !(typeof route.target === 'object' && route.target.fn === name)) return `'${name}' is already routed. Pick another name.`
   const bound = Object.values(domainConfig?.bindings ?? {}).some(b => b.serverName === name)
@@ -3107,12 +3289,12 @@ const fnSummaryNow = (name: string) => {
 
 const fnErrorText = (e: unknown) => String((e as Error)?.message ?? e)
 
-// HTTP API for functions (/fn/*). Owner only: every route checks mayChangeConfig.
-const handleFnApi = async (req: Request, url: URL, corsHeaders: Record<string, string>, server: any): Promise<Response> => {
+// HTTP API for functions (/fn/*). The function's user or a superuser: every route checks mayChangeConfig.
+const handleFnApi = async (req: Request, url: URL, corsHeaders: Record<string, string>, server: any, auth: RequestAuth): Promise<Response> => {
   const ok = (body: Record<string, unknown>) => Response.json({ success: true, ...body }, { headers: corsHeaders })
   const fail = (error: string, status = 400) => Response.json({ success: false, error }, { status, headers: corsHeaders })
-  const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
-  const requester = requestUser(req)
+  const actor = auditActor(auth, req.headers.get('X-Candy-Actor'))
+  const requester = auth.user
   const body: Record<string, any> = req.method === 'POST' ? await req.json().catch(() => ({})) : Object.fromEntries(url.searchParams)
   const name = typeof body.name === 'string' ? body.name : ''
   const route = url.pathname
@@ -3120,9 +3302,12 @@ const handleFnApi = async (req: Request, url: URL, corsHeaders: Record<string, s
   // ---- add (creates or updates the function) ----
   if (req.method === 'POST' && route === '/fn/add') {
     if (!name || isReserved(name)) return fail(isSafeName(name) ? "That name is reserved." : "Names can only use letters, numbers, dashes, underscores and dots.", isSafeName(name) ? 403 : 400)
+    const refusal = nameInUse(name) ? null : newNameRefusal(name)
+    if (refusal) return fail(refusal, 403)
     let user = requester
     if (body.user && body.user !== requester) {
-      if (!RUNNING_AS_ROOT || requester !== OWNER) return fail(`You can only add functions that run as ${requester}.`, 403)
+      // Another account: a superuser logged in to the portal only, never an API key
+      if (!RUNNING_AS_ROOT || !auth.superuser) return fail(`You can only add functions that run as ${requester}.`, 403)
       if (!(await runAsUsers()).some(u => u.name === body.user)) return fail(`${body.user} isn't in the ${SHARED_GROUP} group, so functions can't run as them.`)
       user = String(body.user)
     }
@@ -3130,7 +3315,7 @@ const handleFnApi = async (req: Request, url: URL, corsHeaders: Record<string, s
     const otherOwner = RUNNING_AS_ROOT ? others.find(cfg => configUser(cfg) !== user) : undefined
     if (otherOwner) return fail(`'${name}' already belongs to ${configUser(otherOwner)}. Pick another name.`, 403)
     if (others.some(cfg => !cfg.fn)) return fail(`'${name}' is already a server. Remove it first or pick another name.`, 409)
-    const taken = nameTakenWithoutConfig(name, requester)
+    const taken = nameTakenWithoutConfig(name, auth)
     if (taken) return fail(taken, 409)
     const account = RUNNING_AS_ROOT ? await lookupUser(user) : null
     const stateProblem = account ? await fnStateDirProblem(name, account.uid) : null
@@ -3202,7 +3387,7 @@ const handleFnApi = async (req: Request, url: URL, corsHeaders: Record<string, s
   if (!name) return fail("name is required")
   const config = fnConfigOf(name)
   if (!config?.fn) return fail(`No function named '${name}'.`, 404)
-  if (!mayChangeConfig(requester, config)) return fail(`${name} runs as ${configUser(config)}. Only they can use this.`, 403)
+  if (!mayChangeConfig(auth, config)) return fail(`${name} runs as ${configUser(config)}. Only they can use this.`, 403)
   const fn = config.fn
   const stateDir = fnStateDir(name)
 
@@ -3483,6 +3668,9 @@ const spawnProcess = async (name: string, actor: Actor = 'System', configId?: st
   const launch = await launchSpec(config, undefined, name)
 
   const logFile = getLogFile(name)
+  // Earlier runs' output stays out of the site page's excerpt
+  let logStart = 0
+  try { logStart = statSync(logFile).size } catch {}
   // Add restart separator to log file (don't clear)
   await processLog(name, `\n--- PROCESS RESTART ${new Date().toISOString()} ---\n\n`)
 
@@ -3501,10 +3689,11 @@ const spawnProcess = async (name: string, actor: Actor = 'System', configId?: st
     terminal: null,
     idling: false,
     unit: launch.unit,
+    logStart,
   }
 
   processes.set(name, managed)
-  auditLog('PROCESS_START', `${name}:${config.id} ${config.cmd}${launch.unit ? ` [${launch.unit}]` : ''}`, actor)
+  auditLog('PROCESS_START', `${name}:${config.id} ${JSON.stringify(config.cmd)}${launch.unit ? ` [${launch.unit}]` : ''}`, actor)
 
   // Collected output for port detection
   let collectedOutput = ''
@@ -3526,6 +3715,7 @@ const spawnProcess = async (name: string, actor: Actor = 'System', configId?: st
       if (managed.detectedPorts.length === 1) {
         managed.port = managed.detectedPorts[0]
         managed.status = 'running'
+        siteTokens.dropName(name)  // its starting page has nothing left to start
         auditLog('STATE', `${name}: starting -> running (port ${managed.port})`, 'System')
         clearInterval(checkInterval)
 
@@ -3806,6 +3996,7 @@ const setProcessPort = async (name: string, port: number, actor: Actor = 'Portal
   const prevStatus = managed.status
   managed.port = port
   managed.status = 'running'
+  siteTokens.dropName(name)
 
   const existingRoute = routes.get(name)
   routes.set(name, { target: port, persistent: existingRoute?.persistent || false })
@@ -3820,7 +4011,7 @@ type OpenPortalResult =
   | { ok: true; body: { name: string; url: string; port: number; message: string } }
   | { ok: false; status: number; body: { error: string; details?: string } }
 
-const openPortalForName = async ({ name, port, openBrowser }: { name?: string; port: number; openBrowser?: boolean }): Promise<OpenPortalResult> => {
+const openPortalForName = async ({ name, port, openBrowser, user }: { name?: string; port: number; openBrowser?: boolean; user?: string }): Promise<OpenPortalResult> => {
   if (!port) {
     return { ok: false, status: 400, body: { error: "Port is required" } }
   }
@@ -3831,7 +4022,7 @@ const openPortalForName = async ({ name, port, openBrowser }: { name?: string; p
     return { ok: false, status: 409, body: { error: m, details: `${existingPortal[0]} has :${port}` } }
   }
 
-  let portalName = name
+  let portalName = lowerName(name)
   if (!portalName) {
     let anonCounter = 1
     while (portals.has(`anon-${anonCounter}`)) anonCounter++
@@ -3841,6 +4032,8 @@ const openPortalForName = async ({ name, port, openBrowser }: { name?: string; p
   if (isReserved(portalName)) {
     return { ok: false, status: 403, body: { error: "That name is reserved.", details: portalName } }
   }
+  const refusal = nameInUse(portalName) ? null : newNameRefusal(portalName)
+  if (refusal) return { ok: false, status: 403, body: { error: refusal, details: portalName } }
 
   if (portals.has(portalName)) {
     const m = msg.portalCollision
@@ -3849,6 +4042,8 @@ const openPortalForName = async ({ name, port, openBrowser }: { name?: string; p
 
   if (!routes.has(portalName)) {
     routes.set(portalName, { target: port, persistent: false })
+    // The new route (anon-N included) belongs to whoever opened the tunnel
+    if (user && !serverConfigs.has(portalName)) await setRouteUser(portalName, user)
     await syncCaddy()
   }
 
@@ -3894,7 +4089,7 @@ const openPortalForName = async ({ name, port, openBrowser }: { name?: string; p
   }
 
   const m = msg.portalSuccess
-  log("PORTAL", `${portalName} -> ${tunnelUrl}`)
+  log("PORTAL", `${portalName} -> ${tunnelUrl}`, portalName)
   return { ok: true, body: { name: portalName, url: tunnelUrl, port, message: m } }
 }
 
@@ -3910,14 +4105,40 @@ const formatUptime = (startedAt: Date): string => {
   return `${hours}h ${remainingMinutes}m`
 }
 
-// Check if Caddy is already running via admin API
+// Check if Caddy is already running via admin API (its unix socket)
 const isCaddyRunning = async () => {
   try {
-    const res = await fetch("http://localhost:2019/config/", { signal: AbortSignal.timeout(500) })
+    const res = await caddyAdmin("/config/", { signal: AbortSignal.timeout(500) })
     return res.ok
   } catch {
     return false
   }
+}
+
+// The admin socket must be 0600 and ours, in a folder only we can write to:
+// Caddy creates it with the |0600 mode and our umask, and this checks (and
+// fixes) it rather than trusting that. Until it passes, no config is sent
+// there (caddyAdminTrusted): whoever made that socket would get it.
+let caddyAdminTrusted = false
+const secureCaddyAdminSocket = async (tries = 30): Promise<boolean> => {
+  const dir = await lstat(dirname(CADDY_ADMIN_SOCKET)).catch(() => null)
+  if (!dir?.isDirectory() || dir.uid !== process.getuid?.() || (dir.mode & 0o022) !== 0) {
+    console.log(`\x1b[31mThe folder of Caddy's admin socket, ${dirname(CADDY_ADMIN_SOCKET)}, isn't ours alone. Not using it.\x1b[0m`)
+    return caddyAdminTrusted = false
+  }
+  for (let i = 0; i < tries; i++) {
+    const st = await lstat(CADDY_ADMIN_SOCKET).catch(() => null)
+    if (st?.isSocket()) {
+      if ((st.mode & 0o777) !== 0o600) await chmod(CADDY_ADMIN_SOCKET, 0o600).catch(() => {})
+      const again = await lstat(CADDY_ADMIN_SOCKET).catch(() => null)
+      const ok = !!again && (again.mode & 0o777) === 0o600 && again.uid === process.getuid?.()
+      if (!ok) console.log(`\x1b[31mCaddy's admin socket ${CADDY_ADMIN_SOCKET} isn't 0600 and ours. Stop Caddy and check it.\x1b[0m`)
+      return caddyAdminTrusted = ok
+    }
+    await Bun.sleep(100)
+  }
+  console.log(`\x1b[31mCaddy's admin socket ${CADDY_ADMIN_SOCKET} didn't appear.\x1b[0m`)
+  return caddyAdminTrusted = false
 }
 
 // Check if a PID is still running
@@ -3991,10 +4212,29 @@ const getPidOwnedRoutePort = async (name: string, pid: number): Promise<number |
 const startCaddy = async () => {
   await $`mkdir -p ${CADDY_CONFIG_DIR}`.quiet().nothrow()
 
+  // The socket's folder: /run/candy (root, 0755, also holds fn/), else
+  // $XDG_RUNTIME_DIR/candy or ~/.config/candy/run (0700)
+  await mkdir(dirname(CADDY_ADMIN_SOCKET), { recursive: true, mode: RUNNING_AS_ROOT ? 0o755 : 0o700 }).catch(() => {})
+  if (!RUNNING_AS_ROOT) await chmod(dirname(CADDY_ADMIN_SOCKET), 0o700).catch(() => {})
+
   if (await isCaddyRunning()) {
+    await secureCaddyAdminSocket()
     console.log("\x1b[33mCaddy already running\x1b[0m (relinked)")
     return
   }
+
+  // A Caddy from before the admin socket still has its API on localhost:2019.
+  // Stop it (nothing else is sent there: whoever listens on 2019 gets no config)
+  // so the new one, with the socket, can take the ports.
+  try {
+    // redirect: "manual": whoever listens on :2019 can't bounce this POST to another local URL
+    const legacy = await fetch("http://127.0.0.1:2019/config/", { signal: AbortSignal.timeout(500), redirect: "manual" }).catch(() => null)
+    if (legacy?.ok) {
+      await fetch("http://127.0.0.1:2019/stop", { method: "POST", signal: AbortSignal.timeout(2000), redirect: "manual" }).catch(() => {})
+      console.log("\x1b[33mStopped the old Caddy\x1b[0m (admin API on :2019); starting one with the admin socket")
+      await Bun.sleep(1000)
+    }
+  } catch {}
 
   // Caddy < 2.7 can't share the HTTP/3 UDP :443 listener between the wildcard
   // *.localhost blocks and the Tailscale-bound *.candy blocks ("listen udp :443:
@@ -4009,7 +4249,8 @@ const startCaddy = async () => {
 
   try {
     caddyProc = spawn({
-      cmd: [CADDY, "run", "--config", CADDYFILE],
+      // umask 077: whatever Caddy creates (the admin socket first) is private to it
+      cmd: ["/bin/sh", "-c", 'umask 077 && exec "$0" run --config "$1"', CADDY, CADDYFILE],
       stdout: Bun.file(CADDY_PROC_LOG),
       stderr: Bun.file(CADDY_PROC_LOG),
       detached: true,
@@ -4025,6 +4266,7 @@ const startCaddy = async () => {
       caddyProc = null
       return
     }
+    await secureCaddyAdminSocket()
     console.log("\x1b[32mCaddy started\x1b[0m (PID: " + caddyProc.pid + ")")
   } catch (e) {
     console.log("\x1b[31mFailed to start Caddy\x1b[0m")
@@ -4038,7 +4280,7 @@ const stopCaddy = async (force = false) => {
     console.log("\x1b[90mCaddy stopped\x1b[0m")
   } else if (force && await isCaddyRunning()) {
     try {
-      await fetch("http://localhost:2019/stop", { method: "POST", signal: AbortSignal.timeout(2000) })
+      await caddyAdmin("/stop", { method: "POST", signal: AbortSignal.timeout(2000) })
       console.log("\x1b[90mCaddy stopped (was detached)\x1b[0m")
     } catch {
       console.log("\x1b[31mFailed to stop Caddy\x1b[0m")
@@ -4092,7 +4334,8 @@ const loadRoutes = async () => {
     const content = await Bun.file(CADDYFILE).text()
 
     const matches = content.matchAll(/^([\w-]+)\.localhost \{\s*reverse_proxy\s+(\S+)/gm)
-    for (const [, name, target] of matches) {
+    for (const [, rawName, target] of matches) {
+      const name = lowerName(rawName)
       const t = target.startsWith("localhost:") ? parseInt(target.replace("localhost:", "")) : target
       // Don't overwrite persistent routes loaded earlier
       if (!routes.has(name)) {
@@ -4122,6 +4365,7 @@ const loadPersistentRoutes = async () => {
     for (const [name, target] of Object.entries(data)) {
       routes.set(name, { target, persistent: true })
     }
+    if (lowerCaseNames("route", routes)) await savePersistentRoutes()
   } catch {}
 }
 
@@ -4279,25 +4523,45 @@ const routeProxyTarget = (name: string, route: { target: RouteTarget }): string 
   return typeof route.target === "number" ? `localhost:${route.target}` : route.target
 }
 
+// ::1 is only bound when this machine has it: Caddy refuses a config whose bind fails
+const hasIpv6Loopback = (): boolean =>
+  Object.values(networkInterfaces()).some(list => list?.some(a => a.family === "IPv6" && a.address === "::1"))
+
+// Every address of this machine: a route or bound domain pointing here could
+// reach the portal or another user's site through Caddy (isCaddyUpstream)
+const ownAddresses = (): string[] => {
+  const all = new Set<string>()
+  for (const list of Object.values(networkInterfaces())) for (const a of list ?? []) all.add(a.address.toLowerCase())
+  for (const a of [lanIp, tailscaleIp, getTailnetHostname()]) if (a) all.add(a.toLowerCase())
+  return [...all]
+}
+// Each skipped address is audited once per run, not on every sync
+const auditedSiteClashes = new Set<string>()
+
+const CADDY_ADMIN_RETRY_MS = 30_000
+let caddyRetry: ReturnType<typeof setTimeout> | null = null
+const scheduleCaddyRetry = () => {
+  if (caddyRetry) return
+  caddyRetry = setTimeout(() => { caddyRetry = null; syncCaddy().catch(() => {}) }, CADDY_ADMIN_RETRY_MS)
+}
+
 // Write Caddyfile and reload
 const syncCaddy = async () => {
+  await refreshOrphanedBindings()
   let content = `# candy-localhost routes
 # managed by candy-localhost - do not edit manually
 
-{
-  log {
-    output file ${CADDY_LOG.replace(/\\/g, "/")}
-    format json
-  }
-  # Tunnel traffic arrives from cloudflared on loopback; take the visitor's IP
-  # from Cloudflare's header (used by allowlists via client_ip)
-  servers {
-    trusted_proxies static 127.0.0.1/8 ::1
-    client_ip_headers Cf-Connecting-Ip
-  }
-}
-
+${caddyGlobalBlock({ adminSocket: CADDY_ADMIN_SOCKET, accessLog: CADDY_LOG.replace(/\\/g, "/") })}
 `
+  // *.localhost sites answer this machine only: the LAN and the tailnet can't reach them with --resolve
+  const localBind = loopbackBind(hasIpv6Loopback())
+  // Everything below becomes Caddyfile tokens: names, upstreams and addresses that
+  // aren't the shape they should be are left out (and said so), never written
+  const skipped: string[] = []
+  const okName = (name: string) => isSafeName(name) && isHostName(name) ? true : (skipped.push(`name ${JSON.stringify(name)}`), false)
+  const own = ownAddresses()
+  const okUpstream = (name: string, target: string) => isCaddyUpstream(target, own) ? true : (skipped.push(`${name}: upstream ${JSON.stringify(target)}`), false)
+  const okIp = (ip: string | null): ip is string => !!ip && isIpOrCidr(ip)
   const localExactNames = new Set([...routes.keys(), ...serverConfigs.keys()])
   const localHostLabel = getLocalCandyHostLabel()
   const candyAliasHosts: string[] = []
@@ -4306,7 +4570,9 @@ const syncCaddy = async () => {
 
   for (const [name, route] of routes) {
     const proxyTarget = routeProxyTarget(name, route)
+    if (!okName(name) || !okUpstream(name, proxyTarget)) continue
     content += `${name}.localhost {
+  ${localBind}
   tls internal
   reverse_proxy ${proxyTarget}
   log
@@ -4319,9 +4585,10 @@ const syncCaddy = async () => {
   // are bound to the LAN IP as well. Kill/portal subdomains and the catch-all
   // stay Tailscale-only, so publishing a name exposes that one site and nothing else.
   for (const [name, route] of routes) {
-    const bindAddrs = candyBindAddrs(name)
+    const bindAddrs = candyBindAddrs(name).filter(okIp)
     if (bindAddrs.length === 0) continue
     const proxyTarget = routeProxyTarget(name, route)
+    if (!okName(name) || !okUpstream(name, proxyTarget)) continue
     const candyHosts = [`${name}.candy`]
     const alias = buildHostAlias(name, localHostLabel)
     if (alias && !localExactNames.has(alias)) {
@@ -4335,7 +4602,7 @@ const syncCaddy = async () => {
         `${buildActionSubdomain(name, "p", localHostLabel)}.candy`,
       )
     }
-    content += `${candyHosts.join(", ")} {
+    content += `${candyHosts.filter(isHostName).join(", ")} {
   bind ${bindAddrs.join(" ")}
   tls internal
   reverse_proxy ${proxyTarget}
@@ -4347,8 +4614,8 @@ const syncCaddy = async () => {
 
   for (const name of serverConfigs.keys()) {
     if (routes.has(name)) continue
-    const bindAddrs = candyBindAddrs(name)
-    if (bindAddrs.length === 0) continue
+    const bindAddrs = candyBindAddrs(name).filter(okIp)
+    if (bindAddrs.length === 0 || !okName(name)) continue
     const alias = buildHostAlias(name, localHostLabel)
     const hasAlias = !!alias && !localExactNames.has(alias)
     if (hasAlias) {
@@ -4367,7 +4634,7 @@ const syncCaddy = async () => {
       // published name its own block that reaches the daemon's lazy-start page.
       const candyHosts = [`${name}.candy`]
       if (hasAlias) candyHosts.push(`${alias}.candy`)
-      content += `${candyHosts.join(", ")} {
+      content += `${candyHosts.filter(isHostName).join(", ")} {
   bind ${bindAddrs.join(" ")}
   tls internal
   reverse_proxy localhost:9999
@@ -4384,10 +4651,12 @@ const syncCaddy = async () => {
   // a certificate from tailscaled. LAN IP only; the Tailscale IP's ports belong
   // to `tailscale serve`.
   const tailnetHost = getTailnetHostname()
-  if (tailnetHost && lanIp && lanIp !== tailscaleIp) {
+  if (tailnetHost && isHostName(tailnetHost) && okIp(lanIp) && lanIp !== tailscaleIp) {
     for (const [name, port] of [...lanHttps].sort(([a], [b]) => a.localeCompare(b))) {
       const route = routes.get(name)
       if (!route && !serverConfigs.has(name)) continue
+      if (!okName(name) || !Number.isInteger(port)) continue
+      if (route && typeof route.target === "string" && !okUpstream(name, route.target)) continue
       // Not running yet (or a function): the daemon picks the server by Host.
       const proxy = route && typeof route.target !== "object"
         ? `reverse_proxy ${typeof route.target === "number" ? `localhost:${route.target}` : route.target}`
@@ -4413,6 +4682,7 @@ const syncCaddy = async () => {
     const route = routes.get(name)
     if (!route && !serverConfigs.has(name)) continue
     const target = route ? routeProxyTarget(name, route) : 'localhost:9999'
+    if (!okName(name) || !Number.isInteger(port) || !okUpstream(name, target)) continue
     const proxy = target === 'localhost:9999'
       ? `reverse_proxy localhost:9999 {
     header_up Host ${name}.localhost
@@ -4429,7 +4699,8 @@ const syncCaddy = async () => {
 
   // Tunnel domains (trycloudflare.com) - route to local ports
   for (const [name, { port, url }] of portals) {
-    if (url) {
+    if (url && !isQuickTunnelUrl(url)) skipped.push(`${name}: tunnel ${JSON.stringify(url)}`)
+    else if (url && Number.isInteger(port)) {
       const tunnelDomain = url.replace('https://', '')
       content += `${tunnelDomain} {
   reverse_proxy localhost:${port}
@@ -4445,8 +4716,9 @@ const syncCaddy = async () => {
   // Protected domains: forward_auth gates requests through daemon auth check
   // Unprotected domains: proxy through daemon for rate limiting + nag banner injection
   if (domainConfig) {
-    for (const binding of Object.values(domainConfig.bindings || {})) {
+    for (const binding of Object.values(safeBindings())) {
       const upstream = bindingUpstream(binding.serverName)
+      if (upstream && !okUpstream(binding.serverName, upstream)) continue
       let body: string
 
       if (hasBindingAuth(binding)) {
@@ -4488,7 +4760,7 @@ const syncCaddy = async () => {
       // the LAN IP, port 443, with a Let's Encrypt certificate. The HTTP-01
       // challenge arrives through the tunnel on port 80. Only private and
       // Tailscale addresses are served; anyone else is dropped.
-      if (lanIp && lanIp !== tailscaleIp && lanDomainHttpsBinding(binding.serverName)?.fqdn === binding.fqdn) {
+      if (okIp(lanIp) && lanIp !== tailscaleIp && lanDomainHttpsBinding(binding.serverName)?.fqdn === binding.fqdn) {
         content += `https://${binding.fqdn} {
   bind ${lanIp}
   tls {
@@ -4530,8 +4802,9 @@ ${body}
 
   // Public MCP endpoint: the daemon answers it directly (OAuth + MCP over HTTP)
   const mcpPublicFqdn = publicMcpFqdn()
-  if (mcpPublicFqdn) {
-    content += `http://${mcpPublicFqdn} {
+  if (mcpPublicFqdn && isZoneName(mcpPublicFqdn)) {
+    content += `${SYSTEM_BLOCK_MARK}
+http://${mcpPublicFqdn} {
   reverse_proxy localhost:9999
   log
 }
@@ -4541,7 +4814,9 @@ ${body}
 
   // Kill subdomains:
   // - <name>.kill.localhost / <name>.k.localhost
-  content += `*.kill.localhost, *.k.localhost {
+  content += `${SYSTEM_BLOCK_MARK}
+*.kill.localhost, *.k.localhost {
+  ${localBind}
   tls internal
   reverse_proxy localhost:9999
   log
@@ -4551,7 +4826,9 @@ ${body}
 
   // Portal subdomains: <name>.portal.localhost and <name>.p.localhost
   // Opens a cloudflare tunnel and redirects after DNS propagates
-  content += `*.portal.localhost, *.p.localhost {
+  content += `${SYSTEM_BLOCK_MARK}
+*.portal.localhost, *.p.localhost {
+  ${localBind}
   tls internal
   reverse_proxy localhost:9999
   log
@@ -4560,8 +4837,9 @@ ${body}
 `
 
   // .candy kill/portal subdomains (Tailscale)
-  if (tailscaleIp) {
-    content += `*.kill.candy, *.k.candy {
+  if (okIp(tailscaleIp)) {
+    content += `${SYSTEM_BLOCK_MARK}
+*.kill.candy, *.k.candy {
   bind ${tailscaleIp}
   tls internal
   reverse_proxy localhost:9999
@@ -4569,7 +4847,8 @@ ${body}
 }
 
 `
-    content += `*.portal.candy, *.p.candy {
+    content += `${SYSTEM_BLOCK_MARK}
+*.portal.candy, *.p.candy {
   bind ${tailscaleIp}
   tls internal
   reverse_proxy localhost:9999
@@ -4578,7 +4857,8 @@ ${body}
 
 `
     if (candyKillAliasHosts.length > 0) {
-      content += `${[...new Set(candyKillAliasHosts)].join(", ")} {
+      content += `${SYSTEM_BLOCK_MARK}
+${[...new Set(candyKillAliasHosts)].filter(isHostName).join(", ")} {
   bind ${tailscaleIp}
   tls internal
   reverse_proxy localhost:9999
@@ -4588,7 +4868,8 @@ ${body}
 `
     }
     if (candyPortalAliasHosts.length > 0) {
-      content += `${[...new Set(candyPortalAliasHosts)].join(", ")} {
+      content += `${SYSTEM_BLOCK_MARK}
+${[...new Set(candyPortalAliasHosts)].filter(isHostName).join(", ")} {
   bind ${tailscaleIp}
   tls internal
   reverse_proxy localhost:9999
@@ -4600,7 +4881,9 @@ ${body}
   }
 
   // Everything else goes to daemon (portal, unregistered domains, etc)
-  content += `*.localhost {
+  content += `${SYSTEM_BLOCK_MARK}
+*.localhost {
+  ${localBind}
   tls internal
   reverse_proxy localhost:9999
   log
@@ -4609,9 +4892,10 @@ ${body}
 `
 
   // .candy catch-all (Tailscale) - portal UI, unregistered domains
-  if (tailscaleIp) {
+  if (okIp(tailscaleIp)) {
     if (candyAliasHosts.length > 0) {
-      content += `${[...new Set(candyAliasHosts)].join(", ")} {
+      content += `${SYSTEM_BLOCK_MARK}
+${[...new Set(candyAliasHosts)].filter(isHostName).join(", ")} {
   bind ${tailscaleIp}
   tls internal
   reverse_proxy localhost:9999
@@ -4620,7 +4904,8 @@ ${body}
 
 `
     }
-    content += `*.candy {
+    content += `${SYSTEM_BLOCK_MARK}
+*.candy {
   bind ${tailscaleIp}
   tls internal
   reverse_proxy localhost:9999
@@ -4650,10 +4935,30 @@ ${body}
     /^([ \t]*)reverse_proxy (localhost:(?!9999\b)\d+)[ \t]*$/gm,
     (_line, pad: string, target: string) => `${pad}reverse_proxy ${target} {\n${pad}  transport http {\n${pad}    keepalive ${UPSTREAM_KEEPALIVE}\n${pad}  }\n${pad}}`,
   )
+  // Caddy tags everything it sends the daemon, so forwarding headers are trusted from Caddy only
+  content = tagDaemonUpstreams(content, CADDY_PROXY_TAG)
+  // One block per address, or Caddy refuses the whole file and keeps the old
+  // one: a user's name that spells a shortcut or alias host loses to it
+  const deduped = dedupeSiteAddresses(content)
+  content = deduped.content
+  for (const address of deduped.skipped) {
+    if (auditedSiteClashes.has(address)) continue
+    auditedSiteClashes.add(address)
+    auditLog('CADDY_SITE_SKIPPED', `${address}: another block already serves this address`, 'System')
+  }
+  if (skipped.length) console.log(`\x1b[33mLeft out of the Caddyfile (not a valid value):\x1b[0m ${[...new Set(skipped)].join(", ")}`)
   await Bun.write(CADDYFILE, content)
+  await chmod(CADDYFILE, 0o600).catch(() => {})  // holds the proxy tag
 
-  try {
-    const res = await fetch("http://localhost:2019/load", {
+  // Never hand the config (it holds the proxy tag) to a socket that failed the check.
+  // No socket yet: Caddy isn't up, and reads the Caddyfile when it starts.
+  if (!caddyAdminTrusted && !existsSync(CADDY_ADMIN_SOCKET)) {
+    // nothing to reload
+  } else if (!caddyAdminTrusted && !await secureCaddyAdminSocket(1)) {
+    console.log(`\x1b[31mNot reloading Caddy: its admin socket failed the check. Trying again in ${CADDY_ADMIN_RETRY_MS / 1000}s.\x1b[0m`)
+    scheduleCaddyRetry()
+  } else try {
+    const res = await caddyAdmin("/load", {
       method: "POST",
       headers: { "Content-Type": "text/caddyfile" },
       body: content,
@@ -4719,21 +5024,16 @@ const getTrafficLogs = async (domain: string, count: number = 20) => {
   return logs.slice(-count)
 }
 
-// Strict CORS headers - localhost only
+// Credentialed CORS only for exact portal origins (https, default port, a portal
+// host): never *.localhost:<any port>, which any local user can serve.
 const getCorsHeaders = (origin: string | null) => {
-  // Allow *.localhost and *.candy origins
-  const allowed = origin && (
-    origin.endsWith('.localhost') ||
-    origin === 'http://localhost:9999' ||
-    origin === 'https://candy.candy' ||
-    origin.match(/^https?:\/\/[a-z0-9-]+\.localhost(:\d+)?$/) ||
-    (tailscaleIp && origin.match(/^https?:\/\/[a-z0-9.-]+\.candy$/))
-  )
+  const allowed = isPortalOrigin(origin, isPortalHost)
   return {
-    "Access-Control-Allow-Origin": allowed ? origin : "",
+    "Access-Control-Allow-Origin": allowed ? origin! : "",
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, X-Candy-Token, X-Candy-API-Key",
+    "Access-Control-Allow-Headers": `Content-Type, X-Candy-Token, X-Candy-API-Key, ${SESSION_HEADER}`,
     "Access-Control-Allow-Credentials": "true",
+    "Vary": "Origin",
   }
 }
 
@@ -4741,10 +5041,203 @@ const getCorsHeaders = (origin: string | null) => {
 const unauthorizedResponse = (cors: ReturnType<typeof getCorsHeaders>) =>
   Response.json({ error: "Invalid or expired token. Refresh required." }, { status: 401, headers: cors })
 
+// JSON for inside a <script> element: no "</script>" or "<!--" can end it early
+const scriptJson = (v: unknown): string => JSON.stringify(v).replace(/</g, "\\u003c")
+
+// Portal pages that are served as a shell on navigation (public/portal-shell.html):
+// the real page, with its page token, only comes back to a request that carries
+// the session secret header, which a stolen cookie alone can't add
+const PORTAL_PAGES = new Set(["/", "/oauth/consent", "/go/kill", "/go/portal"])
+
+// Put into every portal page: same-origin fetches carry the session secret,
+// which the login page keeps in this origin's localStorage
+const SESSION_FETCH_PATCH = `(function(){var s=null;try{s=localStorage.getItem('candy_session')}catch(e){}var f=window.fetch;if(!s||f.__candy)return;var p=function(i,o){o=o||{};try{var u=new URL(i instanceof Request?i.url:String(i),location.href);if(u.origin===location.origin){var h=new Headers(o.headers||(i instanceof Request?i.headers:undefined));h.set('${SESSION_HEADER}',s);o=Object.assign({},o,{headers:h})}}catch(e){}return f.call(window,i,o)};p.__candy=true;window.fetch=p})();`
+
+// The token and variables for a portal page, plus the fetch patch
+const portalPageScript = (token: string | null, vars?: unknown): string =>
+  `<script>window.CANDY_TOKEN=${JSON.stringify(token)};${vars === undefined ? "" : `window.CANDY_VARS=${scriptJson(vars)};`}${SESSION_FETCH_PATCH}</script>`
+
+// Caddy terminates TLS; it says how the browser connected
+const isHttps = (req: Request): boolean => req.headers.get("x-forwarded-proto") === "https"
+
+// The site a site host is for: <name>.localhost, <name>.candy, and the action
+// hosts <name>.k|kill|p|portal.<tld> (pages served while it isn't up)
+const siteNameForHost = (host: string): string => {
+  const h = host.replace(/:\d+$/, "").toLowerCase()
+  const m = h.match(/^([a-z0-9-]+)\.(kill|k|portal|p)(?:\.([a-z0-9-]+))?\.(localhost|candy)$/)
+  if (m) return m[4] === "candy" ? resolveLocalCandyActionDomain(m[1], m[3] || null) : (m[3] ? `${m[1]}.${m[3]}` : m[1])
+  return resolveLocalCandyDomain(h)
+}
+
+// What a site's own pages (starting, crashed, tunnel) may do on that site
+// without a login: a bounded startup excerpt of its log while it is starting
+// or crashed (the /stream handler enforces that), its tunnel status, and start
+// or restart it with the site token the daemon put in that page (siteTokens:
+// this name, this page load, 15 minutes). Never pick its port, type into its
+// terminal, register, or touch another site. An Origin header proves nothing
+// (curl sends any), so the token is what counts; Origin is checked as well.
+const siteAction = (req: Request, url: URL, name: string): boolean => {
+  if (!name || isReserved(name)) return false
+  const path = url.pathname
+  if (req.method === "GET") return path === `/stream/${name}` || path === `/portal/status/${name}`
+  if (req.method !== "POST") return false
+  if (path !== `/process/start/${name}` && path !== `/process/restart/${name}`) return false
+  let from: string | null = null
+  try { from = new URL(req.headers.get("origin") || "").host.toLowerCase() } catch {}
+  if (!from || from !== (req.headers.get("host") || "").toLowerCase()) return false
+  return siteTokens.check(req.headers.get("X-Candy-Token"), name)
+}
+
+// The most of a log a site page shows without a login: its startup output
+const SITE_LOG_EXCERPT_BYTES = 32 * 1024
+
+// Logging in and out happens before there is a page token; /token is the refresh itself
+const TOKENLESS_ROUTES = new Set(["/auth/login", "/auth/logout", "/token"])
+
+// Whether /etc/pam.d/candy is there. Login fails closed (with a message) while it isn't.
+let pamReady = false
+const checkPam = async (warn: boolean) => {
+  const was = pamReady
+  pamReady = await pamAvailable("candy").catch(() => false)
+  if (!pamReady && (warn || was)) {
+    console.error(`\x1b[33mPortal login is off: /etc/pam.d/candy is missing. Run install-service.sh to install it.\x1b[0m`)
+  }
+}
+
+const loginDeps = {
+  pamReady: () => pamReady,
+  loginUsers,
+  verifyPassword: (user: string, password: string) => verifyPassword(user, password),
+  isSuperuser,
+  blocked: checkAuthBlocked,
+  fail: recordAuthFailure,
+  clear: clearAuthFailures,
+  refund: refundAuthFailure,
+  // Every browser on this machine is loopback (through Caddy): a soft, capped delay, never a lock
+  isLoopback,
+  slots: new LoginSlots(),
+  soft: new SoftLockout(),
+  audit: (action: "AUTH_LOGIN" | "AUTH_FAIL", details: string) => { auditLog(action, details, 'Portal') },
+  serverError: (message: string) => console.error(`\x1b[31mPortal login: ${message}\x1b[0m`),
+  now: () => Date.now(),
+  sleep: (ms: number) => Bun.sleep(ms),
+}
+
+// The public MCP endpoint runs mcp.ts in this process; its calls back to the
+// daemon carry the API key of the user who approved the client (oauthKeyFor).
+const publicMcpUser = new AsyncLocalStorage<string>()
+globalThis.fetch = userScopedFetch(globalThis.fetch, publicMcpUser, "http://localhost:9999", oauthKeyFor)
+
+// Every control route, by class (AUTH_DESIGN.md, "Authorization — one place"):
+//   public     anyone (login itself, secret exchange, tailnet discovery)
+//   user       a portal login or an API key; handlers then limit it to the caller's own sites
+//   superuser  daemon-wide settings, only from a superuser's portal login (never an API key)
+// The guard in the control server denies anything not listed here.
+// test/route-table.test.ts reads this table (one rule per line) and checks the router against it.
+// route-table:begin
+const ROUTE_TABLE: readonly RouteRule[] = [
+  ["GET", "/login", "public"],
+  ["GET", "/auth/users", "public"],
+  ["POST", "/auth/login", "public"],
+  ["POST", "/auth/logout", "public"],
+  ["GET", "/favicon.svg", "public"],
+  ["POST", "/mcp/auth", "public"],
+  ["POST", "/candy/advertise", "public"],
+  ["GET", "/candy/registry", "public"],
+  ["*", "/candy-auth/check", "public"],
+  ["POST", "/candy-auth/login", "public"],
+  ["GET", "/", "user"],
+  ["GET", "/auth/me", "user"],
+  ["POST", "/token", "user"],
+  ["GET", "/oauth/consent", "user"],
+  ["GET", "/oauth/request", "user"],
+  ["GET", "/go/kill", "user"],
+  ["POST", "/go/kill", "user"],
+  ["GET", "/go/portal", "user"],
+  ["POST", "/go/portal", "user"],
+  ["POST", "/oauth/decision", "user"],
+  ["POST", "/auth/set", "user"],
+  ["POST", "/auth/clear", "user"],
+  ["POST", "/auth/token", "user"],
+  ["GET", "/auth/status", "user"],
+  ["POST", "/domains/allowlist", "user"],
+  ["POST", "/sdk/runtime", "user"],
+  ["POST", "/sdk/register-port", "user"],
+  ["POST", "/sdk/portal", "user"],
+  ["POST", "/sdk/idle", "user"],
+  ["POST", "/sdk/cron", "user"],
+  ["*", "/fn/*", "user"],
+  ["POST", "/register", "user"],
+  ["DELETE", "/register/*", "user"],
+  ["POST", "/rename", "user"],
+  ["GET", "/routes", "user"],
+  ["GET", "/lan", "user"],
+  ["GET", "/routes/serve", "user"],
+  ["GET", "/routes/entry", "user"],
+  ["POST", "/routes/entry", "user"],
+  ["POST", "/portal", "user"],
+  ["POST", "/portal/batch", "user"],
+  ["GET", "/portals", "user"],
+  ["GET", "/portal/status/*", "user"],
+  ["POST", "/portal/close/*", "user"],
+  ["GET", "/logs", "user"],
+  ["GET", "/logs/*", "user"],
+  ["GET", "/stats", "user"],
+  ["GET", "/traffic/*", "user"],
+  ["GET", "/users", "user"],
+  ["GET", "/status", "user"],
+  ["GET", "/processes", "user"],
+  ["POST", "/process/start/*", "user"],
+  ["POST", "/process/stop/*", "user"],
+  ["POST", "/process/restart/*", "user"],
+  ["POST", "/process/port/*", "user"],
+  ["POST", "/process/input/*", "user"],
+  ["GET", "/configs", "user"],
+  ["POST", "/config", "user"],
+  ["POST", "/config/api", "user"],
+  ["POST", "/config/ttl", "user"],
+  ["POST", "/config/env", "user"],
+  ["POST", "/config/sandbox", "user"],
+  ["DELETE", "/config/*", "user"],
+  ["GET", "/domains", "user"],
+  ["POST", "/domains/bind", "user"],
+  ["DELETE", "/domains/unbind/*", "user"],
+  ["GET", "/stream/*", "user"],
+  ["POST", "/lan", "superuser"],
+  ["*", "/lan/adguard", "superuser"],
+  ["POST", "/routes/serve", "superuser"],
+  ["*", "/domains/mcp", "superuser"],
+  ["POST", "/domains/mcp/revoke", "superuser"],
+  ["POST", "/domains/config", "superuser"],
+  ["POST", "/shutdown", "superuser"],
+]
+// route-table:end
+
+// The portal's pages (the shell, the login page, everything on its host) are
+// never shown in someone else's frame: no clickjacking of its buttons
+const PORTAL_NO_FRAMING = { "Content-Security-Policy": "frame-ancestors 'none'", "X-Frame-Options": "DENY" }
+const noFraming = (req: Request, res: Response): Response => {
+  if (!isPortalHost(req.headers.get("host"))) return res
+  try {
+    for (const [k, v] of Object.entries(PORTAL_NO_FRAMING)) if (!res.headers.has(k)) res.headers.set(k, v)
+    return res
+  } catch {
+    const headers = new Headers(res.headers)
+    for (const [k, v] of Object.entries(PORTAL_NO_FRAMING)) if (!headers.has(k)) headers.set(k, v)
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers })
+  }
+}
+
 // Control plane API server
 const controlServer = Bun.serve({
   port: 9999,
   async fetch(req) {
+    return noFraming(req, await controlFetch(req))
+  },
+})
+
+// Every request to :9999. A function declaration, so the server above can call it.
+async function controlFetch(req: Request): Promise<Response> {
     const url = new URL(req.url)
     const origin = req.headers.get("origin")
     const corsHeaders = getCorsHeaders(origin)
@@ -4757,6 +5250,8 @@ const controlServer = Bun.serve({
     if (!isLoopback(peerIp) && !(url.pathname.startsWith("/candy/") && ipAllowed(peerIp, []))) {
       return new Response("Forbidden", { status: 403 })
     }
+    // Before any route: who sent it (our Caddy or not), then the tag is gone
+    markProxyHeaders(req, peerIp)
 
     // Public MCP host: its own small surface (OAuth + /mcp), nothing else
     const requestHostname = (req.headers.get("host") || "").replace(/:\d+$/, "").toLowerCase()
@@ -4771,54 +5266,28 @@ const controlServer = Bun.serve({
       return await serveFunction(req, url, fnTarget.name, fnTarget.binding, controlServer)
     }
 
+    // API mode: every request for such a server's host is the server's,
+    // whatever its method or path: held until it's up, then forwarded as-is.
+    // Before any route below, so none of them can answer in its place.
+    // api-mode-gate
+    const apiAnswer = await apiModeGate(req, url)
+    if (apiAnswer) return apiAnswer
+
+    const hostHeader = req.headers.get("host") || ""
+    const boundDomainMatch = resolveBindingFromHost(hostHeader)
+    const isBoundDomain = !!boundDomainMatch
+    const portalHost = isPortalRequest(req)
+    // A site's own hosts (<name>.localhost / .candy, action hosts, bound domains):
+    // pages and lazy start, never the control API. Everything else is the portal
+    // or a direct control request (CLI, SDK, MCP on localhost:9999), behind the guard.
+    const siteHost = !portalHost && (isBoundDomain || /\.(localhost|candy)(:\d+)?$/i.test(hostHeader))
+
+    // Not before this point: a function's or site's own request body and paths are theirs
+    lowerRequestNames(req, url)
+
     // Handle CORS preflight
     if (req.method === "OPTIONS") {
       return new Response(null, { headers: corsHeaders })
-    }
-
-    // Consent for a public MCP client. Only on the portal's own host, which is
-    // served on the tailnet (portal.candy) and this machine (portal.localhost).
-    if (url.pathname.startsWith("/oauth/")) {
-      const onPortal = resolveLocalCandyDomain(req.headers.get("host") || "") === "portal" && !resolveBindingFromHost(req.headers.get("host") || "")
-      const oauth = onPortal ? await getMcpOAuth() : null
-      if (!oauth) return new Response("Not found", { status: 404 })
-
-      if (req.method === "GET" && url.pathname === "/oauth/consent") {
-        const rawHtml = await Bun.file(import.meta.dir + "/public/authorize.html").text()
-        // A portal session token, so only this page load can answer
-        const html = rawHtml.replace('<script>', `<script>window.CANDY_TOKEN="${createSession()}";</script><script>`)
-        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } })
-      }
-      if (req.method === "GET" && url.pathname === "/oauth/request") {
-        const pending = oauth.getRequest(url.searchParams.get("request") || "")
-        if (!pending || pending.decided) return Response.json({ error: "This request has expired or was already answered." }, { status: 404 })
-        const { ip } = getFingerprint(req, controlServer)
-        let redirectHost = pending.redirectUri
-        try { redirectHost = new URL(pending.redirectUri).host || pending.redirectUri } catch {}
-        return Response.json({
-          clientName: pending.clientName,
-          redirectHost,
-          expiresAt: pending.expiresAt,
-          endpoint: `https://${publicMcpFqdn()}/mcp`,
-          you: await tailnetIdentity(ip),
-        }, { headers: { "Cache-Control": "no-store" } })
-      }
-      if (req.method === "POST" && url.pathname === "/oauth/decision") {
-        const token = req.headers.get("X-Candy-Token")
-        if (!token || !consumeToken(token)) return unauthorizedResponse(corsHeaders)
-        const body = await req.json().catch(() => ({})) as { request?: string; allow?: boolean }
-        const { ip } = getFingerprint(req, controlServer)
-        const approver = await tailnetIdentity(ip)
-        const pending = oauth.getRequest(body.request || "")
-        const result = oauth.decide(body.request || "", body.allow === true, approver)
-        if (!result.ok) return Response.json({ error: result.error_description }, { status: result.status })
-        auditLog(body.allow === true ? 'MCP_PUBLIC_ALLOW' : 'MCP_PUBLIC_DENY', `"${pending?.clientName ?? '?'}" by ${approver}`, 'Portal')
-        const back = new URL(`https://${publicMcpFqdn()}/authorize/complete`)
-        back.searchParams.set("request", body.request || "")
-        back.searchParams.set("grant", result.grant)
-        return Response.json({ redirect: back.toString() })
-      }
-      return new Response("Not found", { status: 404 })
     }
 
     // === Bound Domain Auth Endpoints (forward_auth from Caddy) ===
@@ -4931,243 +5400,9 @@ const controlServer = Bun.serve({
       })
     }
 
-    // === Auth Management API (daemon-side, for CLI/MCP) ===
-
-    if (req.method === "POST" && url.pathname === "/auth/set") {
-      const mcpApiKeyHeader = req.headers.get("X-Candy-API-Key")
-      const isMcpRequest = !!(mcpApiKeyHeader && validateMcpApiKey(mcpApiKeyHeader))
-      if (!isMcpRequest) {
-        const token = req.headers.get("X-Candy-Token")
-        if (!token || !consumeToken(token)) {
-          return unauthorizedResponse(corsHeaders)
-        }
-      }
-
-      const { subdomain, domain, password, jwtSecret: rawJwtSecret } = await req.json() as { subdomain?: string; domain?: string; password?: string; jwtSecret?: string }
-      if ((!subdomain && !domain) || (!password && !rawJwtSecret)) {
-        return Response.json({ error: "domain (or subdomain) and a password or jwtSecret are required" }, { status: 400, headers: corsHeaders })
-      }
-      // "generate" asks the daemon for a random secret, returned once in the response
-      const generated = rawJwtSecret === "generate"
-      const jwtSecret = generated ? generateJwtSecret() : rawJwtSecret
-      if (jwtSecret !== undefined && jwtSecret.length < MIN_JWT_SECRET_LENGTH) {
-        return Response.json({ error: `The JWT secret must be at least ${MIN_JWT_SECRET_LENGTH} characters. Use "generate" for a random one.` }, { status: 400, headers: corsHeaders })
-      }
-
-      const bindingKey = resolveBindingKey(subdomain, domain)
-      if (!bindingKey) {
-        const target = domain || subdomain || '(unknown)'
-        return Response.json({ error: `No binding found for '${target}'` }, { status: 404, headers: corsHeaders })
-      }
-
-      const ok = await setBindingAuth(bindingKey, { password: password || undefined, jwtSecret })
-      if (!ok) {
-        return Response.json({ error: `No binding found for '${bindingKey}'` }, { status: 404, headers: corsHeaders })
-      }
-      // Resync caddy to add forward_auth
-      await syncCaddy()
-      const label = domainConfig?.bindings?.[bindingKey]?.fqdn || bindingKey
-      const actor: Actor = isMcpRequest ? 'AI' : 'Portal'
-      const what = [password ? 'Password' : '', jwtSecret ? 'JWT secret' : ''].filter(Boolean).join(' and ')
-      auditLog('AUTH_SET', `${what} set for ${label}`, actor)
-      const binding = domainConfig!.bindings[bindingKey]
-      const note = jwtSecret && !isApiSite(binding)
-        ? ` ${binding.serverName} isn't in API mode, so browsers still get the login page and JWTs aren't checked until it is.`
-        : ''
-      return Response.json({
-        success: true,
-        message: `${what} set for ${label}.${note}`,
-        ...(generated ? { jwtSecret } : {}),
-      }, { headers: corsHeaders })
-    }
-
-    if (req.method === "POST" && url.pathname === "/auth/clear") {
-      const mcpApiKeyHeader = req.headers.get("X-Candy-API-Key")
-      const isMcpRequest = !!(mcpApiKeyHeader && validateMcpApiKey(mcpApiKeyHeader))
-      if (!isMcpRequest) {
-        const token = req.headers.get("X-Candy-Token")
-        if (!token || !consumeToken(token)) {
-          return unauthorizedResponse(corsHeaders)
-        }
-      }
-
-      const { subdomain, domain, which } = await req.json() as { subdomain?: string; domain?: string; which?: 'password' | 'jwt' | 'all' }
-      if (!subdomain && !domain) {
-        return Response.json({ error: "domain (or subdomain) required" }, { status: 400, headers: corsHeaders })
-      }
-
-      const bindingKey = resolveBindingKey(subdomain, domain)
-      if (!bindingKey) {
-        const target = domain || subdomain || '(unknown)'
-        return Response.json({ error: `No binding found for '${target}'` }, { status: 404, headers: corsHeaders })
-      }
-
-      const ok = await clearBindingAuth(bindingKey, which === 'password' || which === 'jwt' ? which : 'all')
-      if (!ok) {
-        return Response.json({ error: `No binding found for '${bindingKey}'` }, { status: 404, headers: corsHeaders })
-      }
-      // Invalidate all sessions for this domain
-      for (const [token, session] of authSessions) {
-        if (session.domain === bindingKey) authSessions.delete(token)
-      }
-      await syncCaddy()
-      const label = domainConfig?.bindings?.[bindingKey]?.fqdn || bindingKey
-      const actor: Actor = isMcpRequest ? 'AI' : 'Portal'
-      auditLog('AUTH_CLEAR', `Password cleared for ${label}`, actor)
-      return Response.json({ success: true, message: `Password cleared for ${label}` }, { headers: corsHeaders })
-    }
-
-    // Allowlist mode for a bound domain: only listed IPs/CIDRs, Tailscale and this machine
-    if (req.method === "POST" && url.pathname === "/domains/allowlist") {
-      const mcpApiKey = req.headers.get("X-Candy-API-Key")
-      const isMcpRequest = !!(mcpApiKey && validateMcpApiKey(mcpApiKey))
-      if (!isMcpRequest) {
-        const token = req.headers.get("X-Candy-Token")
-        if (!token || !consumeToken(token)) return unauthorizedResponse(corsHeaders)
-      }
-      const body = await req.json().catch(() => ({})) as { subdomain?: string; domain?: string; enabled?: boolean; ips?: string[]; add?: string[]; remove?: string[] }
-      const bindingKey = resolveBindingKey(body.subdomain, body.domain)
-      const binding = bindingKey ? domainConfig?.bindings?.[bindingKey] : undefined
-      if (!binding) {
-        return Response.json({ error: `No binding found for '${body.domain || body.subdomain || '(unknown)'}'` }, { status: 404, headers: corsHeaders })
-      }
-      const entries = [...(body.ips ?? []), ...(body.add ?? [])].map(e => String(e).trim().replace(/^\[|\](?=\/|$)/g, '')).filter(Boolean)
-      const bad = entries.filter(e => !parseCidr(e))
-      if (bad.length) {
-        return Response.json({ error: `Not an IP or CIDR: ${bad.join(', ')}` }, { status: 400, headers: corsHeaders })
-      }
-      const current = binding.allowlist ?? { enabled: false, ips: [] }
-      let ips = body.ips ? [] : [...current.ips]
-      for (const e of entries) if (!ips.includes(e)) ips.push(e)
-      const removing = new Set((body.remove ?? []).map(e => String(e).trim()))
-      ips = ips.filter(e => !removing.has(e))
-      // Adding entries turns it on unless told otherwise
-      const enabled = typeof body.enabled === "boolean" ? body.enabled : (entries.length > 0 || current.enabled)
-      binding.allowlist = { enabled, ips }
-      await saveDomainConfig()
-      await syncCaddy()
-      const actor: Actor = isMcpRequest ? 'AI' : 'Portal'
-      const summary = enabled ? `on (${ips.length ? ips.join(', ') : 'no extra IPs'} + Tailscale)` : 'off'
-      auditLog('ALLOWLIST', `${binding.fqdn}: ${summary}`, actor)
-      return Response.json({
-        success: true,
-        allowlist: binding.allowlist,
-        message: enabled
-          ? `${binding.fqdn} now only accepts ${ips.length ? `${ips.length} allowlisted address${ips.length === 1 ? '' : 'es'}, ` : ''}Tailscale and this machine`
-          : `${binding.fqdn} accepts any address again`,
-      }, { headers: corsHeaders })
-    }
-
-    // Mint a server-auth JWT for an API-mode domain (for scripts and testing)
-    if (req.method === "POST" && url.pathname === "/auth/token") {
-      const mcpApiKey = req.headers.get("X-Candy-API-Key")
-      const isMcpRequest = !!(mcpApiKey && validateMcpApiKey(mcpApiKey))
-      if (!isMcpRequest) {
-        const token = req.headers.get("X-Candy-Token")
-        if (!token || !consumeToken(token)) return unauthorizedResponse(corsHeaders)
-      }
-      const { subdomain, domain, ttl, jti } = await req.json().catch(() => ({})) as { subdomain?: string; domain?: string; ttl?: number; jti?: boolean | string }
-      const bindingKey = resolveBindingKey(subdomain, domain)
-      const binding = bindingKey ? domainConfig?.bindings?.[bindingKey] : undefined
-      if (!binding) {
-        return Response.json({ error: `No binding found for '${domain || subdomain || '(unknown)'}'` }, { status: 404, headers: corsHeaders })
-      }
-      if (!binding.auth?.jwtSecret) {
-        return Response.json({ error: `${binding.fqdn} has no JWT secret. Set one first.` }, { status: 400, headers: corsHeaders })
-      }
-      // Only the owner or the user the site runs as may mint tokens for it
-      const requester = requestUser(req)
-      const siteUsers = getConfigsForName(binding.serverName).map(configUser)
-      if (RUNNING_AS_ROOT && requester !== OWNER && !siteUsers.includes(requester)) {
-        return Response.json({ error: `Only ${OWNER} or the site's own user can mint tokens for it.` }, { status: 403, headers: corsHeaders })
-      }
-      const lifetime = Math.min(Math.max(Math.floor(Number(ttl) || 600), 1), MAX_TOKEN_LIFETIME_S)
-      const now = Math.floor(Date.now() / 1000)
-      const claims: Record<string, unknown> = { aud: JWT_AUDIENCE, sub: `${binding.serverName}.candy`, iat: now, nbf: now, exp: now + lifetime }
-      if (jti) claims.jti = typeof jti === "string" ? jti : crypto.randomUUID()
-      auditLog('AUTH_TOKEN', `Token minted for ${binding.fqdn} (${lifetime}s${claims.jti ? ', single use' : ''})`, isMcpRequest ? 'AI' : 'Portal')
-      return Response.json({ token: signJwt(claims, binding.auth.jwtSecret), claims }, { headers: corsHeaders })
-    }
-
-    if (req.method === "GET" && url.pathname === "/auth/status") {
-      const mcpApiKey = req.headers.get("X-Candy-API-Key")
-      if (!mcpApiKey || !validateMcpApiKey(mcpApiKey)) {
-        return Response.json({ error: "Unauthorized" }, { status: 401, headers: corsHeaders })
-      }
-      const domains: Record<string, any> = {}
-      if (domainConfig?.bindings) {
-        for (const [sub, binding] of Object.entries(domainConfig.bindings)) {
-          const sessionCount = [...authSessions.values()].filter(s => s.domain === sub).length
-          domains[sub] = {
-            fqdn: binding.fqdn,
-            serverName: binding.serverName,
-            authEnabled: !!binding.auth?.enabled,
-            hasPassword: !!binding.auth?.password,
-            hasJwtSecret: !!binding.auth?.jwtSecret,
-            apiMode: isApiSite(binding),
-            activeSessions: sessionCount,
-          }
-        }
-      }
-      return Response.json({ domains }, { headers: corsHeaders })
-    }
-
-    // === Token Refresh Endpoint (no auth required) ===
-    if (req.method === "POST" && url.pathname === "/token") {
-      const body = await req.json() as { token: string }
-      const newToken = refreshToken(body.token)
-      if (!newToken) {
-        return Response.json({ error: "Invalid token. Session expired." }, { status: 401, headers: corsHeaders })
-      }
-      return Response.json({ token: newToken }, { headers: corsHeaders })
-    }
-
-    // === MCP Auth Endpoint (exchange bootstrap secret for API key) ===
-    if (req.method === "POST" && url.pathname === "/mcp/auth") {
-      const body = await req.json().catch(() => ({})) as { secret?: string }
-      const auth = exchangeMcpSecret(body.secret ?? "")
-      if (!auth) {
-        return Response.json({ error: "Invalid secret" }, { status: 401, headers: corsHeaders })
-      }
-      auditLog('MCP_AUTH', `Client authenticated as ${auth.user}`, 'AI')
-      return Response.json({ apiKey: auth.apiKey, user: auth.user }, { headers: corsHeaders })
-    }
-
-    // === Web UI Routes (no token required, token is SSR'd) ===
-    // Also allow SSE streams and portal status polling without token (read-only)
-    // Allow all GET requests from *.localhost domains (not direct API calls)
-    const hostHeader = req.headers.get("host") || ""
-    const isCandyDomain = hostHeader.endsWith(".candy")
-    const boundDomainMatch = resolveBindingFromHost(hostHeader)
-    const isBoundDomain = !!boundDomainMatch
-    const isLocalhostDomain = hostHeader.endsWith(".localhost") || hostHeader.endsWith(".localhost:9999") || isCandyDomain || isBoundDomain
-    const isWebRoute = req.method === "GET" && (
-      isLocalhostDomain ||
-      url.pathname === "/" ||
-      url.pathname === "/favicon.svg" ||
-      url.pathname === "/register" ||
-      url.pathname === "/portal" ||
-      url.pathname.startsWith("/stream/") ||
-      url.pathname.startsWith("/portal/status/")
-    )
-
-    if (isBoundDomain && boundDomainMatch && !url.pathname.startsWith("/candy-auth/")) {
-      const authResponse = await requireBoundDomainAuth(req, controlServer, boundDomainMatch.binding)
-      if (authResponse) return authResponse
-    }
-
-    // === API mode: any method, held until the server is up, then forwarded as-is ===
-    if (isLocalhostDomain && !url.pathname.startsWith("/candy-auth/")) {
-      const apiName = boundDomainMatch ? boundDomainMatch.serverName : resolveLocalCandyDomain(hostHeader)
-      const apiConfig = apiName && apiName !== "portal" ? apiModeConfig(apiName) : null
-      if (apiConfig) {
-        const protectedDomain = !!boundDomainMatch && hasBindingAuth(boundDomainMatch.binding)
-        return await forwardApiModeRequest(req, url, apiName, apiConfig, protectedDomain)
-      }
-    }
-
     // === Network Discovery API (unauthenticated, Tailscale-protected) ===
-    const isCandyApi = url.pathname.startsWith("/candy/")
+    // Peers post to this machine's address and the portal reads the registry: never a site's host
+    const isCandyApi = !siteHost && url.pathname.startsWith("/candy/")
     if (isCandyApi) {
       // POST /candy/advertise - register routes from a remote machine
       if (req.method === "POST" && url.pathname === "/candy/advertise") {
@@ -5255,67 +5490,453 @@ const controlServer = Bun.serve({
           remote: snapshot.remote,
         }, { headers: corsHeaders })
       }
+      return Response.json({ error: "not found" }, { status: 404, headers: corsHeaders })
     }
 
-    // === API Routes require token validation ===
-    // MCP/CLI uses X-Candy-API-Key header (obtained via /mcp/auth with secret)
-    const mcpApiKey = req.headers.get("X-Candy-API-Key")
-    const isMCP = mcpApiKey && validateMcpApiKey(mcpApiKey)
-    if (!isWebRoute && !isMCP && !isBoundDomain && !isCandyApi) {
-      const token = req.headers.get("X-Candy-Token")
-      if (!token || !consumeToken(token)) {
-        return unauthorizedResponse(corsHeaders)
-      }
+    // The portal answers credentialed CORS only for its own pages, not every *.localhost
+    if (portalHost && origin) {
+      let originHost = ""
+      try { originHost = new URL(origin).host } catch {}
+      if (!isPortalHost(originHost)) corsHeaders["Access-Control-Allow-Origin"] = ""
+    }
+    if (isBoundDomain && boundDomainMatch && !url.pathname.startsWith("/candy-auth/")) {
+      const authResponse = await requireBoundDomainAuth(req, controlServer, boundDomainMatch.binding)
+      if (authResponse) return authResponse
     }
 
-    // === Functions API ===
-    // Request logs hold request data: never on a bound domain's host, and the
-    // GET routes need a token or key too (other GETs on *.localhost don't)
-    if (url.pathname.startsWith("/fn/")) {
-      if (isBoundDomain) return Response.json({ error: "not found" }, { status: 404, headers: corsHeaders })
-      if (isWebRoute && !isMCP) {
-        const token = req.headers.get("X-Candy-Token")
-        if (!token || !consumeToken(token)) return unauthorizedResponse(corsHeaders)
-      }
-      return await handleFnApi(req, url, corsHeaders, controlServer)
-    }
+    let auth: RequestAuth | null = null
+    // Set when a site's own page acts on that site without a login (see siteAction)
+    let pageHost: string | null = null
 
-    // === Unprotected Bound Domain Proxy (non-GET methods) ===
-    // For unprotected bound domains, all traffic routes through daemon for rate limiting
-    if (isBoundDomain && req.method !== "GET") {
-      const boundProxyMatch = resolveBindingFromHost(hostHeader)
-      if (boundProxyMatch) {
-        const { binding } = boundProxyMatch
-        const hasAuth = hasBindingAuth(binding)
-        if (!hasAuth) {
-          const managed = processes.get(binding.serverName)
-          if (managed?.status === 'running' && managed.port) {
-            const { ip } = getFingerprint(req, controlServer)
-            if (!checkRateLimit(ip, binding.subdomain)) {
-              return new Response('Rate limited', { status: 429 })
-            }
-            managed.lastActivity = Date.now()
-            try {
-              const proxyHeaders = new Headers(req.headers)
-              proxyHeaders.set('host', `localhost:${managed.port}`)
-              const proxyRes = await fetchWithHeaderTimeout(`http://localhost:${managed.port}${url.pathname}${url.search}`, {
-                method: req.method,
-                headers: proxyHeaders,
-                body: req.body,
-              }, req)
-              return new Response(proxyRes.body, { status: proxyRes.status, headers: proxyRes.headers })
-            } catch (e) {
-              return new Response(`Proxy error: ${e}`, { status: 502 })
+    if (siteHost) {
+      // === Unprotected Bound Domain Proxy (non-GET methods) ===
+      // For unprotected bound domains, all traffic routes through daemon for rate limiting
+      if (isBoundDomain && req.method !== "GET") {
+        const boundProxyMatch = resolveBindingFromHost(hostHeader)
+        if (boundProxyMatch) {
+          const { binding } = boundProxyMatch
+          const hasAuth = hasBindingAuth(binding)
+          if (!hasAuth) {
+            const managed = processes.get(binding.serverName)
+            if (managed?.status === 'running' && managed.port) {
+              const { ip } = getFingerprint(req, controlServer)
+              if (!checkRateLimit(ip, binding.subdomain)) {
+                return new Response('Rate limited', { status: 429 })
+              }
+              managed.lastActivity = Date.now()
+              try {
+                const proxyHeaders = upstreamRequestHeaders(req.headers, false)
+                proxyHeaders.set('host', `localhost:${managed.port}`)
+                const proxyRes = await fetchWithHeaderTimeout(`http://localhost:${managed.port}${url.pathname}${url.search}`, {
+                  method: req.method,
+                  headers: proxyHeaders,
+                  body: req.body,
+                }, req)
+                return new Response(proxyRes.body, { status: proxyRes.status, headers: proxyRes.headers })
+              } catch (e) {
+                return new Response(`Proxy error: ${e}`, { status: 502 })
+              }
             }
           }
         }
       }
+      if (!isBoundDomain) {
+        const name = siteNameForHost(hostHeader)
+        if (siteAction(req, url, name)) pageHost = name
+      }
+      if (!pageHost) {
+        if (req.method === "GET" || req.method === "HEAD") return await serveSitePage(req, url, corsHeaders, null)
+        if (isBoundDomain) return Response.json({ error: "not found" }, { status: 404, headers: corsHeaders })
+        return Response.json({ error: "login required" }, { status: 401, headers: { ...corsHeaders, "X-Candy-Login": "required" } })
+      }
+    } else {
+      // A browser opening a portal page: the shell, which asks again with the session secret
+      if (portalHost && PORTAL_PAGES.has(url.pathname) && !req.headers.get(SESSION_HEADER) && wantsHtml(req.method, req.headers.get("accept"))) {
+        return new Response(Bun.file(import.meta.dir + "/public/portal-shell.html"), {
+          headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Vary": SESSION_HEADER },
+        })
+      }
+      // === The guard: every control route is in ROUTE_TABLE, or it's denied ===
+      auth = await requestAuth(req)
+      const verdict = guardRequest({
+        cls: classifyRoute(ROUTE_TABLE, req.method, url.pathname),
+        auth,
+        portalHost,
+        // The shell's own request (with the header) wants a 401, not a redirect
+        html: wantsHtml(req.method, req.headers.get("accept")) && !req.headers.get(SESSION_HEADER),
+        path: url.pathname,
+        search: url.search,
+      })
+      if (!verdict.ok) {
+        if (verdict.status === 302) return new Response(null, { status: 302, headers: { Location: verdict.location, "Cache-Control": "no-store" } })
+        const loginHeader: Record<string, string> = verdict.status === 401 ? { "X-Candy-Login": "required" } : {}
+        return Response.json({ error: verdict.error }, { status: verdict.status, headers: { ...corsHeaders, ...loginHeader } })
+      }
+      // === API Routes require token validation ===
+      // Anything that changes state from the portal: sent by a portal page (Origin),
+      // and carrying that page's token, minted for this very login
+      if (portalHost && req.method !== "GET" && req.method !== "HEAD") {
+        if (!sameOrigin(req.headers, isPortalHost)) {
+          return Response.json({ error: "Cross-site request refused." }, { status: 403, headers: corsHeaders })
+        }
+        if (auth?.via === "portal" && !TOKENLESS_ROUTES.has(url.pathname) && !pageTokens.consume(req.headers.get("X-Candy-Token"), auth.sessionId)) {
+          return unauthorizedResponse(corsHeaders)
+        }
+      }
+    }
+    const isMCP = auth?.via === "apikey" || auth?.via === "oauth"
+    // Who the audit log says did it: the authenticated user, with X-Candy-Actor only as a label after the name
+    const requestActor: Actor = pageHost !== null ? 'Page' : auditActor(auth, req.headers.get('X-Candy-Actor'))
+    // Acting on a site by name: its user or a superuser, or the site's own page
+    const mayUse = (name: string): boolean => pageHost !== null ? name === pageHost : mayChangeName(auth, name)
+    const notYoursResponse = (name: string, verb = "change it") =>
+      Response.json({ success: false, error: `${name} belongs to ${nameOwner(name)}. Only they can ${verb}.` }, { status: 403, headers: corsHeaders })
+    // Sites whose route or process uses `port`
+    const portUsers = (port: number): string[] => [
+      ...[...routes].filter(([, r]) => r.target === port).map(([n]) => n),
+      ...[...processes].filter(([, p]) => p.port === port).map(([n]) => n),
+    ]
+    // _audit and _caddy cover every user: superusers only
+    const mayReadLog = (name: string): boolean => {
+      const target = logFileFor(name)
+      if (!target) return false
+      return target.system ? !!auth?.superuser : mayUse(name)
+    }
+    // A binding is its site's; once the site is gone (orphaned), its recorded owner's
+    const mayUseBinding = (b: DomainBinding): boolean => b.orphaned ? mayActOn(auth, bindingOwner(b)) : mayUse(b.serverName)
+    const denyBinding = (key: string): Response | null => {
+      const b = domainConfig?.bindings?.[key]
+      if (!b || mayUseBinding(b)) return null
+      return Response.json({ error: `${b.fqdn} serves ${b.serverName}, which belongs to ${nameOwner(b.serverName)}.` }, { status: 403, headers: corsHeaders })
+    }
+
+    // === Portal login ===
+    if (req.method === "GET" && url.pathname === "/login") {
+      if (!portalHost) return Response.json({ error: "not found" }, { status: 404, headers: corsHeaders })
+      const next = safeNext(url.searchParams.get("next"))
+      if (auth?.via === "portal") return new Response(null, { status: 302, headers: { Location: next, "Cache-Control": "no-store" } })
+      const rawHtml = await Bun.file(import.meta.dir + "/public/portal-login.html").text()
+      const vars = { next, available: pamReady }
+      const html = rawHtml.replace('<script>', `<script>window.CANDY_VARS=${scriptJson(vars)};</script><script>`)
+      return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } })
+    }
+
+    if (req.method === "GET" && url.pathname === "/auth/users") {
+      if (!portalHost) return Response.json({ error: "not found" }, { status: 404, headers: corsHeaders })
+      return Response.json({ users: await loginUsers().catch(() => []), available: pamReady }, { headers: { ...corsHeaders, "Cache-Control": "no-store" } })
+    }
+
+    if (req.method === "POST" && url.pathname === "/auth/login") {
+      if (!portalHost) return Response.json({ error: "not found" }, { status: 404, headers: corsHeaders })
+      const body = await req.json().catch(() => ({})) as { user?: unknown; password?: unknown }
+      const { ip, userAgent } = getFingerprint(req, controlServer)
+      const outcome = await attemptLogin(loginDeps, { user: body.user, password: body.password, ip })
+      if (!outcome.ok) return Response.json(outcome.body, { status: outcome.status, headers: { ...corsHeaders, "Cache-Control": "no-store" } })
+      // A fresh session id on every login, never one handed in
+      const old = portalSessions.get(readSessionCookie(req.headers.get("cookie")), req.headers.get(SESSION_HEADER))
+      if (old) { portalSessions.destroy(old.id); pageTokens.dropSession(old.id) }
+      const { cookie, secret } = portalSessions.create(outcome.user, { ip, ua: userAgent })
+      // `session` goes to the login page's localStorage (this exact origin only) and comes back as X-Candy-Session
+      return Response.json({ user: outcome.user, superuser: outcome.superuser, session: secret }, {
+        headers: { ...corsHeaders, "Cache-Control": "no-store", "Set-Cookie": sessionCookieHeader(cookie, isHttps(req)) },
+      })
+    }
+
+    if (req.method === "POST" && url.pathname === "/auth/logout") {
+      const session = portalHost ? portalSessions.get(readSessionCookie(req.headers.get("cookie")), req.headers.get(SESSION_HEADER)) : null
+      if (session) {
+        portalSessions.destroy(session.id)
+        pageTokens.dropSession(session.id)
+        const { ip } = getFingerprint(req, controlServer)
+        auditLog('AUTH_LOGOUT', `${session.user} from ${ip}`, 'Portal')
+      }
+      return Response.json({ success: true }, {
+        headers: { ...corsHeaders, "Cache-Control": "no-store", "Set-Cookie": clearSessionCookieHeader(isHttps(req)) },
+      })
+    }
+
+    if (req.method === "GET" && url.pathname === "/auth/me") {
+      return Response.json({ user: auth!.user, superuser: auth!.superuser, via: auth!.via, multiUser: RUNNING_AS_ROOT }, { headers: { ...corsHeaders, "Cache-Control": "no-store" } })
+    }
+
+    // Where the shortcut hosts (<name>.k / <name>.p) send the browser: a
+    // confirmation page on GET; the action only on POST, which the guard has
+    // held to a portal page's Origin and token. The site's user or a superuser.
+    if (url.pathname === "/go/kill" || url.pathname === "/go/portal") {
+      const shortcut: ShortcutAction = url.pathname === "/go/kill" ? "kill" : "portal"
+      if (!portalHost || auth?.via !== "portal") return Response.json({ error: "not found" }, { status: 404, headers: corsHeaders })
+      const isPost = req.method === "POST"
+      const body = isPost ? await req.json().catch(() => ({})) as { name?: unknown } : null
+      const name = String((isPost ? body?.name : url.searchParams.get("name")) ?? "")
+      const serviceHost = `${name}.${/\.candy(:\d+)?$/i.test(hostHeader) ? "candy" : "localhost"}`
+      const token = () => pageTokens.mint(auth!.sessionId!)
+      const refuse = (error: string, status: number, extra: Record<string, unknown> = {}) => isPost
+        ? Response.json({ error }, { status, headers: corsHeaders })
+        : shortcutPage("confirm-action.html", { action: shortcut, name, serviceHost, error, ...extra }, status)
+      if (!isSafeName(name) || isReserved(name)) return refuse("That isn't a site name.", 400)
+      if (!nameInUse(name)) return refuse(`There's no site called ${name}.`, 404)
+      if (!mayUse(name)) return refuse(`${name} belongs to ${nameOwner(name)}. Only they or a superuser can ${shortcut === "kill" ? "stop it" : "open a tunnel to it"}.`, 403)
+      const proc = processes.get(name)
+
+      if (shortcut === "kill") {
+        const up = proc?.status === "running" || proc?.status === "starting"
+        if (isPost) {
+          const stopped = up ? await stopProcess(name, requestActor) : true
+          return Response.json(stopped ? { success: true } : { success: false, error: `${name} didn't stop.` }, { status: stopped ? 200 : 500, headers: corsHeaders })
+        }
+        // Already stopped (or just stopped by the POST): the result page
+        if (!up) return shortcutPage("killed.html", { name, serviceHost })
+        return shortcutPage("confirm-action.html", { action: "kill", name, serviceHost }, 200, token())
+      }
+
+      const open = portals.get(name)
+      if (open) {
+        if (isPost) return Response.json({ success: true, url: open.url ?? null }, { headers: corsHeaders })
+        return shortcutPage("portaling.html", { name, serviceHost, existingUrl: open.url || "" })
+      }
+      const port = proc?.status === "running" ? proc.port : null
+      if (!port) return refuse(`${name} isn't running.`, 409, { notRunning: true })
+      if (!isPost) return shortcutPage("confirm-action.html", { action: "portal", name, serviceHost }, 200, token())
+      // A tunnel puts the port on the internet: not one another user's site also uses
+      const portUser = portUsers(port).find(n => !mayUse(n))
+      if (portUser) return notYoursResponse(portUser, "open a tunnel to it")
+      auditLog('PORTAL_CREATE', `${name} (from the ${name}.p shortcut)`, requestActor)
+      const result = await openPortalForName({ name, port, user: auth!.user })
+      return Response.json(result.body, { status: result.ok ? 200 : result.status, headers: corsHeaders })
+    }
+
+    // Consent for a public MCP client. Only on the portal's own host, which is
+    // served on the tailnet (portal.candy) and this machine (portal.localhost).
+    // Approving needs a portal login (an API key can't approve), and the grant acts as that user.
+    if (url.pathname.startsWith("/oauth/")) {
+      const oauth = portalHost && auth?.via === "portal" ? await getMcpOAuth() : null
+      if (!oauth) return new Response("Not found", { status: 404 })
+
+      if (req.method === "GET" && url.pathname === "/oauth/consent") {
+        const rawHtml = await Bun.file(import.meta.dir + "/public/authorize.html").text()
+        // A portal session token, so only this page load can answer
+        const vars = { user: auth!.user, superuser: auth!.superuser }
+        const html = rawHtml.replace('<script>', `${portalPageScript(pageTokens.mint(auth!.sessionId!), vars)}<script>`)
+        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } })
+      }
+      if (req.method === "GET" && url.pathname === "/oauth/request") {
+        const pending = oauth.getRequest(url.searchParams.get("request") || "")
+        if (!pending || pending.decided) return Response.json({ error: "This request has expired or was already answered." }, { status: 404 })
+        const { ip } = getFingerprint(req, controlServer)
+        let redirectHost = pending.redirectUri
+        try { redirectHost = new URL(pending.redirectUri).host || pending.redirectUri } catch {}
+        return Response.json({
+          clientName: pending.clientName,
+          redirectHost,
+          expiresAt: pending.expiresAt,
+          endpoint: `https://${publicMcpFqdn()}/mcp`,
+          you: await tailnetIdentity(ip),
+          user: auth!.user,
+        }, { headers: { "Cache-Control": "no-store" } })
+      }
+      if (req.method === "POST" && url.pathname === "/oauth/decision") {
+        const body = await req.json().catch(() => ({})) as { request?: string; allow?: boolean }
+        const { ip } = getFingerprint(req, controlServer)
+        const approver = await tailnetIdentity(ip)
+        const pending = oauth.getRequest(body.request || "")
+        const result = oauth.decide(body.request || "", body.allow === true, auth!.user, approver)
+        if (!result.ok) return Response.json({ error: result.error_description }, { status: result.status })
+        auditLog(body.allow === true ? 'MCP_PUBLIC_ALLOW' : 'MCP_PUBLIC_DENY', `"${pending?.clientName ?? '?'}" as ${auth!.user} by ${approver}`, 'Portal')
+        const back = new URL(`https://${publicMcpFqdn()}/authorize/complete`)
+        back.searchParams.set("request", body.request || "")
+        back.searchParams.set("grant", result.grant)
+        return Response.json({ redirect: back.toString() })
+      }
+      return new Response("Not found", { status: 404 })
+    }
+
+    // === Bound domain auth management (the site's user or a superuser) ===
+
+    if (req.method === "POST" && url.pathname === "/auth/set") {
+      const isMcpRequest = isMCP
+
+      const { subdomain, domain, password, jwtSecret: rawJwtSecret } = await req.json() as { subdomain?: string; domain?: string; password?: string; jwtSecret?: string }
+      if ((!subdomain && !domain) || (!password && !rawJwtSecret)) {
+        return Response.json({ error: "domain (or subdomain) and a password or jwtSecret are required" }, { status: 400, headers: corsHeaders })
+      }
+      // "generate" asks the daemon for a random secret, returned once in the response
+      const generated = rawJwtSecret === "generate"
+      const jwtSecret = generated ? generateJwtSecret() : rawJwtSecret
+      if (jwtSecret !== undefined && jwtSecret.length < MIN_JWT_SECRET_LENGTH) {
+        return Response.json({ error: `The JWT secret must be at least ${MIN_JWT_SECRET_LENGTH} characters. Use "generate" for a random one.` }, { status: 400, headers: corsHeaders })
+      }
+
+      const bindingKey = resolveBindingKey(subdomain, domain)
+      if (!bindingKey) {
+        const target = domain || subdomain || '(unknown)'
+        return Response.json({ error: `No binding found for '${target}'` }, { status: 404, headers: corsHeaders })
+      }
+      const notYours = denyBinding(bindingKey)
+      if (notYours) return notYours
+
+      const ok = await setBindingAuth(bindingKey, { password: password || undefined, jwtSecret })
+      if (!ok) {
+        return Response.json({ error: `No binding found for '${bindingKey}'` }, { status: 404, headers: corsHeaders })
+      }
+      // Resync caddy to add forward_auth
+      await syncCaddy()
+      const label = domainConfig?.bindings?.[bindingKey]?.fqdn || bindingKey
+      const actor: Actor = requestActor
+      const what = [password ? 'Password' : '', jwtSecret ? 'JWT secret' : ''].filter(Boolean).join(' and ')
+      auditLog('AUTH_SET', `${what} set for ${label}`, actor)
+      const binding = domainConfig!.bindings[bindingKey]
+      const note = jwtSecret && !isApiSite(binding)
+        ? ` ${binding.serverName} isn't in API mode, so browsers still get the login page and JWTs aren't checked until it is.`
+        : ''
+      return Response.json({
+        success: true,
+        message: `${what} set for ${label}.${note}`,
+        ...(generated ? { jwtSecret } : {}),
+      }, { headers: corsHeaders })
+    }
+
+    if (req.method === "POST" && url.pathname === "/auth/clear") {
+      const isMcpRequest = isMCP
+
+      const { subdomain, domain, which } = await req.json() as { subdomain?: string; domain?: string; which?: 'password' | 'jwt' | 'all' }
+      if (!subdomain && !domain) {
+        return Response.json({ error: "domain (or subdomain) required" }, { status: 400, headers: corsHeaders })
+      }
+
+      const bindingKey = resolveBindingKey(subdomain, domain)
+      if (!bindingKey) {
+        const target = domain || subdomain || '(unknown)'
+        return Response.json({ error: `No binding found for '${target}'` }, { status: 404, headers: corsHeaders })
+      }
+      const notYours = denyBinding(bindingKey)
+      if (notYours) return notYours
+
+      const ok = await clearBindingAuth(bindingKey, which === 'password' || which === 'jwt' ? which : 'all')
+      if (!ok) {
+        return Response.json({ error: `No binding found for '${bindingKey}'` }, { status: 404, headers: corsHeaders })
+      }
+      // Invalidate all sessions for this domain
+      for (const [token, session] of authSessions) {
+        if (session.domain === bindingKey) authSessions.delete(token)
+      }
+      await syncCaddy()
+      const label = domainConfig?.bindings?.[bindingKey]?.fqdn || bindingKey
+      const actor: Actor = requestActor
+      auditLog('AUTH_CLEAR', `Password cleared for ${label}`, actor)
+      return Response.json({ success: true, message: `Password cleared for ${label}` }, { headers: corsHeaders })
+    }
+
+    // Allowlist mode for a bound domain: only listed IPs/CIDRs, Tailscale and this machine
+    if (req.method === "POST" && url.pathname === "/domains/allowlist") {
+      const isMcpRequest = isMCP
+      const body = await req.json().catch(() => ({})) as { subdomain?: string; domain?: string; enabled?: boolean; ips?: string[]; add?: string[]; remove?: string[] }
+      const bindingKey = resolveBindingKey(body.subdomain, body.domain)
+      const binding = bindingKey ? domainConfig?.bindings?.[bindingKey] : undefined
+      if (!binding) {
+        return Response.json({ error: `No binding found for '${body.domain || body.subdomain || '(unknown)'}'` }, { status: 404, headers: corsHeaders })
+      }
+      const notYours = denyBinding(bindingKey!)
+      if (notYours) return notYours
+      const entries = [...(body.ips ?? []), ...(body.add ?? [])].map(e => String(e).trim().replace(/^\[|\](?=\/|$)/g, '')).filter(Boolean)
+      const bad = entries.filter(e => !parseCidr(e))
+      if (bad.length) {
+        return Response.json({ error: `Not an IP or CIDR: ${bad.join(', ')}` }, { status: 400, headers: corsHeaders })
+      }
+      const current = binding.allowlist ?? { enabled: false, ips: [] }
+      let ips = body.ips ? [] : [...current.ips]
+      for (const e of entries) if (!ips.includes(e)) ips.push(e)
+      const removing = new Set((body.remove ?? []).map(e => String(e).trim()))
+      ips = ips.filter(e => !removing.has(e))
+      // Adding entries turns it on unless told otherwise
+      const enabled = typeof body.enabled === "boolean" ? body.enabled : (entries.length > 0 || current.enabled)
+      binding.allowlist = { enabled, ips }
+      await saveDomainConfig()
+      await syncCaddy()
+      const actor: Actor = requestActor
+      const summary = enabled ? `on (${ips.length ? ips.join(', ') : 'no extra IPs'} + Tailscale)` : 'off'
+      auditLog('ALLOWLIST', `${binding.fqdn}: ${summary}`, actor)
+      return Response.json({
+        success: true,
+        allowlist: binding.allowlist,
+        message: enabled
+          ? `${binding.fqdn} now only accepts ${ips.length ? `${ips.length} allowlisted address${ips.length === 1 ? '' : 'es'}, ` : ''}Tailscale and this machine`
+          : `${binding.fqdn} accepts any address again`,
+      }, { headers: corsHeaders })
+    }
+
+    // Mint a server-auth JWT for an API-mode domain (for scripts and testing)
+    if (req.method === "POST" && url.pathname === "/auth/token") {
+      const isMcpRequest = isMCP
+      const { subdomain, domain, ttl, jti } = await req.json().catch(() => ({})) as { subdomain?: string; domain?: string; ttl?: number; jti?: boolean | string }
+      const bindingKey = resolveBindingKey(subdomain, domain)
+      const binding = bindingKey ? domainConfig?.bindings?.[bindingKey] : undefined
+      if (!binding) {
+        return Response.json({ error: `No binding found for '${domain || subdomain || '(unknown)'}'` }, { status: 404, headers: corsHeaders })
+      }
+      if (!binding.auth?.jwtSecret) {
+        return Response.json({ error: `${binding.fqdn} has no JWT secret. Set one first.` }, { status: 400, headers: corsHeaders })
+      }
+      // Only the site's own user (or a superuser) may mint tokens for it
+      const notYours = denyBinding(bindingKey!)
+      if (notYours) return notYours
+      const lifetime = Math.min(Math.max(Math.floor(Number(ttl) || 600), 1), MAX_TOKEN_LIFETIME_S)
+      const now = Math.floor(Date.now() / 1000)
+      const claims: Record<string, unknown> = { aud: JWT_AUDIENCE, sub: `${binding.serverName}.candy`, iat: now, nbf: now, exp: now + lifetime }
+      if (jti) claims.jti = typeof jti === "string" ? jti : crypto.randomUUID()
+      auditLog('AUTH_TOKEN', `Token minted for ${binding.fqdn} (${lifetime}s${claims.jti ? ', single use' : ''})`, isMcpRequest ? 'AI' : 'Portal')
+      return Response.json({ token: signJwt(claims, binding.auth.jwtSecret), claims }, { headers: corsHeaders })
+    }
+
+    if (req.method === "GET" && url.pathname === "/auth/status") {
+      const domains: Record<string, any> = {}
+      if (domainConfig?.bindings) {
+        for (const [sub, binding] of Object.entries(domainConfig.bindings)) {
+          if (!mayChangeName(auth, binding.serverName)) continue
+          const sessionCount = [...authSessions.values()].filter(s => s.domain === sub).length
+          domains[sub] = {
+            fqdn: binding.fqdn,
+            serverName: binding.serverName,
+            authEnabled: !!binding.auth?.enabled,
+            hasPassword: !!binding.auth?.password,
+            hasJwtSecret: !!binding.auth?.jwtSecret,
+            apiMode: isApiSite(binding),
+            activeSessions: sessionCount,
+          }
+        }
+      }
+      return Response.json({ domains }, { headers: corsHeaders })
+    }
+
+    // === Page token refresh: only for a chain minted for this login ===
+    if (req.method === "POST" && url.pathname === "/token") {
+      const body = await req.json().catch(() => ({})) as { token?: string }
+      const newToken = pageTokens.refresh(body.token, auth?.sessionId)
+      if (!newToken) {
+        return Response.json({ error: "Invalid token. Session expired." }, { status: 401, headers: corsHeaders })
+      }
+      return Response.json({ token: newToken }, { headers: corsHeaders })
+    }
+
+    // === MCP Auth Endpoint (exchange bootstrap secret for API key) ===
+    if (req.method === "POST" && url.pathname === "/mcp/auth") {
+      const body = await req.json().catch(() => ({})) as { secret?: string }
+      const auth = exchangeMcpSecret(body.secret ?? "")
+      if (!auth) {
+        return Response.json({ error: "Invalid secret" }, { status: 401, headers: corsHeaders })
+      }
+      auditLog('MCP_AUTH', `Client authenticated as ${auth.user}`, 'AI')
+      return Response.json({ apiKey: auth.apiKey, user: auth.user }, { headers: corsHeaders })
+    }
+
+    // === Functions API ===
+    // Request logs hold request data: never on a site's host (siteHost never gets here)
+    if (url.pathname.startsWith("/fn/")) {
+      return await handleFnApi(req, url, corsHeaders, controlServer, auth!)
     }
 
     // === SDK API ===
-    // Always needs an API key: requests on a bound domain's host skip the
-    // token check above, and must not reach these from the internet.
-    if (url.pathname.startsWith("/sdk/") && !isMCP) {
+    // Always an API key (from inside a server candy started), never a portal login
+    if (url.pathname.startsWith("/sdk/") && auth?.via !== "apikey") {
       return unauthorizedResponse(corsHeaders)
     }
 
@@ -5326,7 +5947,7 @@ const controlServer = Bun.serve({
       }
 
       const managed = await resolveManagedRuntime(configId, pid)
-      if (!managed) {
+      if (!managed || !mayChangeConfig(auth, managed.config)) {
         return Response.json({ error: "No running candy runtime found for that configId." }, { status: 404, headers: corsHeaders })
       }
 
@@ -5359,6 +5980,8 @@ const controlServer = Bun.serve({
       if (!Number.isInteger(port) || port < 1 || port > 65535) {
         return Response.json({ error: msg.notANumber, details: String(port) }, { status: 400, headers: corsHeaders })
       }
+      const refusal = nameInUse(name) ? null : newNameRefusal(name)
+      if (refusal) return Response.json({ error: refusal, details: name }, { status: 403, headers: corsHeaders })
 
       if (!await isPidRunning(pid)) {
         return Response.json({ error: `PID ${pid} is not running.` }, { status: 400, headers: corsHeaders })
@@ -5367,6 +5990,8 @@ const controlServer = Bun.serve({
       if (serverConfigs.has(name)) {
         return Response.json({ error: `Namespace '${name}' belongs to a managed candy server.` }, { status: 409, headers: corsHeaders })
       }
+      const boundElsewhere = boundToSomeoneElse(name, auth)
+      if (boundElsewhere) return Response.json({ error: boundElsewhere }, { status: 409, headers: corsHeaders })
 
       const existingOwner = pidOwnedRoutes.get(name)
       if (existingOwner && existingOwner.pid !== pid) {
@@ -5392,10 +6017,11 @@ const controlServer = Bun.serve({
 
       routes.set(name, { target: port, persistent: persistent === true })
       claimPidOwnedRoute(name, pid)
+      await setRouteUser(name, auth!.user)
       await syncCaddy()
       if (persistent === true) await savePersistentRoutes()
 
-      log("ADD", `${name}.localhost -> :${port} (pid ${pid})`)
+      log("ADD", `${name}.localhost -> :${port} (pid ${pid})`, name)
       return Response.json({
         success: true,
         name,
@@ -5410,14 +6036,14 @@ const controlServer = Bun.serve({
 
       if (configId) {
         const managed = await resolveManagedRuntime(configId, pid)
-        if (!managed) {
+        if (!managed || !mayChangeConfig(auth, managed.config)) {
           return Response.json({ error: "That candy runtime is not active." }, { status: 404, headers: corsHeaders })
         }
         if (!managed.port) {
           return Response.json({ error: `Server '${managed.name}' is running but has no detected port yet.` }, { status: 400, headers: corsHeaders })
         }
 
-        const result = await openPortalForName({ name: managed.name, port: managed.port })
+        const result = await openPortalForName({ name: managed.name, port: managed.port, user: auth!.user })
         return Response.json(result.body, { status: result.ok ? 200 : result.status, headers: corsHeaders })
       }
 
@@ -5426,11 +6052,11 @@ const controlServer = Bun.serve({
       }
 
       const port = await getPidOwnedRoutePort(name, pid)
-      if (!port) {
+      if (!port || !mayUse(name)) {
         return Response.json({ error: `PID ${pid} does not own '${name}'.` }, { status: 403, headers: corsHeaders })
       }
 
-      const result = await openPortalForName({ name, port })
+      const result = await openPortalForName({ name, port, user: auth!.user })
       return Response.json(result.body, { status: result.ok ? 200 : result.status, headers: corsHeaders })
     }
 
@@ -5448,7 +6074,7 @@ const controlServer = Bun.serve({
       if (!managed) {
         return Response.json({ error: "No running candy server owns that process." }, { status: 404, headers: corsHeaders })
       }
-      if (!mayChangeConfig(requestUser(req), managed.config)) {
+      if (!mayChangeConfig(auth, managed.config)) {
         return Response.json({ error: "That server belongs to another user." }, { status: 403, headers: corsHeaders })
       }
 
@@ -5506,6 +6132,15 @@ const controlServer = Bun.serve({
       if (fnConfigOf(name)) {
         return Response.json({ error: `'${name}' is a function; it has no port to route to.`, details: name }, { status: 409, headers: corsHeaders })
       }
+      const boundElsewhere = boundToSomeoneElse(name, auth)
+      if (boundElsewhere) return Response.json({ error: boundElsewhere, details: name }, { status: 409, headers: corsHeaders })
+      if (typeof body.target === "string" && /^https?:\/\//.test(body.target) && !isCaddyUpstream(body.target, ownAddresses())) {
+        return Response.json({ error: "The address must be http(s)://host[:port], without a path, and not this machine (use a port for a local server).", details: body.target }, { status: 400, headers: corsHeaders })
+      }
+      const wasInUse = nameInUse(name)
+      if (wasInUse && !mayUse(name)) return notYoursResponse(name, "route it")
+      const refusal = wasInUse ? null : newNameRefusal(name)
+      if (refusal) return Response.json({ error: refusal, details: name }, { status: 403, headers: corsHeaders })
       const isRestricted = body.target && (body.target.startsWith("http://") || body.target.startsWith("https://"))
       if (!isRestricted && (!Number.isInteger(body.port) || body.port! < 1 || body.port! > 65535)) {
         return Response.json({ error: "A route needs a port (1-65535) or an http(s) address.", details: String(body.port ?? body.target ?? "") }, { status: 400, headers: corsHeaders })
@@ -5523,24 +6158,26 @@ const controlServer = Bun.serve({
       const persistent = body.persistent === true
       routes.set(name, { target: routeTarget, persistent })
       releasePidOwnedRoute(name)
+      if (!wasInUse) await setRouteUser(name, auth!.user)
       await syncCaddy()
       if (persistent) await savePersistentRoutes()
 
-      log("ADD", `${name}.localhost -> ${isRestricted ? routeTarget : ":" + routeTarget}`)
+      log("ADD", `${name}.localhost -> ${isRestricted ? routeTarget : ":" + routeTarget}`, name)
       return Response.json({ domain: `${name}.localhost`, status: "registered", message: "Route added" }, { headers: corsHeaders })
     }
 
     if (req.method === "DELETE" && url.pathname.startsWith("/register/")) {
-      const name = url.pathname.split("/")[2]
+      const name = lowerName(url.pathname.split("/")[2])
       if (isReserved(name)) {
         return Response.json({ error: isSafeName(name) ? "That name is reserved." : "Names can only use letters, numbers, dashes, underscores and dots.", details: name }, { status: isSafeName(name) ? 403 : 400, headers: corsHeaders })
       }
       if (!routes.has(name)) {
         return Response.json({ error: msg.notFound, details: name }, { status: 404, headers: corsHeaders })
       }
+      if (!mayUse(name)) return notYoursResponse(name, "remove it")
 
       // Also stop the associated process if running
-      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      const actor = requestActor
       const proc = processes.get(name)
       if (proc && (proc.status === 'running' || proc.status === 'starting')) {
         await stopProcess(name, actor)
@@ -5549,11 +6186,12 @@ const controlServer = Bun.serve({
       const wasRoute = routes.get(name)
       routes.delete(name)
       releasePidOwnedRoute(name)
+      if (!serverConfigs.has(name)) await setRouteUser(name, null)
       await forgetLanPublishedIfGone(name)
       await syncCaddy()
       if (wasRoute?.persistent) await savePersistentRoutes()
       const m = msg.removed
-      log("REMOVE", `${name}.localhost`)
+      log("REMOVE", `${name}.localhost`, name)
       return Response.json({ status: "removed", message: m }, { headers: corsHeaders })
     }
 
@@ -5563,8 +6201,16 @@ const controlServer = Bun.serve({
       if (isReserved(oldName) || isReserved(newName)) {
         return Response.json({ error: "That name is reserved.", details: "portal" }, { status: 403, headers: corsHeaders })
       }
+      const refusal = nameInUse(newName) ? null : newNameRefusal(newName)
+      if (refusal) return Response.json({ error: refusal, details: newName }, { status: 403, headers: corsHeaders })
       if (!routes.has(oldName)) {
         return Response.json({ error: msg.notFound, details: oldName }, { status: 404, headers: corsHeaders })
+      }
+      if (!mayUse(oldName)) return notYoursResponse(oldName, "rename it")
+      const boundElsewhere = boundToSomeoneElse(newName, auth)
+      if (boundElsewhere) return Response.json({ error: boundElsewhere, details: newName }, { status: 409, headers: corsHeaders })
+      if (serverConfigs.has(newName) || processes.has(newName)) {
+        return Response.json({ error: `A site named '${newName}' already exists.`, details: newName }, { status: 409, headers: corsHeaders })
       }
       if (fnConfigOf(oldName) || fnConfigOf(newName)) {
         return Response.json({ error: "Functions can't be renamed. Add it under the new name and remove the old one." }, { status: 409, headers: corsHeaders })
@@ -5574,8 +6220,11 @@ const controlServer = Bun.serve({
       }
 
       const routeData = routes.get(oldName)!
+      const routeUser = nameOwner(oldName)
       routes.delete(oldName)
       routes.set(newName, routeData)
+      if (!serverConfigs.has(oldName)) await setRouteUser(oldName, null)
+      await setRouteUser(newName, routeUser)
       if (routeData.persistent) await savePersistentRoutes()
 
       const routeOwner = pidOwnedRoutes.get(oldName)
@@ -5608,14 +6257,14 @@ const controlServer = Bun.serve({
 
       await syncCaddy()
       const m = msg.launder
-      log("RENAME", `${oldName} -> ${newName}`)
+      log("RENAME", `${oldName} -> ${newName}`, newName)
       return Response.json({ status: "renamed", oldName, newName, message: m }, { headers: corsHeaders })
     }
 
     if (req.method === "GET" && url.pathname === "/routes") {
       const routeList: Record<string, { target: RouteTarget, isRestricted: boolean, persistent: boolean, lan: boolean, lanHttps: string | null, tsServe: string | null }> = {}
       for (const [name, route] of routes) {
-        if (isReserved(name)) continue  // hide reserved
+        if (isReserved(name) || !mayUse(name)) continue  // hide reserved, and other users' routes
         routeList[name] = {
           target: route.target,
           isRestricted: typeof route.target === "string",
@@ -5632,16 +6281,16 @@ const controlServer = Bun.serve({
 
     if (req.method === "GET" && url.pathname === "/lan") {
       const names = [...new Set([...routes.keys(), ...serverConfigs.keys()])]
-        .filter(name => !isReserved(name))
+        .filter(name => !isReserved(name) && mayUse(name))
         .sort((a, b) => a.localeCompare(b))
       return Response.json({
         lanIp,
         tailnetHost: getTailnetHostname(),
-        published: [...lanPublished].sort(),
+        published: [...lanPublished].filter(mayUse).sort(),
         names: Object.fromEntries(names.map(name => [name, isLanPublished(name)])),
         https: Object.fromEntries([
-          ...[...lanHttps].map(([name, port]) => [name, { mode: "tailscale", port, url: lanHttpsUrl(name) }]),
-          ...[...lanDomainHttps].map(name => [name, { mode: "domain", port: null, url: lanHttpsUrl(name) }]),
+          ...[...lanHttps].filter(([name]) => mayUse(name)).map(([name, port]) => [name, { mode: "tailscale", port, url: lanHttpsUrl(name) }]),
+          ...[...lanDomainHttps].filter(mayUse).map(name => [name, { mode: "domain", port: null, url: lanHttpsUrl(name) }]),
         ]),
       }, { headers: corsHeaders })
     }
@@ -5650,7 +6299,7 @@ const controlServer = Bun.serve({
       if (req.method === "GET") {
         return Response.json({
           tailnetHost: getTailnetHostname(),
-          serves: Object.fromEntries([...tsServes].map(([name, port]) => [name, { port, url: tsServeUrl(name), entryPort: entryPorts.get(name) ?? null }])),
+          serves: Object.fromEntries([...tsServes].filter(([name]) => mayUse(name)).map(([name, port]) => [name, { port, url: tsServeUrl(name), entryPort: entryPorts.get(name) ?? null }])),
         }, { headers: corsHeaders })
       }
       if (req.method === "POST") {
@@ -5658,11 +6307,7 @@ const controlServer = Bun.serve({
         const name = typeof body.name === "string" ? body.name.trim().toLowerCase() : ""
         if (!name || isReserved(name)) return Response.json({ error: "A valid name is required." }, { status: 400, headers: corsHeaders })
         if (!routes.has(name) && !serverConfigs.has(name)) return Response.json({ error: msg.notFound, details: name }, { status: 404, headers: corsHeaders })
-        const cfg = getConfigsForName(name)[0]
-        if (cfg && !mayChangeConfig(requestUser(req), cfg)) {
-          return Response.json({ error: `${name} runs as ${configUser(cfg)}. Only they can change it.` }, { status: 403, headers: corsHeaders })
-        }
-        const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+        const actor = requestActor
         const result = await setTsServe(name, body.port === null || body.port === undefined ? null : Number(body.port), actor)
         if (!result.ok) return Response.json({ error: result.error }, { status: 409, headers: corsHeaders })
         return Response.json({ name, port: tsServes.get(name) ?? null, url: result.url, entryPort: entryPorts.get(name) ?? null }, { headers: corsHeaders })
@@ -5671,18 +6316,15 @@ const controlServer = Bun.serve({
 
     if (url.pathname === "/routes/entry") {
       if (req.method === "GET") {
-        return Response.json({ entries: Object.fromEntries(entryPorts) }, { headers: corsHeaders })
+        return Response.json({ entries: Object.fromEntries([...entryPorts].filter(([name]) => mayUse(name))) }, { headers: corsHeaders })
       }
       if (req.method === "POST") {
         const body = await req.json().catch(() => ({})) as { name?: string; port?: number | null }
         const name = typeof body.name === "string" ? body.name.trim().toLowerCase() : ""
         if (!name || isReserved(name)) return Response.json({ error: "A valid name is required." }, { status: 400, headers: corsHeaders })
         if (!routes.has(name) && !serverConfigs.has(name)) return Response.json({ error: msg.notFound, details: name }, { status: 404, headers: corsHeaders })
-        const cfg = getConfigsForName(name)[0]
-        if (cfg && !mayChangeConfig(requestUser(req), cfg)) {
-          return Response.json({ error: `${name} runs as ${configUser(cfg)}. Only they can change it.` }, { status: 403, headers: corsHeaders })
-        }
-        const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+        if (!mayUse(name)) return notYoursResponse(name)
+        const actor = requestActor
         if (body.port === null || body.port === undefined) {
           if (entryPorts.delete(name)) {
             await saveEntryPorts()
@@ -5702,10 +6344,8 @@ const controlServer = Bun.serve({
       }
     }
 
+    // Superuser only (ROUTE_TABLE)
     if (url.pathname === "/lan/adguard") {
-      if (requestUser(req) !== OWNER) {
-        return Response.json({ error: "Only the owner can change the AdGuard Home link." }, { status: 403, headers: corsHeaders })
-      }
       if (req.method === "GET") return Response.json(adguardStatus(), { headers: corsHeaders })
       if (req.method === "POST") {
         const body = await req.json().catch(() => ({})) as Record<string, unknown>
@@ -5803,7 +6443,7 @@ const controlServer = Bun.serve({
           // Same URL on the tailnet: tailscale serve on the same port, through candy.
           // Best effort; a port tailscale already serves for something else is left alone.
           if (tsServes.get(key) !== port) {
-            const served = await setTsServe(key, port, (req.headers.get('X-Candy-Actor') as Actor) || 'Portal')
+            const served = await setTsServe(key, port, requestActor)
             if (!served.ok) auditLog('TS_SERVE_SKIP', `${key} :${port}: ${served.error}`, 'System')
           }
         }
@@ -5813,7 +6453,7 @@ const controlServer = Bun.serve({
         httpsChange = "off"
       }
 
-      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      const actor = requestActor
       const wasPublished = isLanPublished(name)
       await setLanPublished(name, publish, actor)
       if (httpsChange && publish) {
@@ -5825,7 +6465,7 @@ const controlServer = Bun.serve({
         auditLog(httpsChange === "on" ? 'LAN_HTTPS_ON' : 'LAN_HTTPS_OFF', `${key}${httpsChange === "on" ? ` -> ${lanHttpsUrl(key)}` : ''}`, actor)
       }
       const httpsUrl = isLanPublished(name) ? lanHttpsUrl(name) : null
-      log(publish ? "LAN" : "UNLAN", `${name}.candy${publish && lanIp ? ` -> ${lanIp}` : ""}${httpsUrl ? ` + ${httpsUrl}` : ""}`)
+      log(publish ? "LAN" : "UNLAN", `${name}.candy${publish && lanIp ? ` -> ${lanIp}` : ""}${httpsUrl ? ` + ${httpsUrl}` : ""}`, name)
       return Response.json({
         name,
         domain: `${name}.candy`,
@@ -5859,8 +6499,12 @@ const controlServer = Bun.serve({
       if (!port) {
         return Response.json({ error: "Port is required" }, { status: 400, headers: corsHeaders })
       }
+      // A tunnel puts a site on the internet: only your own, or a port nobody else's site uses
+      if (name && nameInUse(name) && !mayUse(name)) return notYoursResponse(name, "open a tunnel to it")
+      const portUser = portUsers(port).find(n => !mayUse(n))
+      if (portUser) return notYoursResponse(portUser, "open a tunnel to it")
 
-      const result = await openPortalForName({ name, port, openBrowser })
+      const result = await openPortalForName({ name, port, openBrowser, user: auth!.user })
       return Response.json(result.body, { status: result.ok ? 200 : result.status, headers: corsHeaders })
     }
 
@@ -5870,8 +6514,9 @@ const controlServer = Bun.serve({
       const batchTargets: { name: string, port: number }[] = []
 
       if (!targets || targets.length === 0) {
+        // Everything you may open: your own routes (a superuser's: all of them)
         for (const [name, route] of routes) {
-          if (typeof route.target !== "number") continue
+          if (typeof route.target !== "number" || !mayUse(name)) continue
           if (!portals.has(name)) batchTargets.push({ name, port: route.target as number })
         }
         if (batchTargets.length === 0) {
@@ -5881,6 +6526,7 @@ const controlServer = Bun.serve({
         for (const arg of targets) {
           if (typeof arg === "number") {
             const port = arg
+            if (portUsers(port).some(n => !mayUse(n))) continue
             const existingPortal = [...portals.entries()].find(([, p]) => p.port === port)
             if (existingPortal || batchTargets.some(t => t.port === port)) continue
             let anonCounter = 1
@@ -5888,7 +6534,7 @@ const controlServer = Bun.serve({
             batchTargets.push({ name: `anon-${anonCounter}`, port })
           } else {
             const routeData = routes.get(arg)
-            if (!routeData || typeof routeData.target !== "number") continue
+            if (!routeData || typeof routeData.target !== "number" || !mayUse(arg)) continue
             if (portals.has(arg)) continue
             const routePort = routeData.target as number
             const existingPortal = [...portals.entries()].find(([, p]) => p.port === routePort)
@@ -5934,9 +6580,10 @@ const controlServer = Bun.serve({
         if (url && portal) {
           portal.url = url
           portal.pid = pid
+          if (!nameInUse(name)) await setRouteUser(name, auth!.user)  // anon-N: a port, no route
           // Track tunnel -> server mapping for stats history
           tunnelHistory.set(url.replace('https://', ''), name)
-          log("PORTAL", `${name} -> ${url}`)
+          log("PORTAL", `${name} -> ${url}`, name)
           successResults.push({ name, port, url })
         } else {
           portals.delete(name)
@@ -5953,6 +6600,7 @@ const controlServer = Bun.serve({
     if (req.method === "GET" && url.pathname === "/portals") {
       const portalList: Record<string, { port: number, url?: string }> = {}
       for (const [name, { port, url }] of portals) {
+        if (!mayUse(name)) continue
         portalList[name] = url ? { port, url } : { port }
       }
       return Response.json(portalList, { headers: corsHeaders })
@@ -5960,9 +6608,9 @@ const controlServer = Bun.serve({
 
     // Get single portal status (for polling from portaling.html)
     if (req.method === "GET" && url.pathname.startsWith("/portal/status/")) {
-      const name = url.pathname.split("/")[3]
+      const name = lowerName(url.pathname.split("/")[3])
       const portal = portals.get(name)
-      if (!portal) {
+      if (!portal || !mayUse(name)) {
         return Response.json({ exists: false }, { headers: corsHeaders })
       }
       return Response.json({
@@ -5974,12 +6622,13 @@ const controlServer = Bun.serve({
     }
 
     if (req.method === "POST" && url.pathname.startsWith("/portal/close/")) {
-      const name = url.pathname.split("/")[3]
+      const name = lowerName(url.pathname.split("/")[3])
       const toClose = portals.get(name)
 
       if (!toClose) {
         return Response.json({ error: msg.notFound, details: `portal: ${name}` }, { status: 404, headers: corsHeaders })
       }
+      if (!mayUse(name)) return notYoursResponse(name, "close its tunnel")
 
       if (toClose.proc) {
         try { toClose.proc.kill() } catch {}
@@ -5987,10 +6636,11 @@ const controlServer = Bun.serve({
         await terminateProcessTree(toClose.pid, 3000)
       }
       portals.delete(name)
+      if (!nameInUse(name)) await setRouteUser(name, null)
       await syncCaddy()
 
       const m = msg.portalClosed
-      log("CLOSE", name)
+      log("CLOSE", name, name)
       return Response.json({ status: "closed", name, message: m }, { headers: corsHeaders })
     }
 
@@ -5998,22 +6648,25 @@ const controlServer = Bun.serve({
 
     if (req.method === "GET" && url.pathname === "/logs") {
       const count = parseInt(url.searchParams.get("count") || "20")
+      // Entries about your own sites; daemon-wide ones (no name) for superusers
+      const visible = auth!.superuser ? activityLog : activityLog.filter(e => e.name !== undefined && mayUse(e.name))
       return Response.json({
-        logs: activityLog.slice(-count).map(e => ({
+        logs: visible.slice(-count).map(e => ({
           time: e.time.toISOString(),
           action: e.action,
           details: e.details
         })),
-        total: activityLog.length
+        total: visible.length
       }, { headers: corsHeaders })
     }
 
     // Process logs: /logs/:name?mode=tail|head|search&lines=50&pattern=error&context=2
     if (req.method === "GET" && url.pathname.startsWith("/logs/")) {
-      const name = url.pathname.slice(6) // strip "/logs/"
+      const name = lowerName(url.pathname.slice(6)) // strip "/logs/"
       if (!name) {
         return Response.json({ error: "Missing process name" }, { status: 400, headers: corsHeaders })
       }
+      if (!mayReadLog(name)) return notYoursResponse(name, "read its log")
       const mode = (url.searchParams.get("mode") || "tail") as 'tail' | 'head' | 'search'
       const lines = parseInt(url.searchParams.get("lines") || "50")
       const pattern = url.searchParams.get("pattern") || undefined
@@ -6028,7 +6681,7 @@ const controlServer = Bun.serve({
 
     if (req.method === "GET" && url.pathname === "/stats") {
       const caddyHits = await getCaddyStats()
-      const totalReqs = [...caddyHits.values()].reduce((a, b) => a + b.total, 0)
+      const totalReqs = [...caddyHits].filter(([d]) => auth!.superuser || mayUse(tunnelHistory.get(d) ?? d)).reduce((a, [, b]) => a + b.total, 0)
       const sessionStart = activityLog[0]?.time || new Date()
 
       // Use tunnelHistory for tunnel -> server mapping (includes dead tunnels)
@@ -6038,10 +6691,11 @@ const controlServer = Bun.serve({
       const domainsMap = new Map<string, { name: string, total: number, alive: boolean, children: { name: string, url: string, total: number, alive: boolean }[] }>()
 
       for (const [domain, { total }] of caddyHits) {
-        // Skip reserved names (portal, kill, etc)
+        // Skip reserved names (portal, kill, etc), and other users' sites
         if (isReserved(domain)) continue
 
         const serverName = tunnelToServer.get(domain)
+        if (!mayUse(serverName ?? domain)) continue
         if (serverName) {
           // This is a tunnel domain - add as child
           if (!domainsMap.has(serverName)) {
@@ -6091,7 +6745,8 @@ const controlServer = Bun.serve({
     }
 
     if (req.method === "GET" && url.pathname.startsWith("/traffic/")) {
-      const domain = url.pathname.split("/")[2]
+      const domain = lowerName(url.pathname.split("/")[2])
+      if (!mayUse(tunnelHistory.get(domain) ?? domain)) return notYoursResponse(domain, "see its traffic")
       const count = parseInt(url.searchParams.get("count") || "20")
       const logs = await getTrafficLogs(domain, count)
 
@@ -6105,10 +6760,12 @@ const controlServer = Bun.serve({
     // === Status & Control ===
 
     if (req.method === "GET" && url.pathname === "/users") {
-      const accounts = await runAsUsers()
+      // Running as another account is for superusers; everyone else sees only themselves
+      const accounts = (await runAsUsers()).filter(a => auth!.superuser || a.name === auth!.user)
       return Response.json({
         owner: OWNER,
-        you: requestUser(req),
+        you: auth!.user,
+        superuser: auth!.superuser,
         multiUser: RUNNING_AS_ROOT,
         users: accounts.map(a => ({ name: a.name, home: a.home })),
       }, { headers: corsHeaders })
@@ -6128,10 +6785,7 @@ const controlServer = Bun.serve({
     }
 
     if (req.method === "POST" && url.pathname === "/shutdown") {
-      if (RUNNING_AS_ROOT && requestUser(req) !== OWNER) {
-        return Response.json({ error: `Only ${OWNER} can do that.` }, { status: 403, headers: corsHeaders })
-      }
-      const m = msg.exit
+      const m = msg.exit  // superuser only (ROUTE_TABLE)
       setTimeout(async () => {
         await cleanup()
         process.exit(0)
@@ -6144,6 +6798,7 @@ const controlServer = Bun.serve({
     if (req.method === "GET" && url.pathname === "/processes") {
       const processList: Record<string, any> = {}
       for (const [name, proc] of processes) {
+        if (!mayUse(name)) continue
         processList[name] = {
           status: proc.status,
           port: proc.port,
@@ -6161,14 +6816,14 @@ const controlServer = Bun.serve({
 
     // Functions have no process of their own: start warms the hot instances,
     // stop and restart send every instance DRAIN
-    if (req.method === "POST" && /^\/process\/(start|stop|restart)\//.test(url.pathname) && fnConfigOf(url.pathname.split("/")[3])) {
-      const name = url.pathname.split("/")[3]
+    if (req.method === "POST" && /^\/process\/(start|stop|restart)\//.test(url.pathname) && fnConfigOf(lowerName(url.pathname.split("/")[3]))) {
+      const name = lowerName(url.pathname.split("/")[3])
       const op = url.pathname.split("/")[2]
       const config = fnConfigOf(name)!
-      if (!mayChangeConfig(requestUser(req), config)) {
+      if (!mayChangeConfig(auth, config)) {
         return Response.json({ success: false, error: `${name} runs as ${configUser(config)}. Only they can change it.` }, { status: 403, headers: corsHeaders })
       }
-      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      const actor = requestActor
       if (op === "stop") await fnRuntimes.get(name)?.stop()
       else if (op === "start") await warmFn(name)  // never disturbs instances that are serving
       else await restartFn(name)
@@ -6181,20 +6836,24 @@ const controlServer = Bun.serve({
     }
 
     if (req.method === "POST" && url.pathname.startsWith("/process/start/")) {
-      const name = url.pathname.split("/")[3]
+      const name = lowerName(url.pathname.split("/")[3])
       if (!serverConfigs.has(name)) {
         return Response.json({ success: false, error: `No config for server: ${name}` }, { status: 404, headers: corsHeaders })
       }
+      if (!mayUse(name)) return notYoursResponse(name, "start it")
       try {
-        const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+        const actor = requestActor
         const body = await req.json().catch(() => ({})) as { configId?: string }
-        const requestedConfigId = body?.configId
+        // A site page only starts what's stopped, and never picks (or switches) the variant
+        const requestedConfigId = pageHost !== null ? undefined : body?.configId
         const configs = getConfigsForName(name)
         if (configs.length > 1 && !requestedConfigId) {
           return Response.json({
             success: false,
-            error: `Multiple configs found for ${name}. Choose a configId.`,
-            configs: configs.map(c => ({ id: c.id, cwd: c.cwd, cmd: c.cmd }))
+            error: pageHost !== null
+              ? `${name} has several start commands. Pick one in the portal.`
+              : `Multiple configs found for ${name}. Choose a configId.`,
+            configs: pageHost !== null ? undefined : configs.map(c => ({ id: c.id, cwd: c.cwd, cmd: c.cmd }))
           }, { status: 409, headers: corsHeaders })
         }
         const existing = processes.get(name)
@@ -6241,15 +6900,22 @@ const controlServer = Bun.serve({
     }
 
     if (req.method === "POST" && url.pathname.startsWith("/process/stop/")) {
-      const name = url.pathname.split("/")[3]
-      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      const name = lowerName(url.pathname.split("/")[3])
+      if (!mayUse(name)) return notYoursResponse(name, "stop it")
+      const actor = requestActor
       const success = await stopProcess(name, actor)
       return Response.json({ success }, { headers: corsHeaders })
     }
 
     if (req.method === "POST" && url.pathname.startsWith("/process/restart/")) {
-      const name = url.pathname.split("/")[3]
-      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      const name = lowerName(url.pathname.split("/")[3])
+      if (!mayUse(name)) return notYoursResponse(name, "restart it")
+      // A site page restarts only a site that has crashed or exited, never a running one
+      const status = processes.get(name)?.status
+      if (pageHost !== null && status !== 'errored' && status !== 'dead') {
+        return Response.json({ success: false, error: `${name} is ${status ?? "not started"}; restart it from the portal.` }, { status: 409, headers: corsHeaders })
+      }
+      const actor = requestActor
       scheduleRestart(name, actor)
       const proc = processes.get(name)
       return Response.json({
@@ -6266,9 +6932,11 @@ const controlServer = Bun.serve({
     }
 
     if (req.method === "POST" && url.pathname.startsWith("/process/port/")) {
-      const name = url.pathname.split("/")[3]
+      const name = lowerName(url.pathname.split("/")[3])
+      // Never from a site page (siteAction doesn't allow it either): the portal or an API key only
+      if (pageHost !== null || !mayUse(name)) return notYoursResponse(name)
       const { port } = await req.json() as { port: number }
-      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      const actor = requestActor
       if (!Number.isInteger(port) || port < 1 || port > 65535) {
         return Response.json({ success: false, error: "The port must be a number from 1 to 65535." }, { status: 400, headers: corsHeaders })
       }
@@ -6289,7 +6957,7 @@ const controlServer = Bun.serve({
 
     // Send input to process PTY (interactive terminal input)
     if (req.method === "POST" && url.pathname.startsWith("/process/input/")) {
-      const name = url.pathname.split("/")[3]
+      const name = lowerName(url.pathname.split("/")[3])
       const managed = processes.get(name)
       if (!managed) {
         return Response.json({ success: false, error: `Process not found: ${name}` }, { status: 404, headers: corsHeaders })
@@ -6297,8 +6965,8 @@ const controlServer = Bun.serve({
       if (!managed.terminal) {
         return Response.json({ success: false, error: `Process has no active terminal: ${name}` }, { status: 400, headers: corsHeaders })
       }
-      // Typing into a terminal runs commands as its user, so only that user may
-      if (RUNNING_AS_ROOT && requestUser(req) !== configUser(managed.config)) {
+      // Typing into a terminal runs commands as its user: that user (or a superuser), never a site page
+      if (pageHost !== null || !mayChangeConfig(auth, managed.config)) {
         return Response.json({ success: false, error: `${name} runs as ${configUser(managed.config)}. Only they can type into it.` }, { status: 403, headers: corsHeaders })
       }
 
@@ -6307,7 +6975,7 @@ const controlServer = Bun.serve({
       // Support both raw input and special keys
       if (input !== undefined) {
         managed.terminal.write(input)
-        const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'AI'
+        const actor = requestActor
         auditLog('PTY_INPUT', `${name}: ${input.length} chars`, actor)
       } else if (key) {
         // Handle special keys: enter, ctrl+c, ctrl+d, etc.
@@ -6330,7 +6998,7 @@ const controlServer = Bun.serve({
         const keyCode = keyMap[key.toLowerCase()]
         if (keyCode) {
           managed.terminal.write(keyCode)
-          const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'AI'
+          const actor = requestActor
           auditLog('PTY_KEY', `${name}: ${key}`, actor)
         } else {
           return Response.json({ success: false, error: `Unknown key: ${key}` }, { status: 400, headers: corsHeaders })
@@ -6347,7 +7015,7 @@ const controlServer = Bun.serve({
     if (req.method === "GET" && url.pathname === "/configs") {
       const configs: Record<string, any> = {}
       for (const [name, entries] of serverConfigs) {
-        if (entries.length === 0) continue
+        if (entries.length === 0 || !mayUse(name)) continue
         const first = entries[0]
         configs[name] = {
           id: first.id,
@@ -6375,12 +7043,14 @@ const controlServer = Bun.serve({
       if (isReserved(name)) {
         return Response.json({ error: isSafeName(name) ? "That name is reserved." : "Names can only use letters, numbers, dashes, underscores and dots.", details: name }, { status: isSafeName(name) ? 403 : 400, headers: corsHeaders })
       }
-      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
-      // Run as yourself, or (owner only) as another member of the candy group
-      const requester = requestUser(req)
+      const refusal = nameInUse(name) ? null : newNameRefusal(name)
+      if (refusal) return Response.json({ error: refusal, details: name }, { status: 403, headers: corsHeaders })
+      const actor = requestActor
+      // Run as yourself, or (a superuser logged in to the portal only) as another member of the candy group
+      const requester = auth!.user
       let user = requester
       if (runAs && runAs !== requester) {
-        if (!RUNNING_AS_ROOT || requester !== OWNER) {
+        if (!RUNNING_AS_ROOT || !auth!.superuser) {
           return Response.json({ error: `You can only add sites that run as ${requester}.` }, { status: 403, headers: corsHeaders })
         }
         if (!(await runAsUsers()).some(u => u.name === runAs)) {
@@ -6397,7 +7067,7 @@ const controlServer = Bun.serve({
       if (fnConfigOf(name)) {
         return Response.json({ error: `'${name}' is a function. Remove it first or pick another name.` }, { status: 409, headers: corsHeaders })
       }
-      const taken = nameTakenWithoutConfig(name, requester)
+      const taken = nameTakenWithoutConfig(name, auth!)
       if (taken) return Response.json({ error: taken }, { status: 409, headers: corsHeaders })
       if (envFile !== undefined && envFile !== null) {
         const problem = await envFileProblem(user, String(envFile))
@@ -6421,15 +7091,14 @@ const controlServer = Bun.serve({
       if (targets.length === 0) {
         return Response.json({ error: `No site named '${name}' with a start command.` }, { status: 404, headers: corsHeaders })
       }
-      const requester = requestUser(req)
-      const denied = targets.find(cfg => !mayChangeConfig(requester, cfg))
+      const denied = targets.find(cfg => !mayChangeConfig(auth, cfg))
       if (denied) {
         return Response.json({ error: `${name} runs as ${configUser(denied)}. Only they can change it.` }, { status: 403, headers: corsHeaders })
       }
       for (const cfg of targets) setApiFlag(cfg, api)
       await saveServerConfigs()
       await syncCaddy()  // protected domains switch between login page and header auth
-      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      const actor = requestActor
       auditLog('CONFIG_API', `${name}: API mode ${api ? 'on' : 'off'}`, actor)
       return Response.json({ success: true, api, message: `API mode ${api ? 'on' : 'off'} for ${name}` }, { headers: corsHeaders })
     }
@@ -6442,8 +7111,7 @@ const controlServer = Bun.serve({
       if (targets.length === 0) {
         return Response.json({ error: `No site named '${name}' with a start command.` }, { status: 404, headers: corsHeaders })
       }
-      const requester = requestUser(req)
-      const denied = targets.find(cfg => !mayChangeConfig(requester, cfg))
+      const denied = targets.find(cfg => !mayChangeConfig(auth, cfg))
       if (denied) {
         return Response.json({ error: `${name} runs as ${configUser(denied)}. Only they can change it.` }, { status: 403, headers: corsHeaders })
       }
@@ -6456,7 +7124,7 @@ const controlServer = Bun.serve({
         else delete cfg.ttl
       }
       await saveServerConfigs()
-      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      const actor = requestActor
       auditLog('CONFIG_TTL', `${name}: stops after ${minutes ?? IDLE_TIMEOUT / 60000}min idle${minutes ? '' : ' (default)'}`, actor)
       return Response.json({ success: true, minutes, defaultMinutes: IDLE_TIMEOUT / 60000 }, { headers: corsHeaders })
     }
@@ -6469,8 +7137,7 @@ const controlServer = Bun.serve({
       if (targets.length === 0) {
         return Response.json({ error: `No site named '${name}' with a start command.` }, { status: 404, headers: corsHeaders })
       }
-      const requester = requestUser(req)
-      const denied = targets.find(cfg => !mayChangeConfig(requester, cfg))
+      const denied = targets.find(cfg => !mayChangeConfig(auth, cfg))
       if (denied) {
         return Response.json({ error: `${name} runs as ${configUser(denied)}. Only they can change it.` }, { status: 403, headers: corsHeaders })
       }
@@ -6486,7 +7153,7 @@ const controlServer = Bun.serve({
         else delete cfg.envFile
       }
       await saveServerConfigs()
-      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      const actor = requestActor
       auditLog('CONFIG_ENV', `${name}: ${path ?? 'no env file'}`, actor)
       return Response.json({ success: true, envFile: path, message: `Takes effect the next time ${name} starts.` }, { headers: corsHeaders })
     }
@@ -6499,8 +7166,7 @@ const controlServer = Bun.serve({
       if (targets.length === 0) {
         return Response.json({ error: `No site named '${name}' with a start command.` }, { status: 404, headers: corsHeaders })
       }
-      const requester = requestUser(req)
-      const denied = targets.find(cfg => !mayChangeConfig(requester, cfg))
+      const denied = targets.find(cfg => !mayChangeConfig(auth, cfg))
       if (denied) {
         return Response.json({ error: `${name} runs as ${configUser(denied)}. Only they can change it.` }, { status: 403, headers: corsHeaders })
       }
@@ -6525,7 +7191,7 @@ const controlServer = Bun.serve({
       }
       await saveServerConfigs()
       const first = targets[0]
-      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
+      const actor = requestActor
       auditLog('CONFIG_SANDBOX', `${name}: sandbox ${first.sandbox === false ? 'off' : 'on'}${first.rw?.length ? `, writable: ${first.rw.join(' ')}` : ''}`, actor)
       return Response.json({
         success: true,
@@ -6539,12 +7205,11 @@ const controlServer = Bun.serve({
 
     if (req.method === "DELETE" && url.pathname.startsWith("/config/")) {
       const parts = url.pathname.split("/")
-      const name = parts[2]
+      const name = lowerName(parts[2])
       const configId = parts[3]
-      const actor = (req.headers.get('X-Candy-Actor') as Actor) || 'Portal'
-      const requester = requestUser(req)
+      const actor = requestActor
       const affected = getConfigsForName(name).filter(cfg => !configId || cfg.id === configId)
-      const denied = affected.find(cfg => !mayChangeConfig(requester, cfg))
+      const denied = affected.find(cfg => !mayChangeConfig(auth, cfg))
       if (denied) {
         return Response.json({ error: `${name} runs as ${configUser(denied)}. Only they can remove it.` }, { status: 403, headers: corsHeaders })
       }
@@ -6560,11 +7225,14 @@ const controlServer = Bun.serve({
       }
       const bindings: Record<string, any> = {}
       for (const [subdomain, binding] of Object.entries(domainConfig.bindings || {})) {
+        if (!mayUseBinding(binding)) continue
         bindings[subdomain] = {
           subdomain: binding.subdomain,
           fqdn: binding.fqdn,
           serverName: binding.serverName,
           boundAt: binding.boundAt,
+          owner: bindingOwner(binding),
+          orphaned: !!binding.orphaned,
           authEnabled: !!binding.auth?.enabled,
           hasPassword: !!binding.auth?.password,
           hasJwtSecret: !!binding.auth?.jwtSecret,
@@ -6580,10 +7248,8 @@ const controlServer = Bun.serve({
       }, { headers: corsHeaders })
     }
 
+    // Superuser only (ROUTE_TABLE)
     if (url.pathname === "/domains/mcp" || url.pathname === "/domains/mcp/revoke") {
-      if (requestUser(req) !== OWNER) {
-        return Response.json({ error: "Only the owner can change the public MCP endpoint." }, { status: 403, headers: corsHeaders })
-      }
       if (req.method === "GET" && url.pathname === "/domains/mcp") {
         return Response.json(await publicMcpStatus(), { headers: corsHeaders })
       }
@@ -6593,7 +7259,7 @@ const controlServer = Bun.serve({
           return Response.json({ error: "enabled (true or false) is required" }, { status: 400, headers: corsHeaders })
         }
         const subdomain = (body.subdomain || domainConfig?.mcp?.subdomain || DEFAULT_MCP_SUBDOMAIN).trim().toLowerCase()
-        const result = await setPublicMcp(body.enabled, subdomain, isMCP ? 'AI' : 'Portal')
+        const result = await setPublicMcp(body.enabled, subdomain, requestActor)
         if (!result.ok) return Response.json({ error: result.error }, { status: 400, headers: corsHeaders })
         return Response.json(await publicMcpStatus(), { headers: corsHeaders })
       }
@@ -6604,7 +7270,7 @@ const controlServer = Bun.serve({
         if (body.clientId) {
           if (!oauth.revokeClient(body.clientId)) return Response.json({ error: "No such client." }, { status: 404, headers: corsHeaders })
         } else oauth.revokeAll()
-        auditLog('MCP_PUBLIC_REVOKE', body.clientId || 'all clients', isMCP ? 'AI' : 'Portal')
+        auditLog('MCP_PUBLIC_REVOKE', body.clientId || 'all clients', requestActor)
         return Response.json(await publicMcpStatus(), { headers: corsHeaders })
       }
     }
@@ -6614,9 +7280,22 @@ const controlServer = Bun.serve({
         return Response.json({ error: "Domain config not set up. Run POST /domains/config first." }, { status: 400, headers: corsHeaders })
       }
 
-      const { subdomain, serverName, force } = await req.json() as { subdomain: string; serverName: string; force?: boolean }
-      if (!subdomain || !serverName) {
+      const body = await req.json().catch(() => ({})) as { subdomain?: unknown; serverName?: unknown; force?: boolean }
+      const { force } = body
+      if (typeof body.subdomain !== "string" || typeof body.serverName !== "string" || !body.subdomain || !body.serverName) {
         return Response.json({ error: "subdomain and serverName are required" }, { status: 400, headers: corsHeaders })
+      }
+      // Both end up in the Caddyfile and cloudflared's YAML: one DNS label, lower case, and a real site name
+      const subdomain = body.subdomain.trim().toLowerCase()
+      const serverName = body.serverName
+      if (!isDnsLabel(subdomain)) {
+        return Response.json({ error: "The subdomain can only use letters, numbers and dashes (not at the start or end), up to 63 characters." }, { status: 400, headers: corsHeaders })
+      }
+      if (isReserved(serverName)) {
+        return Response.json({ error: "That isn't a site name." }, { status: 400, headers: corsHeaders })
+      }
+      if (!isZoneName(domainConfig.zone.domain)) {
+        return Response.json({ error: "The zone in the domain config isn't a domain name. Fix it with POST /domains/config." }, { status: 400, headers: corsHeaders })
       }
 
       const fqdn = `${subdomain}.${domainConfig.zone.domain}`
@@ -6627,6 +7306,17 @@ const controlServer = Bun.serve({
       // Bind any site: one candy starts, or a plain route to a port or URL
       if (!serverConfigs.has(serverName) && !routes.has(serverName)) {
         return Response.json({ error: `No site named '${serverName}'. Add it first.` }, { status: 404, headers: corsHeaders })
+      }
+      // Your own site, on a subdomain that isn't someone else's binding
+      if (!mayUse(serverName)) return notYoursResponse(serverName, "bind a domain to it")
+      const existingBinding = domainConfig.bindings?.[subdomain]
+      if (existingBinding && !mayUseBinding(existingBinding)) return notYoursResponse(existingBinding.serverName, `move ${fqdn}`)
+      // Someone else's domain still pointing at this name would serve your site
+      const boundElsewhere = boundToSomeoneElse(serverName, auth)
+      if (boundElsewhere) return Response.json({ error: boundElsewhere }, { status: 409, headers: corsHeaders })
+      // Replacing DNS records candy didn't create changes the zone itself
+      if (force && !auth?.superuser) {
+        return Response.json({ error: "Only a superuser can replace DNS records that candy didn't create." }, { status: 403, headers: corsHeaders })
       }
 
       // Check for existing DNS records via CF API
@@ -6670,6 +7360,8 @@ const controlServer = Bun.serve({
         fqdn,
         serverName,
         boundAt: new Date().toISOString(),
+        // Whoever bound it keeps it, also if the site is removed (see orphanBindingsIfGone)
+        owner: nameOwner(serverName),
       }
       await saveDomainConfig()
 
@@ -6679,7 +7371,7 @@ const controlServer = Bun.serve({
       await syncCloudflaredIngress()
       await restartCloudflared()
 
-      auditLog('DOMAIN_BIND', `${fqdn} -> ${serverName}`, isMCP ? 'AI' : 'Portal')
+      auditLog('DOMAIN_BIND', `${fqdn} -> ${serverName}`, requestActor)
       return Response.json({
         message: `${fqdn} now serves ${serverName}`,
         binding: domainConfig.bindings[subdomain],
@@ -6691,11 +7383,12 @@ const controlServer = Bun.serve({
         return Response.json({ error: "Domain config not set up." }, { status: 400, headers: corsHeaders })
       }
 
-      const subdomain = url.pathname.split("/")[3]
+      const subdomain = lowerName(url.pathname.split("/")[3])
       const binding = domainConfig.bindings?.[subdomain]
       if (!binding) {
         return Response.json({ error: `No binding found for '${subdomain}'.` }, { status: 404, headers: corsHeaders })
       }
+      if (!mayUseBinding(binding)) return notYoursResponse(binding.serverName, `unbind ${binding.fqdn}`)
 
       // Delete DNS CNAME record via CF API
       if (domainConfig.cfApiToken && domainConfig.zone?.id) {
@@ -6728,7 +7421,7 @@ const controlServer = Bun.serve({
       await syncCloudflaredIngress()
       await restartCloudflared()
 
-      auditLog('DOMAIN_UNBIND', `${binding.fqdn}`, isMCP ? 'AI' : 'Portal')
+      auditLog('DOMAIN_UNBIND', `${binding.fqdn}`, requestActor)
       return Response.json({
         message: `Unbound ${binding.fqdn}`,
         subdomain,
@@ -6736,10 +7429,8 @@ const controlServer = Bun.serve({
       }, { headers: corsHeaders })
     }
 
+    // Superuser only (ROUTE_TABLE): zone, tunnel and the Cloudflare token
     if (req.method === "POST" && url.pathname === "/domains/config") {
-      if (RUNNING_AS_ROOT && requestUser(req) !== OWNER) {
-        return Response.json({ error: `Only ${OWNER} can do that.` }, { status: 403, headers: corsHeaders })
-      }
       const body = await req.json() as { zone?: { id: string; domain: string }; tunnel?: { id: string; name: string; credentialsFile: string }; cfApiToken?: string }
 
       if (!domainConfig) {
@@ -6750,6 +7441,15 @@ const controlServer = Bun.serve({
           bindings: {},
         }
       }
+
+      // The zone and tunnel are written into the Caddyfile and cloudflared's YAML
+      const bad = (what: string) => Response.json({ error: `${what} isn't valid.` }, { status: 400, headers: corsHeaders })
+      if (body.zone?.domain !== undefined && !isZoneName(String(body.zone.domain).toLowerCase())) return bad("The zone domain")
+      if (body.zone?.id !== undefined && body.zone.id !== "" && !isZoneId(body.zone.id)) return bad("The zone id")
+      if (body.tunnel?.id !== undefined && !isTunnelId(body.tunnel.id)) return bad("The tunnel id")
+      if (body.tunnel?.name !== undefined && !isTunnelName(body.tunnel.name)) return bad("The tunnel name")
+      if (body.tunnel?.credentialsFile !== undefined && !isCredentialsPath(body.tunnel.credentialsFile)) return bad("The credentials file path")
+      if (body.zone?.domain !== undefined) body.zone.domain = String(body.zone.domain).toLowerCase()
 
       if (body.zone) {
         domainConfig.zone = { ...domainConfig.zone, ...body.zone }
@@ -6763,7 +7463,7 @@ const controlServer = Bun.serve({
             )
             if (zoneRes.ok) {
               const zoneData = await zoneRes.json() as any
-              if (zoneData.result?.[0]?.id) {
+              if (isZoneId(zoneData.result?.[0]?.id)) {
                 domainConfig.zone.id = zoneData.result[0].id
               }
             }
@@ -6778,7 +7478,7 @@ const controlServer = Bun.serve({
       }
 
       await saveDomainConfig()
-      auditLog('DOMAIN_CONFIG', `zone: ${domainConfig.zone.domain}, tunnel: ${domainConfig.tunnel.name}`, isMCP ? 'AI' : 'Portal')
+      auditLog('DOMAIN_CONFIG', `zone: ${domainConfig.zone.domain}, tunnel: ${domainConfig.tunnel.name}`, requestActor)
 
       return Response.json({
         message: "Domain config updated",
@@ -6790,59 +7490,84 @@ const controlServer = Bun.serve({
     // === SSE Streaming Logs ===
 
     if (req.method === "GET" && url.pathname.startsWith("/stream/")) {
-      const name = url.pathname.split("/")[2]
-      const logFile = getLogFile(name)
+      const name = lowerName(url.pathname.split("/")[2])
+      if (!mayReadLog(name)) return notYoursResponse(name, "read its log")
+      const logFile = logFileFor(name)!.file
+      // A site's own page (no login) sees only a bounded startup excerpt, and
+      // only while the server is starting or crashed; the full log is the portal's
+      const excerptOnly = pageHost !== null
+      if (excerptOnly) {
+        const status = processes.get(name)?.status
+        if (status !== 'starting' && status !== 'errored' && status !== 'dead') {
+          return Response.json({ error: "The log is in the portal." }, { status: 403, headers: corsHeaders })
+        }
+      }
+
+      // The excerpt starts where this run's output does (logStart): earlier
+      // runs' logs are the portal's. Offsets are bytes, decoded as a stream.
+      const startAt = excerptOnly ? (processes.get(name)?.logStart ?? 0) : 0
 
       // Return SSE stream
       const stream = new ReadableStream({
         async start(controller) {
           const encoder = new TextEncoder()
-          let lastSize = 0
+          const decoder = new TextDecoder()
+          let offset = startAt
 
+          let sent = 0
+          let closed = false
+          const finish = () => {
+            if (closed) return
+            closed = true
+            clearInterval(interval)
+            try { controller.close() } catch {}
+          }
           const sendEvent = (data: string) => {
+            if (closed) return
+            if (excerptOnly) {
+              data = data.slice(0, Math.max(0, SITE_LOG_EXCERPT_BYTES - sent))
+              sent += data.length
+            }
+            if (!data) return
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`))
+          }
+          const readNew = async () => {
+            const file = Bun.file(logFile)
+            if (!await file.exists()) return
+            const size = file.size
+            if (size < offset) offset = excerptOnly ? size : 0  // cleared: start over (the excerpt never goes back)
+            if (size <= offset) return
+            const end = excerptOnly ? Math.min(size, offset + SITE_LOG_EXCERPT_BYTES - sent) : size
+            if (end <= offset) return
+            const bytes = new Uint8Array(await file.slice(offset, end).arrayBuffer())
+            offset = end
+            sendEvent(decoder.decode(bytes, { stream: true }))
           }
 
           // Initial content
-          try {
-            const file = Bun.file(logFile)
-            if (await file.exists()) {
-              const content = await file.text()
-              lastSize = content.length
-              sendEvent(content)
-            }
-          } catch {}
+          try { await readNew() } catch {}
 
           // Poll for new content
           const interval = setInterval(async () => {
             try {
-              const file = Bun.file(logFile)
-              if (await file.exists()) {
-                const content = await file.text()
-                if (content.length > lastSize) {
-                  const newContent = content.slice(lastSize)
-                  lastSize = content.length
-                  sendEvent(newContent)
-                }
-              }
+              await readNew()
 
               // Also send process status updates
               const proc = processes.get(name)
-              if (proc) {
+              if (proc && !closed) {
                 controller.enqueue(encoder.encode(`event: status\ndata: ${JSON.stringify({
                   status: proc.status,
                   port: proc.port,
                   detectedPorts: proc.detectedPorts,
                 })}\n\n`))
               }
+              // The excerpt ends once the server is up, or when it is full
+              if (excerptOnly && (proc?.status === 'running' || sent >= SITE_LOG_EXCERPT_BYTES)) finish()
             } catch {}
           }, 500)
 
           // Cleanup on abort
-          req.signal.addEventListener('abort', () => {
-            clearInterval(interval)
-            controller.close()
-          })
+          req.signal.addEventListener('abort', finish)
         }
       })
 
@@ -6856,369 +7581,258 @@ const controlServer = Bun.serve({
       })
     }
 
-    // === Web UI ===
+    // === Pages: the portal itself, and every site's own pages ===
+    return await serveSitePage(req, url, corsHeaders, auth)
+}
 
-    // SSR inject token into HTML - creates a new session for each page load
-    const injectToken = (html: string): string => {
-      const token = createSession() // new session per page load
-      const tokenScript = `<script>window.CANDY_TOKEN="${token}";</script>`
-      // Inject before the first <script> tag or at the end of <head>
-      if (html.includes('<script>')) {
-        return html.replace('<script>', tokenScript + '<script>')
+// The shortcut pages on the portal host (/go/kill, /go/portal). Only the
+// confirmation page gets a page token: its button is the one POST.
+async function shortcutPage(file: string, vars: Record<string, unknown>, status = 200, token: string | null = null): Promise<Response> {
+  const raw = await Bun.file(import.meta.dir + "/public/" + file).text()
+  const html = raw.replace('<script>', `${portalPageScript(token, vars)}<script>`)
+  return new Response(html, { status, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } })
+}
+
+// The pages: the portal UI (after the guard) and each site's own pages
+// (lazy start, starting/crashed/killed, tunnels, registration).
+// A function declaration, so the server above can call it from its first request.
+async function serveSitePage(req: Request, url: URL, corsHeaders: Record<string, string>, auth: RequestAuth | null): Promise<Response> {
+  // SSR a page token into HTML: a new chain per page load, for a portal login.
+  // A site's own starting/crashed page gets a site token for that name
+  // (siteTokens: start and restart only, see siteAction); other pages get null.
+  const injectToken = (html: string, siteName?: string): string => {
+    const token = auth?.via === "portal" ? pageTokens.mint(auth.sessionId!) : siteName ? siteTokens.mint(siteName) : null
+    const tokenScript = auth?.via === "portal" ? portalPageScript(token) : `<script>window.CANDY_TOKEN=${JSON.stringify(token)};</script>`
+    // Inject before the first <script> tag or at the end of <head>
+    if (html.includes('<script>')) {
+      return html.replace('<script>', tokenScript + '<script>')
+    }
+    return html.replace('</head>', tokenScript + '</head>')
+  }
+
+  // Inject variables into HTML
+  const injectVars = (html: string, vars: Record<string, any>, siteName?: string): string => {
+    let result = injectToken(html, siteName)
+    const varsScript = `<script>window.CANDY_VARS=${scriptJson(vars)};</script>`
+    if (result.includes('window.CANDY_TOKEN')) {
+      result = result.replace('</script>', `</script>${varsScript}`)
+    } else {
+      result = result.replace('</head>', varsScript + '</head>')
+    }
+    return result
+  }
+
+  if (req.method === "GET" && url.pathname === "/favicon.svg") {
+    try {
+      const svg = await Bun.file(import.meta.dir + "/public/favicon.svg").text()
+      return new Response(svg, { headers: { "Content-Type": "image/svg+xml" } })
+    } catch {
+      return new Response("", { status: 404 })
+    }
+  }
+
+  // Parse host header
+  const reqHost = req.headers.get("host")?.replace(":9999", "").replace(":80", "") || ""
+
+  // Network dashboard at candy.candy
+  if (reqHost === "candy.candy" && req.method === "GET" && (url.pathname === "/" || url.pathname === "")) {
+    const rawHtml = await Bun.file(import.meta.dir + "/public/network.html").text()
+    const html = injectToken(rawHtml)
+    return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
+  }
+
+  const currentHostUrl = (path: string = "") => `https://${reqHost}${path}`
+
+  // Shortcut hosts: <name>.k|kill.<tld> stops a site, <name>.p|portal.<tld> opens
+  // a public tunnel to it. Both need a portal login, and the cookie belongs to
+  // the portal host, so confirm (and act) there. Nothing happens on this GET.
+  const shortcutHost = parseShortcutHost(reqHost)
+  if (shortcutHost && (req.method === "GET" || req.method === "HEAD")) {
+    const serverName = shortcutHost.tld === "candy"
+      ? resolveLocalCandyActionDomain(shortcutHost.name, shortcutHost.label)
+      : (shortcutHost.label ? `${shortcutHost.name}.${shortcutHost.label}` : shortcutHost.name)
+    return new Response(null, { status: 302, headers: { Location: shortcutConfirmUrl(shortcutHost.action, serverName, shortcutHost.tld), "Cache-Control": "no-store" } })
+  }
+
+  // Bound domain requests:
+  // - Protected domains (auth enabled): Caddy uses forward_auth, daemon only sees auth checks
+  // - Unprotected domains: Caddy routes ALL requests here for rate limiting + nag injection
+  // - Server not running: Caddy falls back to :9999 for starting page
+
+  // Main routing logic for *.localhost and bound domains
+  if (req.method === "GET") {
+    try {
+      // Check if this is a bound domain request (e.g. inksp.inkspired.ai)
+      const boundMatch = resolveBindingFromHost(reqHost)
+      const domain = boundMatch ? boundMatch.serverName : resolveLocalCandyDomain(reqHost)
+      const isBoundDomain = !!boundMatch
+      const isRootPath = url.pathname === "/" || url.pathname === ""
+
+      // Portal UI at portal.localhost (only root), for a portal login only
+      if (domain === "portal" && !isBoundDomain && auth?.via !== "portal") {
+        return new Response(null, { status: 302, headers: { Location: "/login", "Cache-Control": "no-store" } })
       }
-      return html.replace('</head>', tokenScript + '</head>')
-    }
-
-    // Inject variables into HTML
-    const injectVars = (html: string, vars: Record<string, any>): string => {
-      let result = injectToken(html)
-      const varsScript = `<script>window.CANDY_VARS=${JSON.stringify(vars)};</script>`
-      if (result.includes('window.CANDY_TOKEN')) {
-        result = result.replace('</script>', `</script>${varsScript}`)
-      } else {
-        result = result.replace('</head>', varsScript + '</head>')
-      }
-      return result
-    }
-
-    if (req.method === "GET" && url.pathname === "/favicon.svg") {
-      try {
-        const svg = await Bun.file(import.meta.dir + "/public/favicon.svg").text()
-        return new Response(svg, { headers: { "Content-Type": "image/svg+xml" } })
-      } catch {
-        return new Response("", { status: 404 })
-      }
-    }
-
-    // Parse host header
-    const reqHost = req.headers.get("host")?.replace(":9999", "").replace(":80", "") || ""
-
-    // Network dashboard at candy.candy
-    if (reqHost === "candy.candy" && req.method === "GET" && (url.pathname === "/" || url.pathname === "")) {
-      const rawHtml = await Bun.file(import.meta.dir + "/public/network.html").text()
-      const html = injectToken(rawHtml)
-      return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
-    }
-
-    // Detect if request is coming via .candy TLD (Tailscale)
-    const isCandy = reqHost.endsWith(".candy")
-    // Build a domain URL with the correct scheme/TLD
-    const domainUrl = (name: string) => isCandy ? `https://${name}.candy` : `https://${name}.localhost`
-    const currentHostUrl = (path: string = "") => `https://${reqHost}${path}`
-    const currentServiceHost = () => {
-      if (!isCandy) return reqHost
-      return reqHost.replace(/\.(kill|k|portal|p)(?:\.([a-z0-9-]+))?\.candy$/, (_full, _action, hostLabel) =>
-        hostLabel ? `.${hostLabel}.candy` : ".candy",
-      )
-    }
-    const currentServiceUrl = (path: string = "") => `https://${currentServiceHost()}${path}`
-
-    // Handle kill hostnames:
-    // - <name>.kill.localhost / <name>.k.localhost
-    const killSuffixMatch = reqHost.match(/^([a-z0-9-]+)\.(kill|k)(?:\.([a-z0-9-]+))?\.(localhost|candy)$/)
-    if (killSuffixMatch && req.method === "GET") {
-      const requestedName = killSuffixMatch[3] ? `${killSuffixMatch[1]}.${killSuffixMatch[3]}` : killSuffixMatch[1]
-      const serverName = killSuffixMatch[4] === "candy"
-        ? resolveLocalCandyActionDomain(killSuffixMatch[1], killSuffixMatch[3] || null)
-        : requestedName
-
-      // Stop the process if running (Page actor - direct browser access)
-      const proc = processes.get(serverName)
-      if (proc && (proc.status === 'running' || proc.status === 'starting')) {
-        await stopProcess(serverName, 'Page')
+      if (domain === "portal" && isRootPath && !isBoundDomain) {
+        domainHits.set(domain, (domainHits.get(domain) || 0) + 1)
+        const rawHtml = await Bun.file(import.meta.dir + "/public/portal.html").text()
+        let html = injectVars(rawHtml, { user: auth!.user, superuser: auth!.superuser, multiUser: RUNNING_AS_ROOT })
+        // Check if any bound domain is unprotected → inject nag banner on portal
+        const domainConfig = await loadDomainConfig()
+        const hasUnprotected = domainConfig?.bindings && Object.values(domainConfig.bindings).some((b: any) => mayChangeName(auth, b.serverName) && (!b.auth?.password || !b.auth?.enabled))
+        if (hasUnprotected) {
+          const nagScript = `<script data-candy-nag>(function(){if(document.querySelector('[data-candy-nag-banner]'))return;var b=document.createElement('div');b.setAttribute('data-candy-nag-banner','1');b.setAttribute('role','status');b.innerHTML='<span>A public domain has no password. Anyone with the link can open it.</span><button aria-label="Dismiss" style="background:none;border:0;color:inherit;opacity:.7;cursor:pointer;font-size:16px;line-height:1;padding:0 0 0 14px">&times;</button>';b.querySelector('button').onclick=function(){b.remove()};b.style.cssText='position:fixed;left:50%;bottom:20px;transform:translateX(-50%);max-width:calc(100% - 32px);display:flex;align-items:center;background:#1a1d33;color:#fff;padding:10px 14px 10px 16px;border-radius:10px;font:500 13px/1.4 \\'Schibsted Grotesk\\',system-ui,sans-serif;box-shadow:0 10px 30px rgba(10,12,24,.25);z-index:999999';document.body.appendChild(b)})()</script>`
+          html = html.replace('</body>', nagScript + '</body>')
+        }
+        // Holds a page token: never cached, where a plain navigation could find it
+        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Vary": SESSION_HEADER } })
       }
 
-      // Serve killed.html
-      try {
-        const rawHtml = await Bun.file(import.meta.dir + "/public/killed.html").text()
-        const html = injectVars(rawHtml, { name: serverName })
-        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
-      } catch {
-        return new Response(`Process "${serverName}" killed. <a href="${domainUrl("portal")}">Return to portal</a>`, {
-          headers: { "Content-Type": "text/html; charset=utf-8" }
-        })
+      const configs = getConfigsForName(domain)
+      const managed = processes.get(domain)
+
+      if (managed) {
+        if (isRootPath) {
+          domainHits.set(domain, (domainHits.get(domain) || 0) + 1)
+        }
+
+        // Process exists - check its status
+        if (managed.status === 'running' && managed.port) {
+          // For bound domains: check if auth is enabled
+          if (isBoundDomain) {
+            const hasAuth = hasBindingAuth(boundMatch!.binding)
+
+            if (hasAuth) {
+              // Protected domain: Caddy handles via forward_auth, we shouldn't get here
+              // unless it's a race condition. Sync and redirect.
+              await syncCaddy()
+              return Response.redirect(`https://${boundMatch!.binding.fqdn}${url.pathname}${url.search}`, 302)
+            }
+
+            // Unprotected domain: caddy proxies directly to server port
+            // This code shouldn't be reached (caddy doesn't route to daemon for unprotected)
+            // but just in case, redirect to the bound domain itself
+            managed.lastActivity = Date.now()
+            return Response.redirect(`https://${boundMatch!.binding.fqdn}${url.pathname}${url.search}`, 302)
+          }
+          // For .localhost/.candy, ensure the route exists and redirect (Caddy takes over)
+          const existRoute = routes.get(domain)
+          routes.set(domain, { target: managed.port, persistent: existRoute?.persistent || false })
+          await syncCaddy()
+          return Response.redirect(currentHostUrl(`${url.pathname}${url.search}`), 302)
+        }
+
+        if (managed.status === 'starting') {
+          // Show starting page with streaming logs (preserve path for refresh)
+          const rawHtml = await Bun.file(import.meta.dir + "/public/starting.html").text()
+          const html = injectVars(rawHtml, {
+            mode: "starting",
+            name: domain,
+            configId: managed.config.id,
+            cwd: managed.config.cwd,
+            cmd: managed.config.cmd,
+            detectedPorts: managed.detectedPorts,
+            returnPath: url.pathname + url.search,
+          }, isBoundDomain ? undefined : domain)
+          return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
+        }
+
+        if (managed.status === 'errored' || managed.status === 'dead') {
+          // Show crashed page
+          const rawHtml = await Bun.file(import.meta.dir + "/public/crashed.html").text()
+          const html = injectVars(rawHtml, {
+            name: domain,
+            exitCode: managed.exitCode,
+            status: managed.status,
+          }, isBoundDomain ? undefined : domain)
+          return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
+        }
       }
-    }
 
-    // Handle portal subdomain: <name>.portal.localhost or <name>.p.localhost
-    const portalMatch = reqHost.match(/^([a-z0-9-]+)\.(portal|p)(?:\.([a-z0-9-]+))?\.(localhost|candy)$/)
-    if (portalMatch && req.method === "GET") {
-      const requestedName = portalMatch[3] ? `${portalMatch[1]}.${portalMatch[3]}` : portalMatch[1]
-      const serverName = portalMatch[4] === "candy"
-        ? resolveLocalCandyActionDomain(portalMatch[1], portalMatch[3] || null)
-        : requestedName
+      // Check if there's a server config (lazy loading)
+      if (configs.length > 0) {
+        if (isRootPath) {
+          domainHits.set(domain, (domainHits.get(domain) || 0) + 1)
+        }
 
-      // Check if process is running
-      const proc = processes.get(serverName)
-      if (!proc || proc.status !== 'running' || !proc.port) {
-        // Check if config exists
-        const hasConfig = serverConfigs.has(serverName)
-        const message = hasConfig
-          ? `Server "${serverName}" is not running.`
-          : `Server "${serverName}" does not exist.`
-        const action = hasConfig
-          ? `<a href="${isCandy ? currentServiceUrl() : domainUrl(serverName)}" class="btn">Start Server</a>`
-          : `<a href="${domainUrl("portal")}" class="btn">Go to Portal</a>`
+        // Multiple variants and nothing active yet -> ask which variant to start.
+        if (configs.length > 1) {
+          const rawHtml = await Bun.file(import.meta.dir + "/public/starting.html").text()
+          const html = injectVars(rawHtml, {
+            mode: "chooser",
+            name: domain,
+            variants: configs.map(c => ({ id: c.id, cwd: c.cwd, cmd: c.cmd })),
+            returnPath: url.pathname + url.search,
+          }, isBoundDomain ? undefined : domain)
+          return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
+        }
 
+        // Spawn the server! (Page actor - direct browser access)
+        try {
+          const newProcess = await spawnProcess(domain, 'Page', configs[0].id)
+
+          if (newProcess.status === 'running' && newProcess.port) {
+            if (isBoundDomain) {
+              newProcess.lastActivity = Date.now()
+              try {
+                const proxyRes = await fetchWithHeaderTimeout(`http://localhost:${newProcess.port}${url.pathname}${url.search}`, {
+                  headers: upstreamRequestHeaders(req.headers, !!boundMatch && hasBindingAuth(boundMatch.binding)),
+                }, req)
+                return new Response(proxyRes.body, { status: proxyRes.status, headers: proxyRes.headers })
+              } catch (e) {
+                return new Response(`Proxy error: ${e}`, { status: 502 })
+              }
+            }
+            // Auto-detected port - redirect preserving path (Caddy will take over)
+            return Response.redirect(currentHostUrl(`${url.pathname}${url.search}`), 302)
+          }
+
+          // Show starting page (preserve path for refresh)
+          const rawHtml = await Bun.file(import.meta.dir + "/public/starting.html").text()
+          const html = injectVars(rawHtml, {
+            mode: "starting",
+            name: domain,
+            configId: newProcess.config.id,
+            cwd: newProcess.config.cwd,
+            cmd: newProcess.config.cmd,
+            detectedPorts: newProcess.detectedPorts,
+            returnPath: url.pathname + url.search,
+          }, isBoundDomain ? undefined : domain)
+          return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
+        } catch (e) {
+          return new Response(`Failed to start server: ${e}`, { status: 500 })
+        }
+      }
+
+      // A bound domain whose site no longer exists
+      if (isBoundDomain) {
+        const safeName = String(domain).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`)
         return new Response(`<!DOCTYPE html>
-<html><head>
-<meta charset="UTF-8">
-<title>Server Not Running</title>
-<style>
-  body { font-family: system-ui; background: #0a0a0f; color: #e0e0e8; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
-  .box { text-align: center; padding: 2rem; }
-  h1 { font-size: 1.2rem; margin-bottom: 1rem; }
-  .btn { display: inline-block; padding: 0.6rem 1.2rem; background: #00e5ff; color: #0a0a0f; text-decoration: none; border-radius: 4px; margin-top: 1rem; }
-</style>
-</head><body>
-<div class="box">
-  <h1>${message}</h1>
-  ${action}
-</div>
-</body></html>`, {
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Nothing here</title>
+<style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px 16px;box-sizing:border-box;background:#eceef2;color:#1a1d33;font:15px/1.5 system-ui,sans-serif}h1{font-size:20px;margin:0 0 6px}p{margin:0;color:#555b75}code{font-family:ui-monospace,monospace}@media (prefers-color-scheme:dark){body{background:#10121a;color:#e7e9f2}p{color:#a3a8c0}}</style>
+</head><body><main><h1>Nothing is served here</h1><p>This domain points at <code>${safeName}</code>, which isn’t set up in candy any more.</p></main></body></html>`, {
           headers: { "Content-Type": "text/html; charset=utf-8" },
           status: 404
         })
       }
 
-      // Check if portal already exists
-      let existingPortal = portals.get(serverName)
-      if (!existingPortal) {
-        // Create a new portal
-        auditLog('PORTAL_CREATE', `${serverName} (auto from ${serverName}.p.localhost)`, 'Page')
-
-        // Start cloudflared tunnel
-        const tunnelProc = spawn({
-          cmd: ['cloudflared', 'tunnel', '--config', '/dev/null', '--no-tls-verify', '--url', `https://${serverName}.localhost`],
-          stdout: 'pipe',
-          stderr: 'pipe',
-        })
-
-        const newPortal = {
-          port: proc.port,
-          url: null,
-          pid: tunnelProc.pid,
-          proc: tunnelProc,
-        }
-        existingPortal = newPortal
-        portals.set(serverName, newPortal)
-
-        // Capture tunnel URL from stderr
-        const reader = tunnelProc.stderr.getReader()
-        const decoder = new TextDecoder()
-        const urlPattern = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/
-
-        ;(async () => {
-          try {
-            while (true) {
-              const { done, value } = await reader.read()
-              if (done) break
-              const text = decoder.decode(value)
-              const match = text.match(urlPattern)
-              if (match && existingPortal) {
-                existingPortal.url = match[0]
-                // Track tunnel -> server mapping for stats history
-                tunnelHistory.set(match[0].replace('https://', ''), serverName)
-                auditLog('PORTAL_READY', `${serverName} -> ${match[0]}`, 'System')
-                await syncCaddy()
-                break
-              }
-            }
-          } catch {}
-        })()
+      // No config exists - redirect non-root paths to root for registration
+      if (!isRootPath) {
+        return Response.redirect(currentHostUrl("/"), 302)
       }
 
-      // Serve the portal loading page
-      try {
-        const rawHtml = await Bun.file(import.meta.dir + "/public/portaling.html").text()
-        const html = injectVars(rawHtml, {
-          name: serverName,
-          existingUrl: existingPortal?.url || ''
-        })
-        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
-      } catch {
-        return new Response(`Creating tunnel for "${serverName}"... Refresh in a few seconds.`, {
-          headers: { "Content-Type": "text/html; charset=utf-8" }
-        })
-      }
+      // Show candy/terminal page with mode toggle (registration screen)
+      domainHits.set(domain, (domainHits.get(domain) || 0) + 1)
+      const page = "candy.html"
+      const rawHtml = await Bun.file(import.meta.dir + "/public/" + page).text()
+      const html = injectVars(rawHtml, { name: domain })
+      return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
+    } catch (e) {
+      return new Response("registration terminal offline: " + e, { status: 500 })
     }
-
-    // Bound domain requests:
-    // - Protected domains (auth enabled): Caddy uses forward_auth, daemon only sees auth checks
-    // - Unprotected domains: Caddy routes ALL requests here for rate limiting + nag injection
-    // - Server not running: Caddy falls back to :9999 for starting page
-
-    // Main routing logic for *.localhost and bound domains
-    if (req.method === "GET") {
-      try {
-        // Check if this is a bound domain request (e.g. inksp.inkspired.ai)
-        const boundMatch = resolveBindingFromHost(reqHost)
-        const domain = boundMatch ? boundMatch.serverName : resolveLocalCandyDomain(reqHost)
-        const isBoundDomain = !!boundMatch
-        const isRootPath = url.pathname === "/" || url.pathname === ""
-
-        // Portal UI at portal.localhost (only root)
-        if (domain === "portal" && isRootPath && !isBoundDomain) {
-          domainHits.set(domain, (domainHits.get(domain) || 0) + 1)
-          const rawHtml = await Bun.file(import.meta.dir + "/public/portal.html").text()
-          let html = injectToken(rawHtml)
-          // Check if any bound domain is unprotected → inject nag banner on portal
-          const domainConfig = await loadDomainConfig()
-          const hasUnprotected = domainConfig?.bindings && Object.values(domainConfig.bindings).some((b: any) => !b.auth?.password || !b.auth?.enabled)
-          if (hasUnprotected) {
-            const nagScript = `<script data-candy-nag>(function(){if(document.querySelector('[data-candy-nag-banner]'))return;var b=document.createElement('div');b.setAttribute('data-candy-nag-banner','1');b.setAttribute('role','status');b.innerHTML='<span>A public domain has no password. Anyone with the link can open it.</span><button aria-label="Dismiss" style="background:none;border:0;color:inherit;opacity:.7;cursor:pointer;font-size:16px;line-height:1;padding:0 0 0 14px">&times;</button>';b.querySelector('button').onclick=function(){b.remove()};b.style.cssText='position:fixed;left:50%;bottom:20px;transform:translateX(-50%);max-width:calc(100% - 32px);display:flex;align-items:center;background:#1a1d33;color:#fff;padding:10px 14px 10px 16px;border-radius:10px;font:500 13px/1.4 \\'Schibsted Grotesk\\',system-ui,sans-serif;box-shadow:0 10px 30px rgba(10,12,24,.25);z-index:999999';document.body.appendChild(b)})()</script>`
-            html = html.replace('</body>', nagScript + '</body>')
-          }
-          return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
-        }
-
-        const configs = getConfigsForName(domain)
-        const managed = processes.get(domain)
-
-        if (managed) {
-          if (isRootPath) {
-            domainHits.set(domain, (domainHits.get(domain) || 0) + 1)
-          }
-
-          // Process exists - check its status
-          if (managed.status === 'running' && managed.port) {
-            // For bound domains: check if auth is enabled
-            if (isBoundDomain) {
-              const hasAuth = hasBindingAuth(boundMatch!.binding)
-
-              if (hasAuth) {
-                // Protected domain: Caddy handles via forward_auth, we shouldn't get here
-                // unless it's a race condition. Sync and redirect.
-                await syncCaddy()
-                return Response.redirect(`https://${boundMatch!.binding.fqdn}${url.pathname}${url.search}`, 302)
-              }
-
-              // Unprotected domain: caddy proxies directly to server port
-              // This code shouldn't be reached (caddy doesn't route to daemon for unprotected)
-              // but just in case, redirect to the bound domain itself
-              managed.lastActivity = Date.now()
-              return Response.redirect(`https://${boundMatch!.binding.fqdn}${url.pathname}${url.search}`, 302)
-            }
-            // For .localhost/.candy, ensure the route exists and redirect (Caddy takes over)
-            const existRoute = routes.get(domain)
-            routes.set(domain, { target: managed.port, persistent: existRoute?.persistent || false })
-            await syncCaddy()
-            return Response.redirect(currentHostUrl(`${url.pathname}${url.search}`), 302)
-          }
-
-          if (managed.status === 'starting') {
-            // Show starting page with streaming logs (preserve path for refresh)
-            const rawHtml = await Bun.file(import.meta.dir + "/public/starting.html").text()
-            const html = injectVars(rawHtml, {
-              mode: "starting",
-              name: domain,
-              configId: managed.config.id,
-              cwd: managed.config.cwd,
-              cmd: managed.config.cmd,
-              detectedPorts: managed.detectedPorts,
-              returnPath: url.pathname + url.search,
-            })
-            return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
-          }
-
-          if (managed.status === 'errored' || managed.status === 'dead') {
-            // Show crashed page
-            const rawHtml = await Bun.file(import.meta.dir + "/public/crashed.html").text()
-            const html = injectVars(rawHtml, {
-              name: domain,
-              exitCode: managed.exitCode,
-              status: managed.status,
-            })
-            return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
-          }
-        }
-
-        // Check if there's a server config (lazy loading)
-        if (configs.length > 0) {
-          if (isRootPath) {
-            domainHits.set(domain, (domainHits.get(domain) || 0) + 1)
-          }
-
-          // Multiple variants and nothing active yet -> ask which variant to start.
-          if (configs.length > 1) {
-            const rawHtml = await Bun.file(import.meta.dir + "/public/starting.html").text()
-            const html = injectVars(rawHtml, {
-              mode: "chooser",
-              name: domain,
-              variants: configs.map(c => ({ id: c.id, cwd: c.cwd, cmd: c.cmd })),
-              returnPath: url.pathname + url.search,
-            })
-            return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
-          }
-
-          // Spawn the server! (Page actor - direct browser access)
-          try {
-            const newProcess = await spawnProcess(domain, 'Page', configs[0].id)
-
-            if (newProcess.status === 'running' && newProcess.port) {
-              if (isBoundDomain) {
-                newProcess.lastActivity = Date.now()
-                try {
-                  const proxyRes = await fetchWithHeaderTimeout(`http://localhost:${newProcess.port}${url.pathname}${url.search}`, {
-                    headers: req.headers,
-                  }, req)
-                  return new Response(proxyRes.body, { status: proxyRes.status, headers: proxyRes.headers })
-                } catch (e) {
-                  return new Response(`Proxy error: ${e}`, { status: 502 })
-                }
-              }
-              // Auto-detected port - redirect preserving path (Caddy will take over)
-              return Response.redirect(currentHostUrl(`${url.pathname}${url.search}`), 302)
-            }
-
-            // Show starting page (preserve path for refresh)
-            const rawHtml = await Bun.file(import.meta.dir + "/public/starting.html").text()
-            const html = injectVars(rawHtml, {
-              mode: "starting",
-              name: domain,
-              configId: newProcess.config.id,
-              cwd: newProcess.config.cwd,
-              cmd: newProcess.config.cmd,
-              detectedPorts: newProcess.detectedPorts,
-              returnPath: url.pathname + url.search,
-            })
-            return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
-          } catch (e) {
-            return new Response(`Failed to start server: ${e}`, { status: 500 })
-          }
-        }
-
-        // A bound domain whose site no longer exists
-        if (isBoundDomain) {
-          const safeName = String(domain).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`)
-          return new Response(`<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Nothing here</title>
-<style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px 16px;box-sizing:border-box;background:#eceef2;color:#1a1d33;font:15px/1.5 system-ui,sans-serif}h1{font-size:20px;margin:0 0 6px}p{margin:0;color:#555b75}code{font-family:ui-monospace,monospace}@media (prefers-color-scheme:dark){body{background:#10121a;color:#e7e9f2}p{color:#a3a8c0}}</style>
-</head><body><main><h1>Nothing is served here</h1><p>This domain points at <code>${safeName}</code>, which isn’t set up in candy any more.</p></main></body></html>`, {
-            headers: { "Content-Type": "text/html; charset=utf-8" },
-            status: 404
-          })
-        }
-
-        // No config exists - redirect non-root paths to root for registration
-        if (!isRootPath) {
-          return Response.redirect(currentHostUrl("/"), 302)
-        }
-
-        // Show candy/terminal page with mode toggle (registration screen)
-        domainHits.set(domain, (domainHits.get(domain) || 0) + 1)
-        const page = "candy.html"
-        const rawHtml = await Bun.file(import.meta.dir + "/public/" + page).text()
-        const html = injectToken(rawHtml)
-        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } })
-      } catch (e) {
-        return new Response("registration terminal offline: " + e, { status: 500 })
-      }
-    }
-
-    return Response.json({ error: "not found" }, { status: 404, headers: corsHeaders })
   }
-})
+
+  return Response.json({ error: "not found" }, { status: 404, headers: corsHeaders })
+}
 
 // ============================================================================
 // Startup Sequence
@@ -7227,9 +7841,12 @@ const controlServer = Bun.serve({
 // Initialize log directory (clears on boot)
 await initLogs()
 
-// Clear access log and Caddyfile on startup (fresh slate each boot)
+// Clear the access log on startup (fresh slate each boot). 0600: even with
+// the header filter it says who visited what. chmod as well, for a file an
+// older candy created 0644 (the mode only applies to a new file).
 try {
-  await Bun.write(CADDY_LOG, "")
+  closeSync(openSync(CADDY_LOG, "w", 0o600))
+  chmodSync(CADDY_LOG, 0o600)
 } catch {}
 
 // Load server configs
@@ -7245,8 +7862,16 @@ await restartCloudflared()
 // Initialize MCP auth (write bootstrap secret to file)
 await initMcpAuth()
 
+// Portal login: PAM service present? Re-checked so installing it later needs no restart.
+await checkPam(true)
+setInterval(() => { checkPam(false).catch(() => {}) }, 5 * 60 * 1000)
+// Public MCP approvals without a user are revoked (and audited) as the state loads
+await getMcpOAuth()
+
 // Load persistent routes first (survive daemon restarts)
 await loadPersistentRoutes()
+await loadRouteUsers()
+await assignBindingOwners()
 
 // Functions are routed to the daemon from the start
 for (const [name, configs] of serverConfigs) if (configs.some(c => c.fn)) routeFunction(name)

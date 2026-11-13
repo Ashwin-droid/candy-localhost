@@ -32,6 +32,10 @@
 // Secrets (grants, codes, tokens) are never stored: only their sha256 hex
 // hash is kept, and a presented secret is hashed and looked up by that hash.
 // Where two secrets are compared directly, the comparison is constant-time.
+//
+// Each approval records the portal user who gave it (`user`), and every token
+// descending from it acts as that user. Approvals saved before users were
+// recorded can't say whose they are, so loading drops them (`legacyRevoked`).
 
 import { timingSafeEqual } from "node:crypto"
 
@@ -57,6 +61,7 @@ export const MAX_STATE_LENGTH = 2048
 const MAX_URI_LENGTH = 2048
 const MAX_NAME_LENGTH = 100
 const MAX_APPROVER_LENGTH = 200
+const USER_RE = /^[a-z_][a-z0-9_.-]{0,31}\$?$/i
 const MAX_SECRET_LENGTH = 512   // anything longer cannot be one of ours; don't even hash it
 const MAX_CODES = 100
 // A redeemed code is remembered this long so that a second presentation can
@@ -93,6 +98,7 @@ export interface StoredRefresh {
   clientId: string
   familyId: string             // every token descending from one approval shares this
   approver: string | null
+  user: string                 // the portal user who approved; the tokens act as them
   issuedAt: number             // ms
   expiresAt: number            // ms
   familyStartedAt: number      // ms, when the approval was turned into the first tokens
@@ -124,6 +130,7 @@ interface PendingRequest {
   decided: boolean
   allow: boolean
   approver: string | null
+  user: string | null
   grantHash: string | null
 }
 
@@ -132,6 +139,7 @@ interface AuthCode {
   redirectUri: string
   challenge: string
   approver: string | null
+  user: string
   expiresAt: number
   forgetAt: number             // when the record itself is dropped (later than expiresAt once redeemed)
   redeemed: boolean
@@ -142,6 +150,7 @@ interface AccessToken {
   clientId: string
   familyId: string
   approver: string | null
+  user: string
   expiresAt: number
 }
 
@@ -257,6 +266,8 @@ export class OAuthServer {
   private pending = new Map<string, PendingRequest>()  // by request id
   private codes = new Map<string, AuthCode>()          // by code hash
   private lastSweep = 0
+  /** Approvals dropped on load because they predate per-user grants. */
+  readonly legacyRevoked: number = 0
 
   constructor(opts: OAuthOptions) {
     this.issuer = stripSlash(String(opts?.issuer ?? ""))
@@ -264,6 +275,8 @@ export class OAuthServer {
     this.now = typeof opts?.now === "function" ? opts.now : Date.now
     this.onChange = typeof opts?.onChange === "function" ? opts.onChange : undefined
     try { this.load(opts?.persisted) } catch { /* a corrupt file means starting empty, not crashing */ }
+    // Write the file without them, so they're gone for good
+    if (this.legacyRevoked > 0) this.changed()
   }
 
   /** Takes whatever was on disk and keeps only the entries that are well-formed. */
@@ -286,11 +299,17 @@ export class OAuthServer {
       if (!r || typeof r.hash !== "string" || !SHA256_HEX.test(r.hash)) continue
       if (typeof r.clientId !== "string" || !this.clients.has(r.clientId) || typeof r.familyId !== "string") continue
       if (!finite(r.issuedAt) || !finite(r.expiresAt) || !finite(r.familyStartedAt) || r.expiresAt <= now) continue
+      // No user: made before approvals recorded one. Nobody can say whose it is.
+      if (typeof r.user !== "string" || !USER_RE.test(r.user)) {
+        if (!r.rotated) (this as { legacyRevoked: number }).legacyRevoked++
+        continue
+      }
       this.refresh.set(r.hash, {
         hash: r.hash,
         clientId: r.clientId,
         familyId: r.familyId,
         approver: typeof r.approver === "string" ? r.approver : null,
+        user: r.user,
         issuedAt: r.issuedAt,
         expiresAt: r.expiresAt,
         familyStartedAt: r.familyStartedAt,
@@ -467,6 +486,7 @@ export class OAuthServer {
         decided: false,
         allow: false,
         approver: null,
+        user: null,
         grantHash: null,
       })
       this.trimPending()
@@ -528,15 +548,15 @@ export class OAuthServer {
   }
 
   /**
-   * Called from the private consent page. The caller is trusted because of
-   * where it can be reached from, not because of anything in the arguments.
-   * A request can be decided once; the returned grant is the only way to
-   * finish it, and only for the next two minutes.
+   * Called from the private consent page by a logged-in portal `user`, who
+   * the tokens will act as. A request can be decided once; the returned grant
+   * is the only way to finish it, and only for the next two minutes.
    */
-  decide(requestId: string, allow: boolean, approver?: string): Result<{ grant: string }> {
+  decide(requestId: string, allow: boolean, user: string, approver?: string): Result<{ grant: string }> {
     try {
       this.maybeSweep()
       if (typeof allow !== "boolean") return fail(400, "invalid_request", "allow must be true or false")
+      if (typeof user !== "string" || !USER_RE.test(user)) return fail(400, "invalid_request", "A decision needs the logged-in user")
       const p = this.livePending(requestId)
       if (!p) return fail(404, "invalid_request", "Unknown or expired authorization request")
       if (p.decided) return fail(409, "invalid_request", "This authorization request was already decided")
@@ -545,6 +565,7 @@ export class OAuthServer {
       p.decided = true
       p.allow = allow
       p.approver = cleanText(approver, MAX_APPROVER_LENGTH) || null
+      p.user = user
       p.grantHash = sha256Hex(grant)
       p.expiresAt = this.now() + GRANT_LIFETIME_MS
       return { ok: true, grant }
@@ -569,7 +590,7 @@ export class OAuthServer {
       }
       this.pending.delete(requestId)
 
-      if (!p.allow) {
+      if (!p.allow || !p.user) {
         const description = "The request was denied"
         return {
           ok: true,
@@ -584,6 +605,7 @@ export class OAuthServer {
         redirectUri: p.redirectUri,
         challenge: p.challenge,
         approver: p.approver,
+        user: p.user,
         expiresAt: now + CODE_LIFETIME_MS,
         forgetAt: now + CODE_LIFETIME_MS,
         redeemed: false,
@@ -659,7 +681,7 @@ export class OAuthServer {
     entry.redeemed = true
     entry.familyId = familyId
     entry.forgetAt = now + CODE_REPLAY_MEMORY_MS
-    return this.issueTokens(client, familyId, now, entry.approver)
+    return this.issueTokens(client, familyId, now, entry.approver, entry.user)
   }
 
   private rotateRefresh(form: URLSearchParams, client: StoredClient): { status: number; body: object } {
@@ -685,20 +707,21 @@ export class OAuthServer {
     }
 
     entry.rotated = true
-    return this.issueTokens(client, entry.familyId, entry.familyStartedAt, entry.approver)
+    return this.issueTokens(client, entry.familyId, entry.familyStartedAt, entry.approver, entry.user)
   }
 
-  private issueTokens(client: StoredClient, familyId: string, familyStartedAt: number, approver: string | null) {
+  private issueTokens(client: StoredClient, familyId: string, familyStartedAt: number, approver: string | null, user: string) {
     const now = this.now()
     const accessToken = randomToken(32)
     const refreshToken = randomToken(32)
-    this.access.set(sha256Hex(accessToken), { clientId: client.clientId, familyId, approver, expiresAt: now + ACCESS_LIFETIME_MS })
+    this.access.set(sha256Hex(accessToken), { clientId: client.clientId, familyId, approver, user, expiresAt: now + ACCESS_LIFETIME_MS })
     const refreshHash = sha256Hex(refreshToken)
     this.refresh.set(refreshHash, {
       hash: refreshHash,
       clientId: client.clientId,
       familyId,
       approver,
+      user,
       issuedAt: now,
       // Rotation keeps a session alive, but not forever: an approval is
       // re-confirmed by a person at least every 90 days.
@@ -743,7 +766,7 @@ export class OAuthServer {
   // --------------------------------------------------------------------------
 
   /** Who a bearer token belongs to, or null if it isn't a live token of ours. */
-  verifyAccessToken(token: string): { clientId: string; clientName: string; approver: string | null; expiresAt: number } | null {
+  verifyAccessToken(token: string): { clientId: string; clientName: string; approver: string | null; user: string; expiresAt: number } | null {
     try {
       this.maybeSweep()
       if (typeof token !== "string" || token.length === 0 || token.length > MAX_SECRET_LENGTH) return null
@@ -760,7 +783,7 @@ export class OAuthServer {
         client.lastUsedAt = now
         this.changed()
       }
-      return { clientId: client.clientId, clientName: client.clientName, approver: entry.approver, expiresAt: entry.expiresAt }
+      return { clientId: client.clientId, clientName: client.clientName, approver: entry.approver, user: entry.user, expiresAt: entry.expiresAt }
     } catch {
       return null
     }
@@ -770,14 +793,19 @@ export class OAuthServer {
   // Administration
   // --------------------------------------------------------------------------
 
-  /** `activeGrants` counts approvals that can still be refreshed. */
-  listClients(): { clientId: string; clientName: string; createdAt: number; lastUsedAt: number | null; activeGrants: number }[] {
+  /** `activeGrants` counts approvals that can still be refreshed; `users` are who approved them. */
+  listClients(): { clientId: string; clientName: string; createdAt: number; lastUsedAt: number | null; activeGrants: number; users: string[] }[] {
     try {
       this.maybeSweep()
       const now = this.now()
       const grants = new Map<string, number>()
+      const users = new Map<string, Set<string>>()
       for (const r of this.refresh.values()) {
-        if (!r.rotated && r.expiresAt > now) grants.set(r.clientId, (grants.get(r.clientId) ?? 0) + 1)
+        if (!r.rotated && r.expiresAt > now) {
+          grants.set(r.clientId, (grants.get(r.clientId) ?? 0) + 1)
+          if (!users.has(r.clientId)) users.set(r.clientId, new Set())
+          users.get(r.clientId)!.add(r.user)
+        }
       }
       return [...this.clients.values()].map(c => ({
         clientId: c.clientId,
@@ -785,6 +813,7 @@ export class OAuthServer {
         createdAt: c.createdAt,
         lastUsedAt: c.lastUsedAt,
         activeGrants: grants.get(c.clientId) ?? 0,
+        users: [...(users.get(c.clientId) ?? [])].sort(),
       }))
     } catch {
       return []

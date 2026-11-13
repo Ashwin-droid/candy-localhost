@@ -94,6 +94,13 @@
     .daemon { display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 13px; }
     .top .spacer { flex: 1; }
     .top-actions { display: flex; gap: 8px; }
+    .who { display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 13px; }
+    .who-name { font-family: var(--font-host); font-stretch: 87.5%; color: var(--ink); }
+    .badge-su {
+      font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+      padding: 2px 7px; border-radius: 999px;
+      background: var(--lemon-soft); color: var(--lemon);
+    }
 
     /* ---------- Buttons ---------- */
     .btn {
@@ -470,6 +477,11 @@
     <a href="candy://portal" class="wordmark" title="Open via the candy:// protocol">candy<span>.</span></a>
     <div class="daemon"><span class="lamp" id="status-dot"></span><span id="status-text">Connecting…</span></div>
     <div class="spacer"></div>
+    <div class="who" aria-label="Logged in">
+      <span class="who-name" id="who-name"></span>
+      <span class="badge-su" id="who-su" hidden title="You see and manage every user's sites and the daemon's settings">superuser</span>
+      <button class="btn quiet small" onclick="logout()">Log out</button>
+    </div>
     <div class="top-actions">
       <button class="btn quiet" onclick="refreshAll(); refreshTraffic();">Refresh</button>
       <button class="btn primary" onclick="showAddRoute()">Add site</button>
@@ -495,6 +507,12 @@
           <button class="btn small" id="bind-domain-btn" onclick="showBindDomain()" style="display: none;">Bind domain</button>
         </div>
         <div class="rail-list" id="domains-list"><div class="empty">Loading…</div></div>
+      </section>
+
+      <!-- Daemon-wide settings: the API takes them only from a superuser's portal login -->
+      <section id="settings-card" hidden>
+        <div class="rail-head"><h2>Daemon settings</h2><span class="n">superuser</span></div>
+        <div class="rail-list" id="settings-list"><div class="empty">Loading…</div></div>
       </section>
 
       <section>
@@ -653,6 +671,81 @@
     </div>
   </div>
 
+  <!-- Cloudflare zone and tunnel (superuser): the fields of `candy domain config` -->
+  <div id="zone-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="zone-title">
+    <div class="dialog">
+      <div class="dialog-head">
+        <h2 id="zone-title">Cloudflare zone</h2>
+        <button class="btn quiet dots" onclick="hideZoneConfig()" aria-label="Close">&times;</button>
+      </div>
+      <div class="dialog-body">
+        <form id="zone-form" onsubmit="submitZoneConfig(event)">
+          <div class="field">
+            <label for="zone-domain">Zone</label>
+            <input type="text" id="zone-domain" class="input-field code" placeholder="example.com" autocomplete="off" spellcheck="false">
+            <div class="hint">Public domains are bound as <code>name.zone</code>. Its zone id is looked up with the Cloudflare token.</div>
+          </div>
+          <div class="field">
+            <label for="zone-tunnel">Tunnel name</label>
+            <input type="text" id="zone-tunnel" class="input-field code" placeholder="candy" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="zone-tunnel-id">Tunnel id</label>
+            <input type="text" id="zone-tunnel-id" class="input-field code" placeholder="optional" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="zone-credentials">Credentials file</label>
+            <input type="text" id="zone-credentials" class="input-field code" placeholder="~/.cloudflared/&lt;tunnel id&gt;.json" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="dialog-actions">
+            <button type="button" class="btn" onclick="hideZoneConfig()">Cancel</button>
+            <button type="submit" class="btn primary" id="zone-submit">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- AdGuard Home link (superuser): the fields of `candy lan adguard setup` -->
+  <div id="adguard-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="adguard-title">
+    <div class="dialog">
+      <div class="dialog-head">
+        <h2 id="adguard-title">AdGuard Home</h2>
+        <button class="btn quiet dots" onclick="hideAdguard()" aria-label="Close">&times;</button>
+      </div>
+      <div class="dialog-body">
+        <form id="adguard-form" onsubmit="submitAdguard(event)">
+          <div class="field">
+            <label for="adguard-url">Address</label>
+            <input type="text" id="adguard-url" class="input-field code" placeholder="http://127.0.0.1:3000" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="adguard-username">Username</label>
+            <input type="text" id="adguard-username" class="input-field" required autocomplete="off" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="adguard-password">Password</label>
+            <input type="password" id="adguard-password" class="input-field" autocomplete="new-password">
+            <div class="hint" id="adguard-password-hint">Kept by the daemon, never shown again.</div>
+          </div>
+          <div class="field">
+            <label for="adguard-client">Persistent client</label>
+            <input type="text" id="adguard-client" class="input-field" required autocomplete="off" spellcheck="false">
+            <div class="hint">The AdGuard Home client that covers the LAN. candy keeps its upstreams for LAN-published names in sync.</div>
+          </div>
+          <div class="field">
+            <label for="adguard-dns">candy-dns LAN listener</label>
+            <input type="text" id="adguard-dns" class="input-field code" placeholder="127.0.0.1:5336" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="dialog-actions">
+            <button type="button" class="btn" onclick="hideAdguard()">Cancel</button>
+            <button type="submit" class="btn primary" id="adguard-submit">Link</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
   <!-- Single-field prompt (rename, set port) -->
   <div id="prompt-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
     <div class="dialog" style="width: 400px;">
@@ -791,6 +884,24 @@
     const TLD = _host.endsWith('.candy') ? 'candy' : _host.endsWith('.localhost') ? 'localhost' : null;
     const SCHEME = 'https';
 
+    // Who is logged in. The daemon enforces every rule; this only hides what would be refused.
+    const ME = window.CANDY_VARS || {};
+    const SUPER = !!ME.superuser;
+    document.getElementById('who-name').textContent = ME.user || '';
+    document.getElementById('who-su').hidden = !SUPER;
+
+    function goLogin() {
+      location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
+    }
+
+    async function logout() {
+      try {
+        await fetch(API + '/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      } catch {}
+      try { localStorage.removeItem('candy_session'); } catch {}
+      location.href = '/login';
+    }
+
     // Token management - rolling one-time-use tokens
     let currentToken = window.CANDY_TOKEN || null;
 
@@ -819,6 +930,11 @@
         'X-Candy-Token': currentToken
       };
       const res = await fetch(API + endpoint, { ...options, headers });
+      // The login ended (logged out elsewhere, expired): back to the login page
+      if (res.status === 401 && res.headers.get('X-Candy-Login')) {
+        goLogin();
+        return res;
+      }
 
       // Refresh token after successful call (token was consumed)
       if (res.ok) {
@@ -929,6 +1045,7 @@
     // "Publish this domain to LAN": opt a name in to resolving and serving at
     // <name>.candy for devices on the local network, not just the tailnet.
     function lanToggleButton(name, published, httpsUrl) {
+      if (!SUPER) return '';  // LAN publishing is a superuser setting
       const title = published
         ? `Published to LAN: ${name}.candy is reachable from the local network. Click to unpublish.`
         : `Publish this domain to LAN (${name}.candy is tailnet-only)`;
@@ -1194,6 +1311,8 @@
       else if (document.getElementById('add-route-modal').style.display === 'flex') hideAddRoute();
       else if (document.getElementById('bind-domain-modal').style.display === 'flex') hideBindDomain();
       else if (document.getElementById('domain-auth-modal').style.display === 'flex') hideDomainPasswordForm();
+      else if (document.getElementById('zone-modal').style.display === 'flex') hideZoneConfig();
+      else if (document.getElementById('adguard-modal').style.display === 'flex') hideAdguard();
     });
 
     document.getElementById('prompt-modal').addEventListener('click', (e) => {
@@ -1372,9 +1491,46 @@
     function showAddConfig() { showAddRoute('cmd'); }
     function hideAddConfig() { hideAddRoute(); }
 
-    // Logs modal
-    let logsEventSource = null;
+    // Logs modal. Read as a fetch stream, not EventSource: the request needs the
+    // session header (added by the page's fetch), which EventSource can't send.
+    let logsStream = null;
     let currentLogsProcess = null;
+
+    async function readLogStream(name, ctrl) {
+      const res = await fetch(`${API}/stream/${encodeURIComponent(name)}`, { signal: ctrl.signal, headers: { Accept: 'text/event-stream' } });
+      if (res.status === 401 && res.headers.get('X-Candy-Login')) { goLogin(); return; }
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) return;
+        buf += dec.decode(value, { stream: true }).replace(/\r/g, '');
+        let i;
+        while ((i = buf.indexOf('\n\n')) >= 0) {
+          const block = buf.slice(0, i);
+          buf = buf.slice(i + 2);
+          let event = 'message';
+          const data = [];
+          for (const line of block.split('\n')) {
+            if (line.startsWith('event:')) event = line.slice(6).trim();
+            else if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''));
+          }
+          if (!data.length) continue;
+          const parsed = JSON.parse(data.join('\n'));
+          if (event === 'status') {
+            const statusEl = document.getElementById('logs-modal-status');
+            statusEl.textContent = parsed.status;
+            statusEl.className = `process-status ${parsed.status}`;
+          } else {
+            const content = document.getElementById('logs-content');
+            content.textContent += parsed;
+            if (document.getElementById('logs-autoscroll').checked) content.scrollTop = content.scrollHeight;
+          }
+        }
+      }
+    }
 
     function showLogs(name) {
       currentLogsProcess = name;
@@ -1382,43 +1538,25 @@
       document.getElementById('logs-content').textContent = '';
       document.getElementById('logs-modal').style.display = 'flex';
 
-      // Close any existing connection
-      if (logsEventSource) {
-        logsEventSource.close();
-      }
-
-      // Start SSE stream
-      logsEventSource = new EventSource(`${API}/stream/${name}`);
-
-      // Log messages come as plain strings
-      logsEventSource.onmessage = (event) => {
-        const content = document.getElementById('logs-content');
-        const logData = JSON.parse(event.data);
-        content.textContent += logData;
-        if (document.getElementById('logs-autoscroll').checked) {
-          content.scrollTop = content.scrollHeight;
+      if (logsStream) logsStream.abort();
+      const ctrl = new AbortController();
+      logsStream = ctrl;
+      // Reconnect after a dropped stream, like EventSource did
+      (async () => {
+        while (logsStream === ctrl && !ctrl.signal.aborted) {
+          try { await readLogStream(name, ctrl); } catch (e) { if (ctrl.signal.aborted) return; console.log('Log stream error, reconnecting...'); }
+          if (ctrl.signal.aborted) return;
+          await new Promise(r => setTimeout(r, 2000));
+          if (logsStream === ctrl) document.getElementById('logs-content').textContent = '';
         }
-      };
-
-      // Status updates use named event
-      logsEventSource.addEventListener('status', (event) => {
-        const data = JSON.parse(event.data);
-        const statusEl = document.getElementById('logs-modal-status');
-        statusEl.textContent = data.status;
-        statusEl.className = `process-status ${data.status}`;
-      });
-
-      logsEventSource.onerror = () => {
-        // SSE auto-reconnects, just log it
-        console.log('SSE connection error, reconnecting...');
-      };
+      })();
     }
 
     function hideLogs() {
       document.getElementById('logs-modal').style.display = 'none';
-      if (logsEventSource) {
-        logsEventSource.close();
-        logsEventSource = null;
+      if (logsStream) {
+        logsStream.abort();
+        logsStream = null;
       }
       currentLogsProcess = null;
     }
@@ -1536,10 +1674,13 @@
       const btn = document.getElementById('bind-domain-btn');
       try {
         const data = await getJSON('/domains');
+        zoneConfig = data.configured ? { zone: data.zone || {}, tunnel: data.tunnel || {} } : null;
         if (!data.configured) {
           setCount('count-domains', '');
           btn.style.display = 'none';
-          list.innerHTML = '<div class="empty">Put a site on your own domain through a Cloudflare tunnel. Set up a zone from the CLI first:<br><code>candy domain config --zone example.com --tunnel candy</code></div>';
+          list.innerHTML = SUPER
+            ? '<div class="empty">Put a site on your own domain through a Cloudflare tunnel. No zone is set up yet: set one under Daemon settings.</div>'
+            : '<div class="empty">Put a site on your own domain through a Cloudflare tunnel. No zone is set up yet; a superuser sets one up.</div>';
           return;
         }
 
@@ -1655,8 +1796,9 @@
           pendingBindSubdomain = subdomain;
           pendingBindServer = serverName;
           document.getElementById('bind-domain-warning-text').textContent = data.message;
+          // Record content comes from the zone (anyone with DNS access sets it): escaped
           const recordsHtml = (data.existingRecords || [])
-            .map(r => `${r.type} -> ${r.content}`)
+            .map(r => `${escapeHtml(r.type)} -> ${escapeHtml(r.content)}`)
             .join('<br>');
           document.getElementById('bind-domain-warning-records').innerHTML = recordsHtml;
           document.getElementById('bind-domain-warning').style.display = 'block';
@@ -1775,8 +1917,177 @@
       }
     }
 
+    // =========================================
+    // DAEMON SETTINGS (superuser only)
+    // The API refuses these to everyone else; the CLI can't change them at all.
+    // =========================================
+
+    let zoneConfig = null;    // { zone, tunnel } from /domains, set by refreshDomains
+    let adguardState = null;  // GET /lan/adguard
+
+    async function refreshSettings() {
+      const card = document.getElementById('settings-card');
+      card.hidden = !SUPER;
+      if (!SUPER) return;
+      const list = document.getElementById('settings-list');
+      try { adguardState = await getJSON('/lan/adguard'); } catch { adguardState = null; }
+      const btn = (label, onclick) => `<button onclick="${onclick}">${label}</button>`;
+      const row = (label, value, on, actions, title = '') => `
+                <div class="setting">
+                  <span class="setting-label">${label}</span>
+                  <span class="setting-value ${on ? 'on' : ''}" ${title ? `title="${escapeHtml(title)}"` : ''}>${escapeHtml(value)}</span>
+                  <span class="setting-actions">${actions.join('')}</span>
+                </div>`;
+
+      const zone = zoneConfig?.zone?.domain || '';
+      const tunnel = zoneConfig?.tunnel?.name || '';
+      const zoneRows = [
+        row('Zone', zone || 'Not set', !!zone, [btn(zone || tunnel ? 'Edit' : 'Set up', 'showZoneConfig()')], zoneConfig?.zone?.id ? `zone id ${zoneConfig.zone.id}` : ''),
+        row('Tunnel', tunnel || 'Not set', !!tunnel, [], zoneConfig?.tunnel?.id || ''),
+      ];
+
+      const ag = adguardState;
+      const linked = !!ag?.configured;
+      const agRows = [row('Status', linked ? 'Linked' : ag ? 'Not linked' : 'Couldn’t load', linked,
+        linked ? [btn('Edit', 'showAdguard()'), btn('Unlink', 'unlinkAdguard()')] : [btn('Set up', 'showAdguard()')], linked ? `${ag.url} as ${ag.username}` : '')];
+      if (linked) {
+        agRows.push(row('Client', ag.client, false, [], ag.url));
+        const rules = Array.isArray(ag.rules) ? ag.rules : [];
+        agRows.push(row('Names', rules.length ? `${rules.length} to ${ag.dnsTarget}` : 'None right now', rules.length > 0, [], rules.join('  ')));
+        if (ag.error) agRows.push(row('Sync', `Failed: ${ag.error}`, false, [], ag.error));
+      }
+
+      list.innerHTML = `
+            <div class="rail-item domain-item">
+              <div class="domain-head"><span class="fqdn">Cloudflare</span></div>
+              <div class="sub-line"><span>The zone public domains live under, and the tunnel that serves them.</span></div>
+              <div class="settings">${zoneRows.join('')}
+              </div>
+            </div>
+            <div class="rail-item domain-item">
+              <div class="domain-head"><span class="fqdn">AdGuard Home</span></div>
+              <div class="sub-line"><span>Sends LAN-published <code>.candy</code> names to candy-dns.</span></div>
+              <div class="settings">${agRows.join('')}
+              </div>
+            </div>`;
+    }
+
+    function showZoneConfig() {
+      document.getElementById('zone-domain').value = zoneConfig?.zone?.domain || '';
+      document.getElementById('zone-tunnel').value = zoneConfig?.tunnel?.name || '';
+      document.getElementById('zone-tunnel-id').value = zoneConfig?.tunnel?.id || '';
+      document.getElementById('zone-credentials').value = zoneConfig?.tunnel?.credentialsFile || '';
+      document.getElementById('zone-modal').style.display = 'flex';
+      document.getElementById('zone-domain').focus();
+    }
+
+    function hideZoneConfig() {
+      document.getElementById('zone-modal').style.display = 'none';
+    }
+
+    async function submitZoneConfig(e) {
+      e.preventDefault();
+      const domain = document.getElementById('zone-domain').value.trim();
+      const name = document.getElementById('zone-tunnel').value.trim();
+      const id = document.getElementById('zone-tunnel-id').value.trim();
+      const credentialsFile = document.getElementById('zone-credentials').value.trim();
+      if (!domain && !name) { toast('Enter a zone or a tunnel name', 'error'); return; }
+      // Same shape as `candy domain config`. A changed zone gets its id looked up again.
+      const body = {};
+      if (domain) body.zone = { domain, id: domain === zoneConfig?.zone?.domain ? (zoneConfig.zone.id || '') : '' };
+      if (name || id) body.tunnel = { name, id, credentialsFile };
+      const submit = document.getElementById('zone-submit');
+      submit.disabled = true;
+      try {
+        const res = await apiCall('/domains/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) { toast(data.error || 'Could not save the zone', 'error'); return; }
+        toast(data.message || 'Domain config updated', 'success');
+        hideZoneConfig();
+        refreshAll();
+      } catch {
+        toast('Could not save the zone', 'error');
+      } finally {
+        submit.disabled = false;
+      }
+    }
+
+    function showAdguard() {
+      const ag = adguardState?.configured ? adguardState : null;
+      document.getElementById('adguard-url').value = ag?.url || '';
+      document.getElementById('adguard-username').value = ag?.username || '';
+      document.getElementById('adguard-client').value = ag?.client || '';
+      document.getElementById('adguard-dns').value = ag?.dnsTarget || '';
+      const pw = document.getElementById('adguard-password');
+      pw.value = '';
+      // Linked already: an empty password keeps the one the daemon has
+      pw.required = !ag;
+      pw.placeholder = ag ? 'Unchanged' : '';
+      document.getElementById('adguard-submit').textContent = ag ? 'Save' : 'Link';
+      document.getElementById('adguard-modal').style.display = 'flex';
+      document.getElementById(ag ? 'adguard-password' : 'adguard-url').focus();
+    }
+
+    function hideAdguard() {
+      document.getElementById('adguard-modal').style.display = 'none';
+      document.getElementById('adguard-password').value = '';
+    }
+
+    async function submitAdguard(e) {
+      e.preventDefault();
+      const dnsTarget = document.getElementById('adguard-dns').value.trim();
+      // Same fields as `candy lan adguard setup`
+      const body = {
+        url: document.getElementById('adguard-url').value.trim() || 'http://127.0.0.1:3000',
+        username: document.getElementById('adguard-username').value.trim(),
+        password: document.getElementById('adguard-password').value,
+        client: document.getElementById('adguard-client').value.trim(),
+        ...(dnsTarget ? { dnsTarget } : {}),
+      };
+      const submit = document.getElementById('adguard-submit');
+      submit.disabled = true;
+      try {
+        const res = await apiCall('/lan/adguard', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) { toast(data.error || 'Could not link AdGuard Home', 'error'); return; }
+        toast('AdGuard Home linked', 'success');
+        hideAdguard();
+        refreshAll();
+      } catch {
+        toast('Could not link AdGuard Home', 'error');
+      } finally {
+        submit.disabled = false;
+      }
+    }
+
+    async function unlinkAdguard() {
+      if (!confirm('Unlink AdGuard Home? candy takes out the upstream lines it added.')) return;
+      try {
+        const res = await apiCall('/lan/adguard', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ remove: true }),
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) { toast(data.error || 'Could not unlink AdGuard Home', 'error'); return; }
+        toast('AdGuard Home unlinked', 'success');
+        refreshAll();
+      } catch {
+        toast('Could not unlink AdGuard Home', 'error');
+      }
+    }
+
     // candy's own MCP server on a public address (off unless turned on here)
     async function publicMcpItem() {
+      if (!SUPER) return '';  // the public MCP address is a superuser setting
       let st;
       try { st = await (await apiCall('/domains/mcp')).json(); } catch { return ''; }
       if (!st || st.error || !st.available) return '';
@@ -1990,6 +2301,7 @@
       await refreshConfigs();
       await refreshPortals();
       await refreshDomains();
+      await refreshSettings();
       await refreshActivity();
     }
 
@@ -2060,6 +2372,8 @@
       if (active && s.proc.pid) meta.push(`<span>pid ${escapeHtml(s.proc.pid)}</span>`);
       if (s.traffic) meta.push(`<span>${plural(s.traffic.total, 'request')}</span>`);
       if (variants.length > 1) meta.push(`<span>${variants.length} variants</span>`);
+      // A superuser sees everyone's sites: say whose this one is
+      if (SUPER && s.config?.user && s.config.user !== ME.user) meta.push(`<span title="Runs as ${escapeHtml(s.config.user)}">${escapeHtml(s.config.user)}</span>`);
       if (fn) {
         // An assets-only function never starts a process, so hot/max mean nothing for it
         if (fn.hasWorker !== false) meta.push(`<span title="Warm instances / most at once">hot ${Number(fn.hot) || 0} / max ${Number(fn.max) || 4}</span>`);
@@ -2109,10 +2423,11 @@
       if (variants.length > 1) variants.forEach(v => items.push(menuItem(`Start ${v.id}`, `startProcess('${js}', '${escapeJsSingle(v.id)}')`)));
       const toggles = [];
       if (route) toggles.push(menuItem(route.persistent ? 'Unpin' : 'Pin across restarts', `togglePersistent('${js}', ${!route.persistent})`));
-      if (route || s.config) toggles.push(menuItem(lan ? 'Remove from LAN' : 'Publish to LAN…', `toggleLan('${js}', ${!lan})`));
-      if (lan) toggles.push(menuItem(lanHttps ? 'Turn off LAN HTTPS' : 'Serve LAN over HTTPS', `toggleLanHttps('${js}', ${!lanHttps})`));
-      if (route || s.config) toggles.push(menuItem(tsServe ? 'Change Tailscale port…' : 'Serve on Tailscale…', `serveOnTailscale('${js}', '${escapeJsSingle(tsServe || '')}')`));
-      if (tsServe) toggles.push(menuItem('Stop serving on Tailscale', `stopTailscaleServe('${js}')`));
+      // LAN publishing and tailscale serve are superuser settings
+      if (SUPER && (route || s.config)) toggles.push(menuItem(lan ? 'Remove from LAN' : 'Publish to LAN…', `toggleLan('${js}', ${!lan})`));
+      if (SUPER && lan) toggles.push(menuItem(lanHttps ? 'Turn off LAN HTTPS' : 'Serve LAN over HTTPS', `toggleLanHttps('${js}', ${!lanHttps})`));
+      if (SUPER && (route || s.config)) toggles.push(menuItem(tsServe ? 'Change Tailscale port…' : 'Serve on Tailscale…', `serveOnTailscale('${js}', '${escapeJsSingle(tsServe || '')}')`));
+      if (SUPER && tsServe) toggles.push(menuItem('Stop serving on Tailscale', `stopTailscaleServe('${js}')`));
       // Functions exit when idle and always hold requests while starting, so these don't apply
       if (s.config && !fn) toggles.push(menuItem('Idle time…', `setIdleLimit('${js}', ${Number(ttl) || 'null'})`));
       if (s.config && !fn) toggles.push(menuItem(s.config.api ? 'Turn off API mode' : 'API mode', `toggleApiMode('${js}', ${!s.config.api})`));
@@ -2247,8 +2562,26 @@
     // Update TLD-dependent elements
     document.querySelectorAll('.tld-suffix').forEach(el => el.textContent = '.' + (TLD || 'localhost'));
 
+    // Links from a site's own pages, which can't act without a login:
+    // ?add=<name> opens Add site with the name, ?logs=<name> opens its log and terminal
+    const deepLink = new URLSearchParams(location.search);
+    const linkName = (v) => /^[a-z0-9][a-z0-9.-]{0,62}$/i.test(v || '') ? v : null;
+    const addName = linkName(deepLink.get('add'));
+    const logsName = linkName(deepLink.get('logs'));
+    if (deepLink.has('add') || deepLink.has('logs')) history.replaceState(null, '', location.pathname);
+    if (addName) {
+      showAddRoute('port');
+      document.getElementById('add-name').value = addName;
+      document.getElementById('config-name').value = addName;
+      document.getElementById('add-port').focus();
+    }
+
     // Init
-    refreshAll().then(refreshTraffic);
+    refreshAll().then(() => {
+      if (!logsName) return;
+      if (collectSites().some(site => site.name === logsName)) showLogs(logsName);
+      else toast(`${logsName} isn’t one of your sites`, 'error');
+    }).then(refreshTraffic);
     setInterval(refreshAll, 5000);
     // Traffic parses the Caddy access log, so poll it less often
     setInterval(refreshTraffic, 15000);
@@ -2256,6 +2589,12 @@
     // Click outside a dialog to close it
     document.getElementById('add-route-modal').addEventListener('click', (e) => {
       if (e.target.id === 'add-route-modal') hideAddRoute();
+    });
+    document.getElementById('zone-modal').addEventListener('click', (e) => {
+      if (e.target.id === 'zone-modal') hideZoneConfig();
+    });
+    document.getElementById('adguard-modal').addEventListener('click', (e) => {
+      if (e.target.id === 'adguard-modal') hideAdguard();
     });
 
 
@@ -2631,7 +2970,7 @@
 
     function fnStatusHtml(status, outcome) {
       if (outcome && outcome !== 'ok' && !status) return `<span class="st bad">${escapeHtml(outcome)}</span>`;
-      const cls = status ? 's' + String(status)[0] : 'bad';
+      const cls = Number.isInteger(Number(status)) && Number(status) > 0 ? 's' + String(Number(status))[0] : 'bad';
       return `<span class="st ${cls}" title="${escapeHtml(outcome && outcome !== 'ok' ? outcome : '')}">${escapeHtml(status ?? '—')}</span>`;
     }
 

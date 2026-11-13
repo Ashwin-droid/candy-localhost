@@ -492,7 +492,7 @@
             <span class="panel-badge">Live</span>
           </div>
         </div>
-        <div style="font-size: 0.65rem; color: var(--text-muted); padding: 0.5rem 1rem; background: var(--bg-elevated); border-bottom: 1px solid var(--border);">Typing here goes to the process.</div>
+        <div style="font-size: 0.65rem; color: var(--text-muted); padding: 0.5rem 1rem; background: var(--bg-elevated); border-bottom: 1px solid var(--border);">Need to type into it? <a id="terminalLink" href="#" style="color: var(--cyan);">Open it on the portal</a>.</div>
         <div class="logs-content" id="logsContent"></div>
       </div>
 
@@ -537,7 +537,6 @@
     const TLD = _host.endsWith('.candy') ? 'candy' : _host.endsWith('.localhost') ? 'localhost' : null;
     const SCHEME = 'https';
     const vars = window.CANDY_VARS || { mode: 'starting', name: 'unknown', detectedPorts: [], returnPath: '/', variants: [] };
-    let currentToken = window.CANDY_TOKEN;
     const mode = vars.mode || 'starting';
     const serverName = vars.name;
     const returnPath = vars.returnPath || '/';
@@ -550,15 +549,7 @@
       if (!actionMatch) return _host;
       return actionMatch[1] ? `${serverName}.${actionMatch[1]}${candySuffix}` : `${serverName}${candySuffix}`;
     };
-    const getActionHost = (action) => {
-      if (_isBoundDomain || !TLD) return location.host;  // keeps a :port (ts.net HTTPS)
-      const serviceHost = getServiceHost();
-      const serviceLeft = serviceHost.slice(0, -candySuffix.length);
-      const hostSuffix = serviceLeft === serverName ? '' : `.${serviceLeft.slice(serverName.length + 1)}`;
-      return `${serverName}.${action}${hostSuffix}${candySuffix}`;
-    };
     const getServiceUrl = (path = '') => `${SCHEME}://${getServiceHost()}${path}`;
-    const getActionUrl = (action) => `${SCHEME}://${getActionHost(action)}`;
     // Update TLD suffix display for bound domains
     if (_isBoundDomain) {
       const suffix = document.getElementById('tldSuffix');
@@ -568,50 +559,21 @@
     }
     const variants = Array.isArray(vars.variants) ? vars.variants : [];
 
-    // Token management - rolling one-time-use tokens
-    async function refreshToken() {
-      if (!currentToken) return;
-      try {
-        const res = await fetch(API + '/token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token: currentToken })
-        });
-        if (res.ok) {
-          const data = await res.json();
-          currentToken = data.token;
-        }
-      } catch (e) {
-        console.error('Token refresh failed:', e);
-      }
-    }
-
-    // Wrapper for API calls with token
-    async function apiCall(endpoint, options = {}) {
-      const headers = {
-        ...options.headers,
-        'X-Candy-Token': currentToken
-      };
-      const res = await fetch(API + endpoint, { ...options, headers });
-
-      if (res.ok) {
-        await refreshToken();
-      } else if (res.status === 401) {
-        await refreshToken();
-        if (currentToken) {
-          headers['X-Candy-Token'] = currentToken;
-          const retry = await fetch(API + endpoint, { ...options, headers });
-          if (retry.ok) await refreshToken();
-          return retry;
-        }
-      }
-      return res;
-    }
+    // This page acts only on its own site, from its own host (the daemon's
+    // siteAction); anything else needs a login, which lives on the portal
+    // The site token the daemon put in this page: start and restart this site, nothing else
+    const apiCall = (endpoint, options = {}) => fetch(API + endpoint, {
+      ...options,
+      headers: { ...(options.headers || {}), 'X-Candy-Token': window.CANDY_TOKEN || '' },
+    });
+    const portalBase = `${SCHEME}://portal.${_isBoundDomain ? 'localhost' : TLD}`;
+    document.getElementById('terminalLink').href = `${portalBase}/?logs=${encodeURIComponent(serverName)}`;
 
     document.getElementById('serverName').textContent = serverName;
     document.querySelectorAll('.tld-suffix').forEach(el => el.textContent = '.' + TLD);
+    // Stopping needs a login: the portal asks to confirm
     document.getElementById('killBtn').onclick = () => {
-      location.href = getActionUrl('k');
+      location.href = `${portalBase}/go/kill?name=${encodeURIComponent(serverName)}`;
     };
 
     function renderChooser() {
@@ -672,7 +634,7 @@
       const container = document.getElementById('detectedPorts');
       if (ports && ports.length > 0) {
         container.innerHTML = ports.map(port =>
-          `<button class="port-btn" onclick="selectPort(${port})">${port}</button>`
+          `<button class="port-btn" onclick="selectPort(${Number(port)})">${Number(port)}</button>`
         ).join('');
       } else {
         container.innerHTML = '<span class="no-ports">Watching the output for a port…</span>';
@@ -690,29 +652,9 @@
       await setPort();
     }
 
+    // Picking the port needs a login: it's set from the portal, next to the log
     async function setPort() {
-      const port = parseInt(document.getElementById('manualPort').value);
-      if (!port || port < 1024 || port > 65535) {
-        alert('Please enter a valid port (1024-65535)');
-        return;
-      }
-
-      try {
-        const res = await apiCall(`/process/port/${serverName}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ port })
-        });
-
-        if (res.ok) {
-          location.href = getServiceUrl(returnPath);
-        } else {
-          const data = await res.json();
-          alert('Failed to set port: ' + (data.error || 'Unknown error'));
-        }
-      } catch (e) {
-        alert('Failed to set port: ' + e.message);
-      }
+      location.href = `${portalBase}/?logs=${encodeURIComponent(serverName)}`;
     }
 
     let eventSource = null;
@@ -754,61 +696,6 @@
       };
     }
 
-    // PTY input - send all keystrokes to terminal
-    document.addEventListener('keydown', async (e) => {
-      if (mode !== 'starting') return;
-      // Don't capture if typing in an input field
-      if (e.target.tagName === 'INPUT') return;
-
-      e.preventDefault();
-
-      // Build the input to send
-      let input = null;
-      let key = null;
-
-      // Handle Ctrl combinations
-      if (e.ctrlKey) {
-        const ctrlKeys = {
-          'c': 'ctrl+c',
-          'd': 'ctrl+d',
-          'z': 'ctrl+z',
-          'l': 'ctrl+l',
-        };
-        if (ctrlKeys[e.key.toLowerCase()]) {
-          key = ctrlKeys[e.key.toLowerCase()];
-        }
-      } else if (e.key === 'Enter') {
-        input = '\n';
-      } else if (e.key === 'Tab') {
-        key = 'tab';
-      } else if (e.key === 'Backspace') {
-        key = 'backspace';
-      } else if (e.key === 'ArrowUp') {
-        key = 'up';
-      } else if (e.key === 'ArrowDown') {
-        key = 'down';
-      } else if (e.key === 'ArrowLeft') {
-        key = 'left';
-      } else if (e.key === 'ArrowRight') {
-        key = 'right';
-      } else if (e.key.length === 1) {
-        // Regular character
-        input = e.key;
-      }
-
-      if (input !== null || key !== null) {
-        try {
-          const body = key ? { key } : { input };
-          await apiCall(`/process/input/${serverName}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
-          });
-        } catch (err) {
-          console.error('PTY input failed:', err);
-        }
-      }
-    });
   </script>
 </body>
 </html>

@@ -4,6 +4,7 @@
 // function launch and an fn-tool run are put together.
 
 import { stripCandyCredentials } from "./server-auth.ts"
+import { PROXY_TAG_HEADER } from "./caddy-config.ts"
 import { isDeployId, type DeployInfo } from "./fn-deploy.ts"
 import type { AssetsConfig, AssetsRouting, RouteOptions, RouteResult } from "./fn-assets.ts"
 import type { FnLog } from "./fn-log.ts"
@@ -56,13 +57,15 @@ export const fnSocketPath = (dir: string, name: string): string => {
 }
 
 // Headers a function sees: no hop-by-hop headers, never candy's own
-// verification marker, and on a password-protected domain none of the
+// verification marker or Caddy's proxy tag, and on a password-protected domain none of the
 // visitor's candy credentials (the function must not be able to replay them).
 export const HOP_BY_HOP = ["connection", "keep-alive", "proxy-connection", "transfer-encoding", "te", "trailer", "upgrade"]
 export const fnRequestHeaders = (src: Headers, opts: { stripCredentials: boolean }): Headers => {
   const headers = new Headers(src)
   for (const h of HOP_BY_HOP) headers.delete(h)
   headers.delete("x-candy-verified")
+  // The daemon strips it on arrival; this keeps it out even if that changes
+  headers.delete(PROXY_TAG_HEADER)
   if (opts.stripCredentials) stripCandyCredentials(headers)
   return headers
 }

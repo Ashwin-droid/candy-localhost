@@ -41,15 +41,16 @@
       <h1>Allow <span class="client" id="client"></span> to control candy?</h1>
       <p>It asked to connect to this machine's candy server over the internet.</p>
       <dl>
+        <dt>Approving as</dt><dd id="user"></dd>
+        <dt>From</dt><dd id="you"></dd>
         <dt>Sends you back to</dt><dd id="redirect"></dd>
         <dt>Connects to</dt><dd id="endpoint"></dd>
-        <dt>You are</dt><dd id="you"></dd>
       </dl>
-      <p>If you allow it, it can:</p>
+      <p>If you allow it, it acts as <span class="client" id="user-2"></span>, never as a superuser. It can:</p>
       <ul>
         <li>start, stop and read the logs of your servers</li>
-        <li>type into their terminals, which can run commands on this machine</li>
-        <li>change routes, public domains and LAN publishing</li>
+        <li>type into their terminals, which can run commands as you on this machine</li>
+        <li>change your routes and public domains</li>
       </ul>
       <div class="actions">
         <button id="deny">Deny</button>
@@ -66,6 +67,8 @@
 
   <script>
     const requestId = new URLSearchParams(location.search).get('request') || '';
+    const me = (window.CANDY_VARS || {}).user || '';
+    let token = window.CANDY_TOKEN || '';
     const $ = (id) => document.getElementById(id);
     const show = (id) => { for (const s of ['loading', 'ask', 'gone']) $(s).hidden = s !== id; };
 
@@ -78,6 +81,7 @@
         $('redirect').textContent = info.redirectHost;
         $('endpoint').textContent = info.endpoint;
         $('you').textContent = info.you;
+        $('user').textContent = $('user-2').textContent = info.user || me;
         document.title = 'Allow ' + info.clientName + ' to control candy?';
         show('ask');
         const left = info.expiresAt - Date.now();
@@ -93,11 +97,18 @@
       try {
         const res = await fetch('/oauth/decision', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Candy-Token': window.CANDY_TOKEN || '' },
+          headers: { 'Content-Type': 'application/json', 'X-Candy-Token': token },
           body: JSON.stringify({ request: requestId, allow })
         });
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.redirect) { location.href = data.redirect; return; }
+        if (res.status === 401 && res.headers.get('X-Candy-Login')) {
+          location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
+          return;
+        }
+        // The token rolls even when the answer is refused: fetch the next one for a retry
+        const fresh = await fetch('/token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) }).catch(() => null);
+        if (fresh?.ok) token = (await fresh.json()).token || token;
         $('error').textContent = data.error || 'Could not save your answer. Reload this page and try again.';
       } catch {
         $('error').textContent = 'Could not reach candy. Check your connection and try again.';

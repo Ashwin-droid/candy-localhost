@@ -45,7 +45,7 @@ const start = (srv: OAuthServer, clientId: string, over: Record<string, string |
 /** authorize -> allow -> complete; returns the code from the redirect. */
 const getCode = (srv: OAuthServer, clientId: string, approver = "ashwin") => {
   const requestId = start(srv, clientId)
-  const d = srv.decide(requestId, true, approver)
+  const d = srv.decide(requestId, true, "ashwin", approver)
   if (!d.ok) throw new Error("decide failed")
   const c = srv.complete(requestId, d.grant)
   if (!c.ok) throw new Error("complete failed")
@@ -108,7 +108,7 @@ describe("happy path", () => {
       clientId, clientName: "Claude", redirectUri: CB, createdAt: T0, expiresAt: T0 + 10 * MIN, decided: false,
     })
 
-    const d = srv.decide(requestId, true, "ashwin@tailnet")
+    const d = srv.decide(requestId, true, "ashwin", "ashwin@tailnet")
     if (!d.ok) throw new Error("decide")
     expect(srv.getRequest(requestId)).toMatchObject({ decided: true, expiresAt: T0 + 2 * MIN })
 
@@ -127,7 +127,7 @@ describe("happy path", () => {
     expect(Buffer.from(body.access_token, "base64url").length).toBe(32)
 
     expect(srv.verifyAccessToken(body.access_token)).toEqual({
-      clientId, clientName: "Claude", approver: "ashwin@tailnet", expiresAt: T0 + 60 * MIN,
+      clientId, clientName: "Claude", approver: "ashwin@tailnet", user: "ashwin", expiresAt: T0 + 60 * MIN,
     })
 
     clock.t += 30 * MIN
@@ -136,14 +136,14 @@ describe("happy path", () => {
     const next = again.body as any
     expect(next.refresh_token).not.toBe(body.refresh_token)
     expect(srv.verifyAccessToken(next.access_token)).toMatchObject({ clientId, approver: "ashwin@tailnet" })
-    expect(srv.listClients()).toEqual([{ clientId, clientName: "Claude", createdAt: T0, lastUsedAt: clock.t, activeGrants: 1 }])
+    expect(srv.listClients()).toEqual([{ clientId, clientName: "Claude", createdAt: T0, lastUsedAt: clock.t, activeGrants: 1, users: ["ashwin"] }])
   })
 
   it("omits state when the client sent none", () => {
     const { srv } = make()
     const clientId = register(srv)
     const requestId = start(srv, clientId, { state: null })
-    const d = srv.decide(requestId, true)
+    const d = srv.decide(requestId, true, "ashwin")
     if (!d.ok) throw new Error("decide")
     const c = srv.complete(requestId, d.grant)
     if (!c.ok) throw new Error("complete")
@@ -160,7 +160,7 @@ describe("deny path", () => {
     const { srv } = make()
     const clientId = register(srv)
     const requestId = start(srv, clientId)
-    const d = srv.decide(requestId, false, "ashwin")
+    const d = srv.decide(requestId, false, "ashwin", "ashwin")
     if (!d.ok) throw new Error("decide")
     const c = srv.complete(requestId, d.grant)
     if (!c.ok) throw new Error("complete")
@@ -314,7 +314,7 @@ describe("authorization request validation", () => {
 
     // the code goes to the port the client actually asked for, and the token request must name it too
     const requestId = start(srv, clientId, { redirect_uri: "http://127.0.0.1:51234/cb" })
-    const d = srv.decide(requestId, true) as any
+    const d = srv.decide(requestId, true, "ashwin") as any
     const c = srv.complete(requestId, d.grant) as any
     const back = new URL(c.redirect)
     expect(back.port).toBe("51234")
@@ -345,17 +345,17 @@ describe("decide and complete", () => {
   it("allows only one decision per request", () => {
     const { srv } = make()
     const requestId = start(srv, register(srv))
-    expect(srv.decide(requestId, true).ok).toBe(true)
-    expect(srv.decide(requestId, false)).toMatchObject({ ok: false, status: 409 })
-    expect(srv.decide(requestId, true)).toMatchObject({ ok: false })
-    expect(srv.decide("unknown", true)).toMatchObject({ ok: false, status: 404 })
+    expect(srv.decide(requestId, true, "ashwin").ok).toBe(true)
+    expect(srv.decide(requestId, false, "ashwin")).toMatchObject({ ok: false, status: 409 })
+    expect(srv.decide(requestId, true, "ashwin")).toMatchObject({ ok: false })
+    expect(srv.decide("unknown", true, "ashwin")).toMatchObject({ ok: false, status: 404 })
   })
 
   it("a wrong grant is refused without consuming the request", () => {
     const { srv } = make()
     const requestId = start(srv, register(srv))
     expect(srv.complete(requestId, "anything")).toMatchObject({ ok: false, status: 409 })  // not decided yet
-    const d = srv.decide(requestId, true) as any
+    const d = srv.decide(requestId, true, "ashwin") as any
     const wrong = srv.complete(requestId, "wrong-grant")
     expect(wrong).toMatchObject({ ok: false, status: 403 })
     expect(JSON.stringify(wrong)).not.toContain(d.grant)
@@ -370,8 +370,8 @@ describe("decide and complete", () => {
     const clientId = register(srv)
     const a = start(srv, clientId)
     const b = start(srv, clientId)
-    const da = srv.decide(a, true) as any
-    srv.decide(b, false)
+    const da = srv.decide(a, true, "ashwin") as any
+    srv.decide(b, false, "ashwin")
     expect(srv.complete(b, da.grant).ok).toBe(false)
     expect(srv.complete(a, da.grant).ok).toBe(true)
   })
@@ -384,11 +384,11 @@ describe("decide and complete", () => {
     expect(srv.getRequest(stale)).not.toBeNull()
     clock.t += 1
     expect(srv.getRequest(stale)).toBeNull()
-    expect(srv.decide(stale, true)).toMatchObject({ ok: false, status: 404 })
+    expect(srv.decide(stale, true, "ashwin")).toMatchObject({ ok: false, status: 404 })
 
     const requestId = start(srv, clientId)
     clock.t += 9 * MIN
-    const d = srv.decide(requestId, true) as any
+    const d = srv.decide(requestId, true, "ashwin") as any
     clock.t += 2 * MIN - 1
     expect(srv.getRequest(requestId)).not.toBeNull()   // deciding late still leaves the full 2 minutes
     clock.t += 1
@@ -590,7 +590,7 @@ describe("persistence", () => {
 
     const requestId = start(srv, clientId)
     srv.getRequest(requestId)
-    const d = srv.decide(requestId, true) as any
+    const d = srv.decide(requestId, true, "ashwin") as any
     const c = srv.complete(requestId, d.grant) as any
     expect(changes.length).toBe(1)           // pending requests and codes are not persisted
 
@@ -660,7 +660,7 @@ describe("revocation and cleanup", () => {
     expect(srv.persisted()).toEqual({ clients: [], refreshTokens: [] })
     expect(srv.verifyAccessToken(t.access_token)).toBeNull()
     expect(srv.getRequest(requestId)).toBeNull()
-    expect(srv.decide(requestId, true).ok).toBe(false)
+    expect(srv.decide(requestId, true, "ashwin").ok).toBe(false)
   })
 
   it("sweep drops expired state, also lazily without being called", () => {
@@ -709,7 +709,7 @@ describe("garbage input", () => {
         srv.startAuthorization(j)
         srv.getRequest(j)
         srv.decide(j, j, j)
-        srv.decide(j, true, j)
+        srv.decide(j, true, j, j)
         srv.complete(j, j)
         srv.token(j)
         srv.verifyAccessToken(j)
@@ -720,7 +720,7 @@ describe("garbage input", () => {
 
     expect(srv.getRequest(huge)).toBeNull()
     expect(srv.verifyAccessToken(huge)).toBeNull()
-    expect(srv.decide(huge, true)).toMatchObject({ ok: false })
+    expect(srv.decide(huge, true, "ashwin")).toMatchObject({ ok: false })
     expect(srv.token(new URLSearchParams({ grant_type: "refresh_token", client_id: clientId, refresh_token: huge })).status).toBe(400)
     expect(srv.token(new URLSearchParams({ grant_type: huge, client_id: huge })).status).toBe(400)
     expect(srv.startAuthorization(new URLSearchParams({ client_id: huge, redirect_uri: huge })).ok).toBe(false)
@@ -731,7 +731,59 @@ describe("garbage input", () => {
     expect(srv.startAuthorization(twice)).toMatchObject({ ok: false, status: 400 })
     // a non-boolean decision is not treated as approval
     const requestId = start(srv, clientId)
-    expect(srv.decide(requestId, "yes" as any).ok).toBe(false)
+    expect(srv.decide(requestId, "yes" as any, "ashwin").ok).toBe(false)
     expect(srv.getRequest(requestId)).toMatchObject({ decided: false })
+  })
+})
+
+describe("per-user grants", () => {
+  it("tokens act as the user who approved, through refreshes and restarts", () => {
+    const { srv, clock } = make()
+    const clientId = register(srv)
+    const requestId = start(srv, clientId)
+    const d = srv.decide(requestId, true, "bob", "bob@laptop") as any
+    const c = srv.complete(requestId, d.grant) as any
+    const code = new URL(c.redirect).searchParams.get("code")!
+    const t = srv.token(codeForm(clientId, code)).body as any
+    expect(srv.verifyAccessToken(t.access_token)).toMatchObject({ user: "bob", approver: "bob@laptop" })
+    clock.t += MIN
+    const t2 = srv.token(refreshForm(clientId, t.refresh_token)).body as any
+    expect(srv.verifyAccessToken(t2.access_token)?.user).toBe("bob")
+    expect(srv.persisted().refreshTokens.every(r => r.user === "bob")).toBe(true)
+    expect(srv.listClients()[0].users).toEqual(["bob"])
+    const { srv: again } = make({ persisted: JSON.parse(JSON.stringify(srv.persisted())), now: () => clock.t })
+    const t3 = again.token(refreshForm(clientId, t2.refresh_token)).body as any
+    expect(again.verifyAccessToken(t3.access_token)?.user).toBe("bob")
+  })
+
+  it("won't approve without a valid user name", () => {
+    const { srv } = make()
+    const clientId = register(srv)
+    for (const bad of ["", "root;rm", 7, null, undefined, "a b"]) {
+      const requestId = start(srv, clientId)
+      expect(srv.decide(requestId, true, bad as any)).toMatchObject({ ok: false, status: 400 })
+      // the request is still open for a proper decision
+      expect(srv.decide(requestId, true, "alice").ok).toBe(true)
+    }
+  })
+
+  it("revokes approvals saved before grants had a user, and saves without them", () => {
+    const { srv } = make()
+    const clientId = register(srv)
+    const t = login(srv, clientId)
+    const state = JSON.parse(JSON.stringify(srv.persisted())) as OAuthPersisted
+    const legacy = { ...state, refreshTokens: state.refreshTokens.map(r => { const { user, ...rest } = r as any; return rest }) }
+    const changes: OAuthPersisted[] = []
+    const old = new OAuthServer({ issuer: ISSUER, resource: RESOURCE, now: () => T0, persisted: legacy, onChange: s => changes.push(s) })
+    expect(old.legacyRevoked).toBe(1)
+    expect(old.persisted().refreshTokens).toEqual([])
+    expect(old.persisted().clients.length).toBe(1)    // the registration itself stays
+    expect(changes.length).toBe(1)
+    expect(changes[0].refreshTokens).toEqual([])
+    expect(old.token(refreshForm(clientId, t.refresh_token)).status).toBe(400)
+    // current files load as they are
+    const fresh = new OAuthServer({ issuer: ISSUER, resource: RESOURCE, now: () => T0, persisted: state })
+    expect(fresh.legacyRevoked).toBe(0)
+    expect(fresh.persisted().refreshTokens.length).toBe(1)
   })
 })

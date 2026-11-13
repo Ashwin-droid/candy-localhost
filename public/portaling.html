@@ -282,11 +282,18 @@
     const TLD = _host.endsWith('.candy') ? 'candy' : _host.endsWith('.localhost') ? 'localhost' : null;
     const SCHEME = 'https';
     const vars = window.CANDY_VARS || {};
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+    }
+    // Only a real https tunnel URL is shown or followed (never javascript: or markup)
+    const httpsUrl = (u) => /^https:\/\/[A-Za-z0-9.-]+(?:\/[^\s"'<>]*)?$/.test(String(u || '')) ? String(u) : '';
+
     const serverName = vars.name || 'unknown';
-    const existingUrl = vars.existingUrl || '';
+    const existingUrl = httpsUrl(vars.existingUrl);
     const REDIRECT_DELAY = 20; // seconds
 
-    document.getElementById('serverName').textContent = `Opening a portal for ${_host}`;
+    // Shown on the portal host (/go/portal): the daemon says which site it's for
+    document.getElementById('serverName').textContent = `Opening a portal for ${vars.serviceHost || _host}`;
     document.getElementById('portalLink').href = `${SCHEME}://portal.${_isBoundDomain ? 'localhost' : TLD}`;
 
     const logsEl = document.getElementById('logs');
@@ -327,14 +334,14 @@
         const res = await fetch(`${API}/portal/status/${serverName}`);
         const data = await res.json();
 
-        if (data.ready && data.url && !tunnelUrl) {
-          tunnelUrl = data.url;
+        if (data.ready && httpsUrl(data.url) && !tunnelUrl) {
+          tunnelUrl = httpsUrl(data.url);
           urlReceivedAt = Date.now();
 
           // Update logs
           logsEl.innerHTML = '';
           addLog('Portal created', '', 'success');
-          addLog('Tunnel URL:', `<span class="url">${tunnelUrl}</span>`);
+          addLog('Tunnel URL:', `<span class="url">${escapeHtml(tunnelUrl)}</span>`);
           addLog('Waiting for DNS propagation...', '<span class="spinner">|</span>');
 
           // Show countdown
@@ -377,7 +384,7 @@
     if (existingUrl) {
       logsEl.innerHTML = '';
       addLog('Portal already open', '', 'success');
-      addLog('Tunnel URL:', `<span class="url">${existingUrl}</span>`);
+      addLog('Tunnel URL:', `<span class="url">${escapeHtml(existingUrl)}</span>`);
       addLog('Redirecting shortly...', '<span class="spinner">|</span>');
 
       countdownSection.classList.remove('hidden');

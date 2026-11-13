@@ -85,6 +85,20 @@ async function apiPost(path: string, body?: any) {
   return res.json()
 }
 
+// Daemon-wide settings take a superuser, and superuser exists only in a portal
+// login; an API key never is one, so say where to go instead of a bare 403
+const SUPERUSER_ONLY = 'superuser only: use the portal while logged in as a sudoer'
+async function apiSuperuser(method: 'GET' | 'POST', path: string, body?: any) {
+  const headers = await getHeaders()
+  const res = await fetch(`${API}${path}`, {
+    method,
+    headers: body === undefined ? headers : { ...headers, 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  if (res.status === 403) return { error: SUPERUSER_ONLY }
+  return res.json()
+}
+
 async function apiDelete(path: string) {
   const headers = await getHeaders()
   const res = await fetch(`${API}${path}`, { method: 'DELETE', headers })
@@ -951,9 +965,10 @@ async function cmdDomain(args: string[]) {
         credentialsFile: credentialsFile || '',
       }
     }
-    const res = await apiPost('/domains/config', body)
+    const res = await apiSuperuser('POST', '/domains/config', body)
     if (res?.error) {
       console.error(`${c.red}${res.error}${c.reset}`)
+      process.exit(1)
     } else {
       console.log(`${c.green}Domain config updated${c.reset}`)
       if (res.zone?.domain) console.log(`  ${c.dim}zone: ${res.zone.domain}${c.reset}`)
@@ -2042,9 +2057,9 @@ switch (command) {
         if (res.error) { console.error(`${c.red}${res.error}${c.reset}`); process.exit(1) }
       }
       if (action === 'status') {
-        const res = await apiGet('/lan/adguard'); fail(res); show(res)
+        const res = await apiSuperuser('GET', '/lan/adguard'); fail(res); show(res)
       } else if (action === 'off') {
-        const res = await apiPost('/lan/adguard', { remove: true }); fail(res)
+        const res = await apiSuperuser('POST', '/lan/adguard', { remove: true }); fail(res)
         console.log(`${c.red}- AdGuard Home link removed${c.reset} ${c.dim}(lines candy added were taken out)${c.reset}`)
       } else if (action === 'setup') {
         const opts: Record<string, string> = {}
@@ -2054,6 +2069,8 @@ switch (command) {
           if (!m) { console.error(`${c.red}Unknown option: ${rest[i]}${c.reset}`); process.exit(1) }
           opts[m[1]] = m[2] ?? rest[++i] ?? ''
         }
+        // Refused before asking for a password nobody can use here
+        fail(await apiSuperuser('GET', '/lan/adguard'))
         const rl = await import('readline')
         const ask = (q: string, hidden = false): Promise<string> => new Promise(resolve => {
           const iface = rl.createInterface({ input: process.stdin, output: process.stdout, terminal: true })
@@ -2064,7 +2081,7 @@ switch (command) {
         const username = opts.user || await ask('Username: ')
         const client = opts.client || await ask('Name of the persistent client that covers the LAN: ')
         const password = await ask('Password (not shown): ', true)
-        const res = await apiPost('/lan/adguard', { url, username, password, client, ...(opts.dns ? { dnsTarget: opts.dns } : {}) })
+        const res = await apiSuperuser('POST', '/lan/adguard', { url, username, password, client, ...(opts.dns ? { dnsTarget: opts.dns } : {}) })
         fail(res); show(res)
       } else {
         console.error(`${c.red}Usage: candy lan adguard [status|setup|off]${c.reset}`)

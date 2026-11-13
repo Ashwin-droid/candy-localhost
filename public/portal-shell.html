@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>candy</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; box-sizing: border-box; background: #eceef2; color: #555b75; font: 15px/1.5 system-ui, sans-serif; }
+  @media (prefers-color-scheme: dark) { body { background: #10121a; color: #a3a8c0; } }
+</style>
+</head>
+<body>
+<p id="msg">Loading…</p>
+<script>
+  // The portal's pages hold a page token, so they're never sent on a plain
+  // navigation: the login cookie also reaches any other port on this host.
+  // This shell asks for the page again with the session secret, which only
+  // this exact origin's storage has, and shows what comes back.
+  (async function () {
+    var KEY = 'candy_session';
+    var here = location.pathname + location.search;
+    var toLogin = function () { location.replace('/login?next=' + encodeURIComponent(here)); };
+    var secret = null;
+    try { secret = localStorage.getItem(KEY); } catch (e) {}
+    if (!secret) return toLogin();
+    try {
+      var res = await fetch(here, {
+        headers: { 'X-Candy-Session': secret, 'Accept': 'text/html' },
+        credentials: 'same-origin', cache: 'no-store', redirect: 'manual',
+      });
+      if (res.status === 401 || res.type === 'opaqueredirect') {
+        try { localStorage.removeItem(KEY); } catch (e) {}
+        return toLogin();
+      }
+      var html = await res.text();
+      if (!/^\s*<!doctype html/i.test(html)) {
+        document.getElementById('msg').textContent = html.slice(0, 500);
+        return;
+      }
+      document.open();
+      document.write(html);
+      document.close();
+    } catch (e) {
+      document.getElementById('msg').textContent = "Couldn't reach candy. Reload to try again.";
+    }
+  })();
+</script>
+</body>
+</html>

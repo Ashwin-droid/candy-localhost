@@ -194,6 +194,7 @@
     }
     .btn:hover { background: var(--accent-hover); }
     .btn:disabled { opacity: 0.55; cursor: progress; }
+    a.btn { display: block; text-align: center; text-decoration: none; }
     .msg {
       display: none;
       margin-top: 14px;
@@ -224,219 +225,23 @@
       <div class="sub"><span class="dot"></span>Not registered yet. Point it at a port or a command.</div>
     </div>
 
-    <form id="registerForm" novalidate>
-      <div class="tabs" role="tablist">
-        <button type="button" class="tab active" data-mode="quick" role="tab" aria-selected="true">Existing port</button>
-        <button type="button" class="tab" data-mode="lazy" role="tab" aria-selected="false">Run a command</button>
-      </div>
-
-      <div class="panel active" data-panel="quick">
-        <div class="field">
-          <label class="lbl" for="portInput">Port or URL</label>
-          <input type="text" id="portInput" placeholder="3000" autocomplete="off" spellcheck="false">
-          <div class="hint">A local port, or an http(s) URL to proxy to.</div>
-        </div>
-      </div>
-
-      <div class="panel" data-panel="lazy">
-        <div class="field">
-          <label class="lbl" for="cwdInput">Project folder</label>
-          <input type="text" id="cwdInput" placeholder="~/projects/myapp" autocomplete="off" spellcheck="false">
-        </div>
-        <div class="field">
-          <label class="lbl" for="cmdInput">Start command</label>
-          <input type="text" id="cmdInput" placeholder="npm run dev" autocomplete="off" spellcheck="false">
-          <div class="chips">
-            <button type="button" class="chip" data-cmd="npm run dev">npm run dev</button>
-            <button type="button" class="chip" data-cmd="bun dev">bun dev</button>
-            <button type="button" class="chip" data-cmd="pnpm dev">pnpm dev</button>
-            <button type="button" class="chip" data-cmd="yarn dev">yarn dev</button>
-          </div>
-          <div class="hint">The server starts when you visit the domain and its port is detected automatically.</div>
-        </div>
-      </div>
-
-      <div class="options" id="routeOptions">
-        <label class="opt">
-          <input type="checkbox" id="persistent">
-          <span><span class="opt-title">Pin route</span><br><span class="opt-desc">Keep it across daemon restarts.</span></span>
-        </label>
-        <label class="opt">
-          <input type="checkbox" id="portal">
-          <span><span class="opt-title">Open a portal</span><br><span class="opt-desc">Create a public Cloudflare tunnel link.</span></span>
-        </label>
-      </div>
-
-      <button type="submit" class="btn" id="submitBtn">Register</button>
-      <div class="msg" id="msg" role="status"></div>
-    </form>
+    <!-- Registering needs a login, and the login lives on the portal: link there -->
+    <a class="btn" id="registerLink" href="https://portal.localhost">Register it on the portal</a>
+    <div class="hint" id="registerHint">You'll log in if you haven't, and the portal opens with this name filled in.</div>
   </main>
 
   <script>
     const host = location.hostname;
     const TLD = host.endsWith('.candy') ? 'candy' : host.endsWith('.localhost') ? 'localhost' : null;
     const domainName = TLD ? host.slice(0, -(TLD.length + 1)) : host;
+    // The daemon's name for this host (a .candy alias resolves to the local name)
+    const siteName = (window.CANDY_VARS && window.CANDY_VARS.name) || domainName;
     document.getElementById('domainName').textContent = domainName;
     document.getElementById('domainTld').textContent = TLD ? '.' + TLD : '';
     document.title = `${domainName} · candy`;
-    if (TLD) document.getElementById('portalLink').href = `https://portal.${TLD}`;
-
-    // Rolling one-time-use tokens
-    let currentToken = window.CANDY_TOKEN || null;
-
-    async function refreshToken() {
-      if (!currentToken) return;
-      try {
-        const res = await fetch('/token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token: currentToken })
-        });
-        if (res.ok) currentToken = (await res.json()).token;
-      } catch (e) {
-        console.error('Token refresh failed:', e);
-      }
-    }
-
-    async function apiCall(endpoint, options = {}) {
-      const headers = { ...options.headers, 'X-Candy-Token': currentToken };
-      const res = await fetch(endpoint, { ...options, headers });
-      if (res.ok) {
-        await refreshToken();
-      } else if (res.status === 401) {
-        await refreshToken();
-        if (currentToken) {
-          headers['X-Candy-Token'] = currentToken;
-          const retry = await fetch(endpoint, { ...options, headers });
-          if (retry.ok) await refreshToken();
-          return retry;
-        }
-      }
-      return res;
-    }
-
-    async function errorFrom(res, fallback) {
-      try {
-        const data = await res.json();
-        return data.details ? `${data.error}: ${data.details}` : (data.error || fallback);
-      } catch { return fallback; }
-    }
-
-    const form = document.getElementById('registerForm');
-    const portInput = document.getElementById('portInput');
-    const cwdInput = document.getElementById('cwdInput');
-    const cmdInput = document.getElementById('cmdInput');
-    const submitBtn = document.getElementById('submitBtn');
-    const msgEl = document.getElementById('msg');
-    const portalBox = document.getElementById('portal');
-    const persistentBox = document.getElementById('persistent');
-    let mode = 'quick';
-
-    function setMode(next) {
-      mode = next;
-      document.querySelectorAll('.tab').forEach(t => {
-        const on = t.dataset.mode === next;
-        t.classList.toggle('active', on);
-        t.setAttribute('aria-selected', on);
-      });
-      document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.dataset.panel === next));
-      // Route options only apply to an existing port
-      document.getElementById('routeOptions').style.display = next === 'quick' ? '' : 'none';
-      submitBtn.textContent = next === 'quick' ? 'Register' : 'Save and start';
-      (next === 'quick' ? portInput : cwdInput).focus();
-      showMsg('');
-    }
-    document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => setMode(t.dataset.mode)));
-    document.querySelectorAll('.chip').forEach(c => c.addEventListener('click', () => { cmdInput.value = c.dataset.cmd; cmdInput.focus(); }));
-
-    function showMsg(text, kind = 'info') {
-      msgEl.textContent = text;
-      msgEl.className = text ? `msg show ${kind}` : 'msg';
-    }
-
-    function busy(on, text) {
-      submitBtn.disabled = on;
-      if (on && text) showMsg(text, 'info');
-    }
-
-    async function registerLazy() {
-      const cwd = cwdInput.value.trim();
-      const cmd = cmdInput.value.trim();
-      if (!cwd) return showMsg('Enter a project folder.', 'error'), cwdInput.focus();
-      if (!cmd) return showMsg('Enter a start command.', 'error'), cmdInput.focus();
-
-      busy(true, 'Saving server config…');
-      const configRes = await apiCall('/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: domainName, cwd, cmd }),
-      });
-      if (!configRes.ok) throw new Error(await errorFrom(configRes, 'Failed to save server config'));
-
-      showMsg('Starting server…', 'info');
-      const startRes = await apiCall(`/process/start/${encodeURIComponent(domainName)}`, { method: 'POST' });
-      if (!startRes.ok) throw new Error(await errorFrom(startRes, 'Failed to start server'));
-
-      showMsg('Server starting. Reloading…', 'ok');
-      setTimeout(() => location.reload(), 1200);
-    }
-
-    async function registerQuick() {
-      const value = portInput.value.trim();
-      const isUrl = /^https?:\/\//.test(value);
-      const port = isUrl ? null : Number(value);
-      if (!isUrl && (!Number.isInteger(port) || port < 1 || port > 65535)) {
-        showMsg('Enter a port between 1 and 65535, or an http(s) URL.', 'error');
-        portInput.focus();
-        return;
-      }
-
-      busy(true, 'Registering route…');
-      const persistent = persistentBox.checked;
-      const body = isUrl ? { name: domainName, target: value, persistent } : { name: domainName, port, persistent };
-      const res = await apiCall('/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(await errorFrom(res, 'Failed to register route'));
-
-      if (portalBox.checked) {
-        showMsg('Route added. Opening portal…', 'info');
-        const portalRes = await apiCall('/portal', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: domainName, port, openBrowser: true }),
-        });
-        if (!portalRes.ok) {
-          showMsg(`Route added, but the portal failed: ${await errorFrom(portalRes, 'unknown error')}`, 'error');
-          setTimeout(() => location.reload(), 2500);
-          return;
-        }
-        showMsg('Route added. The portal link opens in a new tab once the tunnel is up.', 'ok');
-        setTimeout(() => location.reload(), 2500);
-        return;
-      }
-
-      showMsg('Route added. Reloading…', 'ok');
-      setTimeout(() => location.reload(), 800);
-    }
-
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      showMsg('');
-      try {
-        await (mode === 'quick' ? registerQuick() : registerLazy());
-      } catch (err) {
-        const unreachable = err instanceof TypeError;
-        showMsg(unreachable ? "Can't reach the candy daemon. Is it running?" : err.message, 'error');
-        submitBtn.disabled = false;
-        return;
-      }
-      if (!msgEl.classList.contains('ok')) submitBtn.disabled = false;
-    });
-
-    portInput.focus();
+    const portal = `https://portal.${TLD || 'localhost'}`;
+    document.getElementById('portalLink').href = portal;
+    document.getElementById('registerLink').href = `${portal}/?add=${encodeURIComponent(siteName)}`;
   </script>
 </body>
 </html>

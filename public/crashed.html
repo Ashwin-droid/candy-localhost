@@ -345,7 +345,7 @@
       <div class="panel-header">
         <span class="panel-title">Output</span>
         <div style="display: flex; align-items: center; gap: 0.5rem;">
-          <span class="panel-badge" style="background: var(--accent-soft); color: var(--cyan); border: 1px solid var(--accent-soft);" title="Keystrokes go straight to the process">Typing goes to the process</span>
+          <a class="panel-badge" id="terminalLink" href="#" style="background: var(--accent-soft); color: var(--cyan); border: 1px solid var(--accent-soft); text-decoration: none;" title="Typing into the process needs a login: it opens on the portal">Type into it on the portal</a>
           <span class="panel-badge">Last 100 lines</span>
         </div>
       </div>
@@ -385,7 +385,6 @@
     const TLD = _host.endsWith('.candy') ? 'candy' : _host.endsWith('.localhost') ? 'localhost' : null;
     const SCHEME = 'https';
     const vars = window.CANDY_VARS || { name: 'unknown', exitCode: 1, status: 'errored' };
-    let currentToken = window.CANDY_TOKEN;
     const serverName = vars.name;
     const escapedServerName = serverName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const candySuffix = TLD ? '.' + TLD : '';
@@ -398,45 +397,15 @@
     };
     const getServiceUrl = () => `${SCHEME}://${getServiceHost()}`;
 
-    // Token management - rolling one-time-use tokens
-    async function refreshToken() {
-      if (!currentToken) return;
-      try {
-        const res = await fetch(API + '/token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token: currentToken })
-        });
-        if (res.ok) {
-          const data = await res.json();
-          currentToken = data.token;
-        }
-      } catch (e) {
-        console.error('Token refresh failed:', e);
-      }
-    }
-
-    // Wrapper for API calls with token
-    async function apiCall(endpoint, options = {}) {
-      const headers = {
-        ...options.headers,
-        'X-Candy-Token': currentToken
-      };
-      const res = await fetch(API + endpoint, { ...options, headers });
-
-      if (res.ok) {
-        await refreshToken();
-      } else if (res.status === 401) {
-        await refreshToken();
-        if (currentToken) {
-          headers['X-Candy-Token'] = currentToken;
-          const retry = await fetch(API + endpoint, { ...options, headers });
-          if (retry.ok) await refreshToken();
-          return retry;
-        }
-      }
-      return res;
-    }
+    // This page acts only on its own site, from its own host (the daemon's
+    // siteAction); anything else needs a login, which lives on the portal
+    // The site token the daemon put in this page: start and restart this site, nothing else
+    const apiCall = (endpoint, options = {}) => fetch(API + endpoint, {
+      ...options,
+      headers: { ...(options.headers || {}), 'X-Candy-Token': window.CANDY_TOKEN || '' },
+    });
+    const portalBase = `${SCHEME}://portal.${_isBoundDomain ? 'localhost' : TLD}`;
+    document.getElementById('terminalLink').href = `${portalBase}/?logs=${encodeURIComponent(serverName)}`;
 
     document.getElementById('serverName').textContent = serverName;
     document.getElementById('exitBadge').textContent = `exit ${vars.exitCode ?? '?'}`;
@@ -463,58 +432,6 @@
     }
 
     loadLogs();
-
-    // PTY input - send keystrokes directly to terminal
-    document.addEventListener('keydown', async (e) => {
-      // Don't capture if user is in a form field or button
-      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'BUTTON') return;
-
-      e.preventDefault();
-
-      let body = {};
-
-      // Handle special keys
-      if (e.ctrlKey && e.key.toLowerCase() === 'c') {
-        body = { key: 'ctrl+c' };
-      } else if (e.ctrlKey && e.key.toLowerCase() === 'd') {
-        body = { key: 'ctrl+d' };
-      } else if (e.ctrlKey && e.key.toLowerCase() === 'z') {
-        body = { key: 'ctrl+z' };
-      } else if (e.ctrlKey && e.key.toLowerCase() === 'l') {
-        body = { key: 'ctrl+l' };
-      } else if (e.key === 'Enter') {
-        body = { key: 'enter' };
-      } else if (e.key === 'Tab') {
-        body = { key: 'tab' };
-      } else if (e.key === 'Escape') {
-        body = { key: 'escape' };
-      } else if (e.key === 'Backspace') {
-        body = { key: 'backspace' };
-      } else if (e.key === 'ArrowUp') {
-        body = { key: 'up' };
-      } else if (e.key === 'ArrowDown') {
-        body = { key: 'down' };
-      } else if (e.key === 'ArrowLeft') {
-        body = { key: 'left' };
-      } else if (e.key === 'ArrowRight') {
-        body = { key: 'right' };
-      } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        // Regular character
-        body = { input: e.key };
-      } else {
-        return; // Ignore other keys
-      }
-
-      try {
-        await apiCall(`/process/input/${serverName}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
-        });
-      } catch (err) {
-        console.error('Failed to send PTY input:', err);
-      }
-    });
 
     async function restartServer() {
       const btn = document.getElementById('restartBtn');
@@ -544,7 +461,7 @@
     // Update TLD-dependent elements
     document.querySelectorAll('.tld-suffix').forEach(el => el.textContent = _isBoundDomain ? '' : '.' + TLD);
     if (_isBoundDomain) document.getElementById('serverName').textContent = _host;
-    document.getElementById('portalLink').href = `${SCHEME}://portal.${_isBoundDomain ? 'localhost' : TLD}`;
+    document.getElementById('portalLink').href = portalBase;
   </script>
 </body>
 </html>

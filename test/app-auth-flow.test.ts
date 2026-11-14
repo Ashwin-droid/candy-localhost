@@ -1721,3 +1721,14 @@ describe("the superuser claim", () => {
     expect(html).toContain("whether the account is an administrator")
   })
 })
+
+describe("sign in is only for sites candy launches", () => {
+  it("a plain port route is not a sign-in site: no host lookup, no owner, no key", () => {
+    expect(daemonSrc).toContain("const isAuthSite = (name: string): boolean => serverConfigs.has(name) && !isReserved(name)")
+    const lookups = daemonSrc.slice(daemonSrc.indexOf("  siteOfHost: (raw: string) =>"), daemonSrc.indexOf("  issuers: () => issuersFor("))
+    expect(lookups).toContain("ownerOf: (name: string) => isAuthSite(name) ? nameOwner(name) : null")
+    expect(lookups.match(/isAuthSite\(name\)/g)!.length).toBe(4)
+    // nameInUse also counts plain routes and bare processes: never the test for a sign-in site
+    expect(lookups).not.toContain("nameInUse(")
+  })
+})

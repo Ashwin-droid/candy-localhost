@@ -1818,6 +1818,10 @@ const nameOwner = (name: string): string => {
 }
 const mayChangeName = (auth: RequestAuth | null, name: string): boolean => mayActOn(auth, nameOwner(name))
 const nameInUse = (name: string): boolean => routes.has(name) || serverConfigs.has(name) || processes.has(name)
+// Sign in with candy is only for sites candy launches itself (a server or a
+// function with a config). A plain port route to a process someone started
+// by hand is not a candy-hosted app: no key, no tokens.
+const isAuthSite = (name: string): boolean => serverConfigs.has(name) && !isReserved(name)
 
 const loadRouteUsers = async () => {
   try {
@@ -5481,12 +5485,12 @@ const appAuthSites: SiteLookup = {
     if (!h || h.includes(":") || isPortalHost(h) || parseShortcutHost(h)) return null
     if (h.endsWith(".localhost") || h.endsWith(".candy")) {
       const name = resolveLocalCandyDomain(h)
-      return name && nameInUse(name) && !isReserved(name) ? name : null
+      return name && isAuthSite(name) ? name : null
     }
     const name = resolveBindingFromHost(h)?.serverName ?? null
-    return name && nameInUse(name) && !isReserved(name) ? name : null
+    return name && isAuthSite(name) ? name : null
   },
-  ownerOf: (name: string) => nameInUse(name) ? nameOwner(name) : null,
+  ownerOf: (name: string) => isAuthSite(name) ? nameOwner(name) : null,
 }
 
 // The password login's address lockout, which passkey logins honour too
@@ -5518,7 +5522,7 @@ const appAuthRoutes = createAuthRoutes({
     }
     if (typeof body.name !== "string") return null
     const name = lowerName(body.name)
-    return isSafeName(name) && !isReserved(name) && nameInUse(name) ? name : null
+    return isSafeName(name) && isAuthSite(name) ? name : null
   },
   issuers: () => issuersFor(appAuthPortalHosts()),
   portalUrl: appAuthPortalUrl,

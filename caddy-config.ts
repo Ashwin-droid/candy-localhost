@@ -196,6 +196,23 @@ ${drop}
 `
 }
 
+/**
+ * Runs `fn` one at a time. A call made while one is running waits for a single
+ * run that starts after it (shared by everyone waiting), so a burst of calls
+ * costs two runs, never an overlap, and every caller's change is covered.
+ */
+export const coalesced = (fn: () => Promise<void>): (() => Promise<void>) => {
+  let tail: Promise<void> = Promise.resolve()
+  let queued: Promise<void> | null = null
+  return () => {
+    if (queued) return queued
+    const run = tail.then(() => { queued = null; return fn() })
+    queued = run
+    tail = run.catch(() => {})
+    return run
+  }
+}
+
 /** The header Caddy puts on everything it sends the daemon, so the daemon can tell Caddy from any other local caller. */
 export const PROXY_TAG_HEADER = "X-Candy-Proxy"
 

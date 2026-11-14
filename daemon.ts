@@ -33,8 +33,8 @@ import { CONFIG_FILES as FN_CONFIG_FILES, type FnProjectConfig } from "./fn-conf
 import { apiHoldSeconds, createApiModeGate } from "./api-mode.ts"
 import { SystemMonitor, SIGNALS, isUnitName, killProblem, unitActionProblem } from "./sysmon.ts"
 import { PortalSessions, readSessionCookie, sessionCookieHeader, clearSessionCookieHeader } from "./portal-session.ts"
-import { attemptLogin, auditActor, auditSafe, cachedList, classifyRoute, clientIp, guardRequest, isPortalOrigin, LoginSlots, mayActOn, PageTokens, parseShortcutHost, safeNext, sameOrigin, shortcutConfirmUrl, SiteTokens, SoftLockout, SESSION_HEADER, userScopedFetch, wantsHtml, logSafe, type RequestAuth, type RouteRule, type ShortcutAction } from "./portal-auth.ts"
-import { caddyGlobalBlock, checkBindings, cloudflaredYaml, dedupeSiteAddresses, isCaddyUpstream, isCredentialsPath, isDnsLabel, isHostName, isIpOrCidr, isQuickTunnelUrl, isTunnelId, isTunnelName, isZoneId, isZoneName, loopbackBind, lowerName, mergeLowerCase, newNameProblem, PROXY_TAG_HEADER, stripProxyHeaders, SYSTEM_BLOCK_MARK, tagDaemonUpstreams } from "./caddy-config.ts"
+import { attemptLogin, loginKeys, auditActor, auditSafe, cachedList, classifyRoute, clientIp, guardRequest, isPortalOrigin, LoginSlots, mayActOn, PageTokens, parseShortcutHost, safeNext, sameOrigin, shortcutConfirmUrl, SiteTokens, SoftLockout, SESSION_HEADER, userScopedFetch, wantsHtml, logSafe, type RequestAuth, type RouteRule, type ShortcutAction } from "./portal-auth.ts"
+import { coalesced, caddyGlobalBlock, checkBindings, cloudflaredYaml, dedupeSiteAddresses, isCaddyUpstream, isCredentialsPath, isDnsLabel, isHostName, isIpOrCidr, isQuickTunnelUrl, isTunnelId, isTunnelName, isZoneId, isZoneName, loopbackBind, lowerName, mergeLowerCase, newNameProblem, PROXY_TAG_HEADER, stripProxyHeaders, SYSTEM_BLOCK_MARK, tagDaemonUpstreams } from "./caddy-config.ts"
 import { verifyPassword, pamAvailable } from "./pam.ts"
 import { isSuperuser, loginUsers } from "./superuser.ts"
 import { AsyncLocalStorage } from "node:async_hooks"
@@ -4284,8 +4284,18 @@ const startCaddy = async () => {
 // Stop Caddy
 const stopCaddy = async (force = false) => {
   if (caddyProc) {
-    caddyProc.kill()
-    console.log("\x1b[90mCaddy stopped\x1b[0m")
+    // Caddy waits for open connections (streams) before it exits, with no
+    // limit. Give it a moment, then end it, so a restart isn't a long outage.
+    const proc = caddyProc
+    caddyProc = null
+    caddyAdminTrusted = false
+    proc.kill()
+    const exited = await Promise.race([proc.exited.then(() => true), Bun.sleep(3000).then(() => false)])
+    if (!exited) {
+      try { proc.kill("SIGKILL") } catch {}
+      await Promise.race([proc.exited, Bun.sleep(2000)])
+    }
+    console.log(`\x1b[90mCaddy stopped${exited ? '' : ' (had to be killed: it was waiting on open connections)'}\x1b[0m`)
   } else if (force && await isCaddyRunning()) {
     try {
       await caddyAdmin("/stop", { method: "POST", signal: AbortSignal.timeout(2000) })
@@ -4553,8 +4563,55 @@ const scheduleCaddyRetry = () => {
   caddyRetry = setTimeout(() => { caddyRetry = null; syncCaddy().catch(() => {}) }, CADDY_ADMIN_RETRY_MS)
 }
 
-// Write Caddyfile and reload
-const syncCaddy = async () => {
+// Send a config to Caddy. Each try uses its own connection (Caddy replaces its
+// admin server on every load, so a kept-alive one may be gone) and has a time
+// limit. true: Caddy has it, or refused it (it keeps the old one; trying again won't help).
+const loadCaddyConfig = async (content: string): Promise<boolean> => {
+  let lastError = ""
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await caddyAdmin("/load", {
+        method: "POST",
+        headers: { "Content-Type": "text/caddyfile", "Connection": "close" },
+        body: content,
+        keepalive: false,
+        signal: AbortSignal.timeout(20_000),
+      })
+      // Caddy keeps running the previous config when a load is rejected.
+      if (!res.ok) console.log(`\x1b[31mCaddy rejected the new config:\x1b[0m ${(await res.text()).trim()}`)
+      return true
+    } catch (e) {
+      lastError = String((e as any)?.code ?? (e as Error)?.name ?? "") + " " + String((e as Error)?.message ?? e)
+      await Bun.sleep(300 * (attempt + 1))
+    }
+  }
+  console.log(`\x1b[31mFailed to reload Caddy\x1b[0m (${lastError.trim()})`)
+  return false
+}
+
+// Caddy is running an old config while reloads keep failing: sites would
+// point at ports that are gone (502). Try again shortly; if it still can't be
+// reached, replace it, which reads the Caddyfile fresh.
+let caddyReloadFailures = 0
+const caddyReloadFailed = async () => {
+  caddyReloadFailures++
+  auditLog('CADDY_RELOAD_FAILED', `attempt ${caddyReloadFailures}`, 'System')
+  if (caddyReloadFailures < 3 || !caddyProc) {
+    // Soon: until it lands, sites may point at ports that are gone
+    setTimeout(() => { syncCaddy().catch(() => {}) }, 3000)
+    return
+  }
+  caddyReloadFailures = 0
+  console.log("\x1b[33mCaddy isn't taking new configs. Restarting it.\x1b[0m")
+  auditLog('CADDY_RESTART', 'reloads kept failing', 'System')
+  await stopCaddy()
+  await startCaddy()
+}
+
+// Write Caddyfile and reload. One at a time: callers that arrive during a
+// sync share the next one (coalesced), so Caddy never gets two loads at once.
+const syncCaddy = coalesced(() => syncCaddyNow())
+const syncCaddyNow = async () => {
   await refreshOrphanedBindings()
   let content = `# candy-localhost routes
 # managed by candy-localhost - do not edit manually
@@ -4965,16 +5022,10 @@ ${[...new Set(candyAliasHosts)].filter(isHostName).join(", ")} {
   } else if (!caddyAdminTrusted && !await secureCaddyAdminSocket(1)) {
     console.log(`\x1b[31mNot reloading Caddy: its admin socket failed the check. Trying again in ${CADDY_ADMIN_RETRY_MS / 1000}s.\x1b[0m`)
     scheduleCaddyRetry()
-  } else try {
-    const res = await caddyAdmin("/load", {
-      method: "POST",
-      headers: { "Content-Type": "text/caddyfile" },
-      body: content,
-    })
-    // Caddy keeps running the previous config when a load is rejected.
-    if (!res.ok) console.log(`\x1b[31mCaddy rejected the new config:\x1b[0m ${(await res.text()).trim()}`)
-  } catch (e) {
-    console.log("\x1b[31mFailed to reload Caddy - is it running?\x1b[0m")
+  } else if (await loadCaddyConfig(content)) {
+    caddyReloadFailures = 0
+  } else {
+    await caddyReloadFailed()
   }
 
   // Sync DNS config for candy-dns daemon

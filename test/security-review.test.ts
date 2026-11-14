@@ -12,7 +12,7 @@ import {
   type LoginDeps, type RequestAuth,
 } from "../portal-auth.ts"
 import {
-  caddyGlobalBlock, checkBindings, cloudflaredYaml, dedupeSiteAddresses, isCaddyUpstream, isDnsLabel, isZoneName, loopbackBind, lowerName,
+  coalesced, caddyGlobalBlock, checkBindings, cloudflaredYaml, dedupeSiteAddresses, isCaddyUpstream, isDnsLabel, isZoneName, loopbackBind, lowerName,
   mergeLowerCase, newNameProblem, stripProxyHeaders, tagDaemonUpstreams, LOG_REDACTED_REQUEST_HEADERS, LOG_REDACTED_RESPONSE_HEADERS,
   PROXY_TAG_HEADER, SYSTEM_BLOCK_MARK,
 } from "../caddy-config.ts"
@@ -210,7 +210,7 @@ describe("3. nothing unchecked reaches the Caddyfile or cloudflared's YAML", () 
     expect(block(daemon, "const loadDomainConfig = async")).toContain("dropInvalidBindings()")
     expect(block(daemon, "const dropInvalidBindings = ")).toContain("auditLog('DOMAIN_BINDING_DROPPED'")
     expect(block(daemon, "const syncCloudflaredIngress = async")).toContain("cloudflaredYaml(")
-    const sync = block(daemon, "const syncCaddy = async")
+    const sync = block(daemon, "const syncCaddyNow = async")
     expect(sync).toContain("Object.values(safeBindings())")
     expect(sync).toContain("okUpstream(name, proxyTarget)")
     expect(sync).toContain("isQuickTunnelUrl(url)")
@@ -419,7 +419,7 @@ describe("7. forwarding headers count only from our Caddy", () => {
     const fingerprint = daemon.slice(daemon.indexOf("const getFingerprint = (req"), daemon.indexOf("// Validate auth session"))
     expect(fingerprint).toContain("viaCaddy: viaOwnCaddy(req, peer)")
     expect(fingerprint).not.toMatch(/split\(','\)\[0\]/)
-    expect(block(daemon, "const syncCaddy = async")).toContain("tagDaemonUpstreams(content, CADDY_PROXY_TAG)")
+    expect(block(daemon, "const syncCaddyNow = async")).toContain("tagDaemonUpstreams(content, CADDY_PROXY_TAG)")
   })
 
   it.skipIf(!caddy)("the tagged config adapts, setting the header on every daemon upstream", () => {
@@ -465,7 +465,7 @@ describe("8. a bound domain stays its owner's", () => {
   it("bindings record their owner, and removing the site orphans them instead of handing them on", () => {
     expect(block(daemon, 'if (req.method === "POST" && url.pathname === "/domains/bind")')).toContain("owner: nameOwner(serverName)")
     expect(block(daemon, "const refreshOrphanedBindings = async")).toContain("b.orphaned = true")
-    expect(block(daemon, "const syncCaddy = async")).toContain("await refreshOrphanedBindings()")
+    expect(block(daemon, "const syncCaddyNow = async")).toContain("await refreshOrphanedBindings()")
     expect(daemon).toContain("await assignBindingOwners()")
     expect(block(daemon, "const boundToSomeoneElse = (")).toContain("bindingOwner(b) !== auth?.user")
   })
@@ -479,7 +479,7 @@ describe("9. *.localhost sites listen on loopback only", () => {
   it("every .localhost block gets the loopback bind", () => {
     expect(loopbackBind(true)).toBe("bind 127.0.0.1 ::1")
     expect(loopbackBind(false)).toBe("bind 127.0.0.1")
-    const sync = block(daemon, "const syncCaddy = async")
+    const sync = block(daemon, "const syncCaddyNow = async")
     for (const head of ["${name}.localhost {", "*.kill.localhost, *.k.localhost {", "*.portal.localhost, *.p.localhost {", "*.localhost {"]) {
       expect(sync).toContain(`${head}\n  \${localBind}\n`)
     }
@@ -665,6 +665,44 @@ describe("R1. Caddy never logs secrets", () => {
       rmSync(dir, { recursive: true, force: true })
     }
   }, 15_000)
+})
+
+describe("Caddy reloads never overlap", () => {
+  it("coalesced: one at a time, and a burst during a run shares one more run", async () => {
+    let running = 0, max = 0, runs = 0
+    const sync = coalesced(async () => { running++; max = Math.max(max, running); runs++; await Bun.sleep(20); running-- })
+    const first = sync()
+    await Bun.sleep(5)
+    const burst = [sync(), sync(), sync()]
+    expect(burst[0]).toBe(burst[1])
+    await Promise.all([first, ...burst])
+    expect(max).toBe(1)
+    expect(runs).toBe(2)
+    await sync()
+    expect(runs).toBe(3)
+  })
+
+  it("a failed run doesn't block the next, and only its own callers see the error", async () => {
+    let n = 0
+    const sync = coalesced(async () => { if (++n === 1) throw new Error("boom") })
+    await expect(sync()).rejects.toThrow("boom")
+    await sync()
+    expect(n).toBe(2)
+  })
+
+  it("the daemon syncs through it, retries a load that throws, and restarts a Caddy that stays unreachable", () => {
+    expect(daemon).toContain("const syncCaddy = coalesced(() => syncCaddyNow())")
+    const load = block(daemon, "const loadCaddyConfig = async")
+    expect(load).toContain("attempt < 3")
+    expect(load).toContain("keepalive: false")
+    expect(load).toContain("AbortSignal.timeout(")
+    const failed = block(daemon, "const caddyReloadFailed = async")
+    expect(failed).toContain("syncCaddy()")
+    expect(failed).toContain("await stopCaddy()")
+    expect(failed).toContain("await startCaddy()")
+    // and stopping Caddy doesn't wait on open connections forever
+    expect(block(daemon, "const stopCaddy = async")).toContain('proc.kill("SIGKILL")')
+  })
 })
 
 describe("SNI fronting: a TLS connection opened as one site can't ask for another", () => {
@@ -998,7 +1036,7 @@ foo.kill.myhost.candy, foo.k.myhost.candy {
   })
 
   it("syncCaddy marks its own blocks and dedupes before writing, auditing each skip once", () => {
-    const sync = block(daemon, "const syncCaddy = async")
+    const sync = block(daemon, "const syncCaddyNow = async")
     for (const host of ["*.kill.localhost, *.k.localhost {", "*.portal.localhost, *.p.localhost {", "*.kill.candy, *.k.candy {", "*.portal.candy, *.p.candy {",
       "${[...new Set(candyKillAliasHosts)]", "${[...new Set(candyPortalAliasHosts)]", "${[...new Set(candyAliasHosts)]", "*.localhost {", "*.candy {"]) {
       expect(sync).toContain("${SYSTEM_BLOCK_MARK}\n" + host)
@@ -1052,7 +1090,7 @@ describe("R7. a bound domain can't expose the portal", () => {
       "http://[fd7a:115c:a1e0::1]", "https://myhost.tail1234.ts.net"]) {
       expect(isCaddyUpstream(bad, own)).toBe(false)
     }
-    const sync = block(daemon, "const syncCaddy = async")
+    const sync = block(daemon, "const syncCaddyNow = async")
     expect(sync).toContain("isCaddyUpstream(target, own)")
   })
 
@@ -1073,10 +1111,13 @@ describe("R8. Caddy's admin socket", () => {
   })
 
   it("no /load to a socket that failed the check: log and retry", () => {
-    const sync = block(daemon, "const syncCaddy = async")
+    const sync = block(daemon, "const syncCaddyNow = async")
     const check = sync.indexOf("!caddyAdminTrusted && !await secureCaddyAdminSocket(1)")
     expect(check).toBeGreaterThan(0)
-    expect(check).toBeLessThan(sync.indexOf('caddyAdmin("/load"'))
+    // the only /load is loadCaddyConfig, reached after the check
+    expect(check).toBeLessThan(sync.indexOf("await loadCaddyConfig(content)"))
+    expect(sync).not.toContain('caddyAdmin("/load"')
+    expect(daemon.match(/caddyAdmin\("\/load"/g)?.length).toBe(1)
     expect(sync).toContain("scheduleCaddyRetry()")
     const secure = block(daemon, "const secureCaddyAdminSocket = async")
     expect(secure).toContain("return caddyAdminTrusted = ok")

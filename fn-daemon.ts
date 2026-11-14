@@ -4,7 +4,7 @@
 // function launch and an fn-tool run are put together.
 
 import { stripCandyCredentials } from "./server-auth.ts"
-import { PROXY_TAG_HEADER } from "./caddy-config.ts"
+import { PROXY_TAG_HEADER, TUNNEL_TAG_HEADER } from "./caddy-config.ts"
 import { isDeployId, type DeployInfo } from "./fn-deploy.ts"
 import type { AssetsConfig, AssetsRouting, RouteOptions, RouteResult } from "./fn-assets.ts"
 import type { FnLog } from "./fn-log.ts"
@@ -66,6 +66,7 @@ export const fnRequestHeaders = (src: Headers, opts: { stripCredentials: boolean
   headers.delete("x-candy-verified")
   // The daemon strips it on arrival; this keeps it out even if that changes
   headers.delete(PROXY_TAG_HEADER)
+  headers.delete(TUNNEL_TAG_HEADER)
   if (opts.stripCredentials) stripCandyCredentials(headers)
   return headers
 }

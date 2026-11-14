@@ -34,14 +34,15 @@ import { apiHoldSeconds, createApiModeGate } from "./api-mode.ts"
 import { SystemMonitor, SIGNALS, isUnitName, killProblem, unitActionProblem } from "./sysmon.ts"
 import { PortalSessions, readSessionCookie, sessionCookieHeader, clearSessionCookieHeader } from "./portal-session.ts"
 import { attemptLogin, loginKeys, auditActor, auditSafe, cachedList, classifyRoute, clientIp, guardRequest, isPortalOrigin, LoginSlots, mayActOn, PageTokens, parseShortcutHost, safeNext, sameOrigin, shortcutConfirmUrl, SiteTokens, SoftLockout, SESSION_HEADER, userScopedFetch, wantsHtml, logSafe, type RequestAuth, type RouteRule, type ShortcutAction } from "./portal-auth.ts"
-import { coalesced, caddyGlobalBlock, checkBindings, cloudflaredYaml, dedupeSiteAddresses, isCaddyUpstream, isCredentialsPath, isDnsLabel, isHostName, isIpOrCidr, isQuickTunnelUrl, isTunnelId, isTunnelName, isZoneId, isZoneName, loopbackBind, lowerName, mergeLowerCase, newNameProblem, PROXY_TAG_HEADER, stripProxyHeaders, SYSTEM_BLOCK_MARK, tagDaemonUpstreams } from "./caddy-config.ts"
+import { candyHostFor, CANDY_SUBDOMAIN, coalesced, caddyGlobalBlock, checkBindings, cloudflaredYaml, dedupeSiteAddresses, isCaddyUpstream, isCredentialsPath, isDnsLabel, isHostName, isIpOrCidr, isQuickTunnelUrl, isTunnelId, isTunnelName, isZoneId, isZoneName, loopbackBind, lowerName, mergeLowerCase, newNameProblem, PROXY_TAG_HEADER, stripProxyHeaders, SYSTEM_BLOCK_MARK, tagDaemonUpstreams, TUNNEL_TAG_HEADER, tunnelSiteBlock } from "./caddy-config.ts"
 import { verifyPassword, pamAvailable, checkAccount } from "./pam.ts"
 import { isSuperuser, loginUsers } from "./superuser.ts"
 import { AppKeyStore, ConsentStore, PendingRequests, issuersFor, type SiteLookup } from "./app-auth.ts"
 import { ChallengeStore, PasskeyStore, prunePasskeyAccounts, type PasskeyDeps } from "./passkey-store.ts"
 import * as webauthn from "./webauthn.ts"
 import { formatKeyRing, type JweKey } from "./jwe.ts"
-import { createAuthRoutes, type AuthRouteContext } from "./app-auth-routes.ts"
+import { createAuthRoutes, PASSKEY_FINISH_PATH, type AuthRouteContext } from "./app-auth-routes.ts"
+import { createCandyHost, fromCandyHost, isPublicMcpPath, PasskeyTickets } from "./candy-host.ts"
 import { CREDENTIAL_NAME as APP_AUTH_CREDENTIAL } from "./sdk-auth.ts"
 import { AsyncLocalStorage } from "node:async_hooks"
 import { JtiBloom, readCredential, signJwt, stripCandyCredentials, verifyJwt, JWT_AUDIENCE, MAX_TOKEN_LIFETIME_S, type AuthResult, ipAllowed, isLoopback, parseCidr, TAILSCALE_RANGES } from "./server-auth.ts"
@@ -135,6 +136,9 @@ const USER_RUN_DIR = process.env.XDG_RUNTIME_DIR ? `${process.env.XDG_RUNTIME_DI
 const CADDY_ADMIN_SOCKET = process.getuid?.() === 0
   ? "/run/candy/caddy-admin.sock"
   : `${USER_RUN_DIR}/caddy-admin.sock`
+// Hosts only the tunnel may reach (candy's own host, the public MCP host) are
+// bound to this 0600 socket, never a TCP port: only root (cloudflared) can open it
+const CADDY_TUNNEL_SOCKET = `${dirname(CADDY_ADMIN_SOCKET)}/tunnel.sock`
 const caddyAdmin = (path: string, init: RequestInit = {}) =>
   fetch(`http://caddy${path}`, { ...init, unix: CADDY_ADMIN_SOCKET } as RequestInit)
 const SERVERS_CONFIG = `${CANDY_CONFIG_DIR}/servers.json`
@@ -282,6 +286,8 @@ interface DomainConfig {
   bindings: Record<string, DomainBinding>
   // Public MCP endpoint (https://<subdomain>.<zone>/mcp). Off unless enabled.
   mcp?: { enabled: boolean; subdomain: string }
+  // candy.<zone> (candyHost) whose DNS record candy made through the tunnel
+  candyHostDns?: string
 }
 
 // ============================================================================
@@ -353,11 +359,30 @@ const hasCaddyTag = (req: Request, peer: string): boolean => {
 // Decided once per request (markProxyHeaders), before the tag is stripped
 const fromOwnCaddy = new WeakSet<Request>()
 const viaOwnCaddy = (req: Request, _peer?: string): boolean => fromOwnCaddy.has(req)
+// Caddy adds this one only in the blocks bound to the tunnel socket (tunnelSiteBlock)
+const CADDY_TUNNEL_TAG = Buffer.from(crypto.getRandomValues(new Uint8Array(24))).toString('base64url')
+const fromTunnel = new WeakSet<Request>()
 
-// First thing for every request: note whether our Caddy sent it, then strip (stripProxyHeaders)
+// First thing for every request: note whether our Caddy sent it (and through
+// the tunnel socket), then strip both tags (stripProxyHeaders)
 const markProxyHeaders = (req: Request, peer: string): void => {
-  if (hasCaddyTag(req, peer)) fromOwnCaddy.add(req)
+  if (hasCaddyTag(req, peer)) {
+    fromOwnCaddy.add(req)
+    const t = req.headers.get(TUNNEL_TAG_HEADER)
+    if (t && t.length === CADDY_TUNNEL_TAG.length && timingSafeEqual(Buffer.from(t), Buffer.from(CADDY_TUNNEL_TAG))) fromTunnel.add(req)
+  }
   stripProxyHeaders(req.headers, fromOwnCaddy.has(req))
+}
+
+// The visitor's address on a tunnel-only host (candy's own host, the public MCP
+// host): Cf-Connecting-Ip only for a request that came through the tunnel
+// socket, which only cloudflared can open. Anything else (a local user talking
+// to 127.0.0.1:80 or :9999 with a made-up header) is loopback: one address for
+// lockouts and rate limits, like every other local caller.
+const publicClientIp = (req: Request): string => {
+  if (!fromTunnel.has(req)) return "127.0.0.1"
+  const cf = req.headers.get("cf-connecting-ip")?.trim() ?? ""
+  return /^[0-9a-fA-F:.]{2,45}$/.test(cf) ? normalizeIp(cf) : "127.0.0.1"
 }
 
 /** Headers for a request we pass on to a server: the same as a function gets (fnRequestHeaders: no hop-by-hop, no candy markers or proxy tag, and on a protected domain no candy credentials). */
@@ -955,6 +980,12 @@ const publicMcpFqdn = (): string | null => {
   return cfg?.enabled && zone ? `${cfg.subdomain}.${zone}`.toLowerCase() : null
 }
 
+// candy's own host, candy.<zone> (candy-host.ts): the passkey rpId and ceremony
+// host, routed whenever a domain and tunnel are set up. Nobody can bind it
+// (checkBindings drops it, /domains/bind refuses it). null: no bound domain, no passkeys.
+const candyHost = (): string | null =>
+  isTunnelId(domainConfig?.tunnel?.id) ? candyHostFor(domainConfig?.zone?.domain) : null
+
 const loadMcpOAuthState = async (): Promise<OAuthPersisted | null> => {
   try {
     const file = Bun.file(MCP_OAUTH_FILE)
@@ -1045,7 +1076,9 @@ const handlePublicMcp = async (req: Request, url: URL, server: any): Promise<Res
   if (!oauth) return new Response("Not found", { status: 404 })
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: MCP_PUBLIC_CORS })
 
-  const { ip } = getFingerprint(req, server)
+  // Through the tunnel only (publicClientIp); a local caller is loopback
+  const ip = publicClientIp(req)
+  void server
   const path = url.pathname.replace(/\/+$/, "") || "/"
   const tooMany = () => mcpJson({ error: "slow_down", error_description: "Too many requests. Try again in a moment." }, 429, { "Retry-After": "30" })
   if (path !== "/mcp" && !mcpRateOk(ip)) return tooMany()
@@ -1152,13 +1185,14 @@ const setPublicMcp = async (enabled: boolean, subdomain: string, actor: Actor): 
     if (domainConfig.bindings?.[subdomain]) return { ok: false, error: `${subdomain}.${zone} is already bound to ${domainConfig.bindings[subdomain].serverName}. Pick another subdomain.` }
     const previous = publicMcpFqdn()
     const fqdn = `${subdomain}.${zone}`
-    if (previous && previous !== fqdn) await deleteDnsRecords(previous)
+    // candy.<zone> stays: it is candy's own host whether or not MCP shares it
+    if (previous && previous !== fqdn && previous !== candyHost()) await deleteDnsRecords(previous)
     await $`cloudflared tunnel route dns ${domainConfig.tunnel.name} ${fqdn}`.quiet().nothrow()
     domainConfig.mcp = { enabled: true, subdomain }
     auditLog('MCP_PUBLIC_ON', fqdn, actor)
   } else {
     const fqdn = publicMcpFqdn()
-    if (fqdn) await deleteDnsRecords(fqdn)
+    if (fqdn && fqdn !== candyHost()) await deleteDnsRecords(fqdn)
     ;(await getMcpOAuth())?.revokeAll()
     mcpOAuth = null
     mcpOAuthFor = null
@@ -1188,6 +1222,43 @@ const deleteDnsRecords = async (fqdn: string) => {
   }
 }
 
+// candy.<zone>'s DNS record (a CNAME to the tunnel), made once per host with
+// cloudflared like a binding's. Caddy's block and the tunnel's ingress come
+// from syncCaddy / syncCloudflaredIngress, which always include candyHost().
+let candyHostDnsBusy = false
+const ensureCandyHostDns = async (): Promise<void> => {
+  const host = candyHost()
+  if (!host || !domainConfig || domainConfig.candyHostDns === host || candyHostDnsBusy) return
+  if (!isTunnelName(domainConfig.tunnel?.name)) return
+  candyHostDnsBusy = true
+  try {
+    const res = await $`cloudflared tunnel route dns ${domainConfig.tunnel.name} ${host}`.quiet().nothrow()
+    const out = `${res.stdout}${res.stderr}`
+    // An existing CNAME to this tunnel is what we want too
+    if (res.exitCode === 0 || /already (configured|exists)/i.test(out)) {
+      domainConfig.candyHostDns = host
+      await saveDomainConfig()
+      auditLog('CANDY_HOST_DNS', host, 'System')
+    } else {
+      auditLog('DOMAIN_DNS_ROUTE_FAIL', `${host}: cloudflared exited ${res.exitCode}: ${logSafe(out.trim().split("\n").at(-1) ?? "")}`, 'System')
+    }
+  } catch (e) {
+    auditLog('DOMAIN_DNS_ROUTE_FAIL', `${host}: ${e}`, 'System')
+  } finally {
+    candyHostDnsBusy = false
+  }
+}
+
+// Passkeys are made for candyHost() only; ones made for another host (the zone
+// changed) can never log in again, so they go, each with an audit line
+const prunePasskeyRpIds = () => {
+  const host = candyHost()
+  if (!host) return   // no domain right now: keep them, they come back with it
+  for (const r of passkeys.dropOtherRpIds(host)) {
+    auditLog('PASSKEY_DROP', `${r.user}: "${logSafe(r.name)}" was made for ${r.rpId}, passkeys are now for ${host}: removed`, 'System')
+  }
+}
+
 const publicMcpStatus = async () => {
   const oauth = await getMcpOAuth()
   const zone = domainConfig?.zone?.domain ?? null
@@ -1208,9 +1279,14 @@ const syncCloudflaredIngress = async () => {
 
   // Only checked values reach the YAML (cloudflaredYaml drops bad hostnames)
   const hostnames = Object.values(safeBindings()).map(b => b.fqdn)
+  const ingress: (string | { hostname: string; unix: string })[] = [...hostnames]
+  // candy's own host (passkeys, always while a domain is bound) and the public MCP
+  // host: to Caddy's tunnel-only socket, never to :80 (tunnelSiteBlock)
+  const ownHost = candyHost()
+  if (ownHost) ingress.push({ hostname: ownHost, unix: CADDY_TUNNEL_SOCKET })
   const mcpFqdn = publicMcpFqdn()
-  if (mcpFqdn) hostnames.push(mcpFqdn)
-  const yaml = cloudflaredYaml(domainConfig.tunnel, hostnames)
+  if (mcpFqdn) ingress.push({ hostname: mcpFqdn, unix: CADDY_TUNNEL_SOCKET })
+  const yaml = cloudflaredYaml(domainConfig.tunnel, ingress)
   if (!yaml) {
     console.log(`\x1b[31mThe tunnel id or credentials file isn't valid; cloudflared's config was left as it was.\x1b[0m`)
     return
@@ -1321,12 +1397,15 @@ const appConsents = new ConsentStore(APP_AUTH_CONSENT_FILE)
 const appPending = new PendingRequests()
 const passkeys = new PasskeyStore(PASSKEYS_FILE)
 const passkeyChallenges = new ChallengeStore()
+// Stamps (portal -> candy host) and one-time login codes (candy host -> portal)
+const passkeyTickets = new PasskeyTickets()
 setInterval(() => {
   portalSessions.sweep()
   pageTokens.sweep(id => portalSessions.alive(id))
   siteTokens.sweep()
   appPending.sweep()
   passkeyChallenges.sweep()
+  passkeyTickets.sweep()
 }, 10 * 60 * 1000)
 
 // Auto-kill idle servers (1hr no activity, no portal). Activity is:
@@ -1702,6 +1781,7 @@ const requestAuth = async (req: Request): Promise<RequestAuth | null> => {
   return {
     user: session.user, superuser: await isSuperuser(session.user).catch(() => false), via: "portal", sessionId: session.id,
     amr: session.amr, pamAt: session.pamAt, sessionCreated: session.created,
+    authAt: session.authAt, authMethod: session.authMethod, freshFor: session.freshFor,
   }
 }
 // Who may log in, cached for a minute: checked on every portal request
@@ -2899,6 +2979,51 @@ const fnLogPath = (name: string): string => `${FN_LOG_DIR}/${fnFileName(name)}.s
 // (readable by every user), this checkout otherwise
 const fnModuleDir = (): string =>
   RUNNING_AS_ROOT && existsSync(`${FN_ROOT_MODULE_DIR}/fn-host.ts`) ? FN_ROOT_MODULE_DIR : import.meta.dir
+
+// The installed shim (/usr/lib/candy) is a copy of this checkout's modules, made
+// by install-service.sh. After an update the copies are stale until it runs
+// again, and a stale sdk-auth.ts / jwe.ts in every function would refuse new
+// sign-in tokens (the token's claims changed: superuser). So in root mode the
+// daemon brings the copies up to date itself at start: the modules fn-host.ts
+// and fn-tool.ts import (the same closure test/install-shim-files.test.ts checks),
+// only into a folder the installer made, root-owned, 0644, atomically, audited.
+const fnShimModules = (): string[] => {
+  const seen = new Set<string>()
+  const todo = ["fn-host.ts", "fn-tool.ts"]
+  while (todo.length) {
+    const f = todo.pop()!
+    if (seen.has(f) || !/^[\w.-]+\.ts$/.test(f)) continue
+    seen.add(f)
+    let src = ""
+    try { src = readFileSync(`${import.meta.dir}/${f}`, "utf8") } catch { continue }
+    for (const m of src.matchAll(/(?:from\s+|import\()\s*["']\.\/([^"']+?)["']/g)) todo.push(m[1].endsWith(".ts") ? m[1] : `${m[1]}.ts`)
+  }
+  return [...seen].sort()
+}
+const syncFnShim = async (): Promise<void> => {
+  if (!RUNNING_AS_ROOT) return
+  const dir = await lstat(FN_ROOT_MODULE_DIR).catch(() => null)
+  if (!dir?.isDirectory() || dir.uid !== 0 || (dir.mode & 0o022) !== 0) return   // not installed, or not root's alone
+  const updated: string[] = []
+  for (const f of fnShimModules()) {
+    let want: string
+    try { want = readFileSync(`${import.meta.dir}/${f}`, "utf8") } catch { continue }
+    let have: string | null = null
+    try { have = readFileSync(`${FN_ROOT_MODULE_DIR}/${f}`, "utf8") } catch {}
+    if (have === want) continue
+    const tmp = `${FN_ROOT_MODULE_DIR}/.${f}.${process.pid}.tmp`
+    try {
+      await Bun.write(tmp, want)
+      await chmod(tmp, 0o644)
+      await rename(tmp, `${FN_ROOT_MODULE_DIR}/${f}`)
+      updated.push(f)
+    } catch (e) {
+      await unlink(tmp).catch(() => {})
+      console.error(`\x1b[33mCould not update the function shim's ${f}: ${(e as Error).message}\x1b[0m`)
+    }
+  }
+  if (updated.length) auditLog('FN_SHIM_SYNC', `${FN_ROOT_MODULE_DIR}: ${updated.join(", ")} updated from this checkout`, 'System')
+}
 
 const fnConfigOf = (name: string): ServerConfig | null => getConfigsForName(name).find(c => c.fn) ?? null
 
@@ -4986,16 +5111,17 @@ ${body}
     }
   }
 
+  // candy's own host (passkey ceremonies; also the public MCP endpoint when it
+  // uses the candy subdomain): the daemon answers it directly (candy-host.ts)
+  // Both only on the tunnel socket (tunnelSiteBlock): cloudflared is their only
+  // legitimate caller, and only then is Cf-Connecting-Ip the visitor's (publicClientIp)
+  const ownHost = candyHost()
+  if (ownHost && isZoneName(ownHost)) content += tunnelSiteBlock(ownHost, CADDY_TUNNEL_SOCKET, CADDY_TUNNEL_TAG, SYSTEM_BLOCK_MARK)
+
   // Public MCP endpoint: the daemon answers it directly (OAuth + MCP over HTTP)
   const mcpPublicFqdn = publicMcpFqdn()
-  if (mcpPublicFqdn && isZoneName(mcpPublicFqdn)) {
-    content += `${SYSTEM_BLOCK_MARK}
-http://${mcpPublicFqdn} {
-  reverse_proxy localhost:9999
-  log
-}
-
-`
+  if (mcpPublicFqdn && isZoneName(mcpPublicFqdn) && mcpPublicFqdn !== ownHost) {
+    content += tunnelSiteBlock(mcpPublicFqdn, CADDY_TUNNEL_SOCKET, CADDY_TUNNEL_TAG, SYSTEM_BLOCK_MARK)
   }
 
   // Kill subdomains:
@@ -5271,9 +5397,10 @@ const siteAction = (req: Request, url: URL, name: string): boolean => {
 // The most of a log a site page shows without a login: its startup output
 const SITE_LOG_EXCERPT_BYTES = 32 * 1024
 
-// Logging in and out happens before there is a page token; /token is the refresh itself
-// (passkey login too; all of them are still held to sameOrigin)
-const TOKENLESS_ROUTES = new Set(["/auth/login", "/auth/logout", "/token", "/auth/passkey/options", "/auth/passkey"])
+// Logging in and out happens before there is a page token; /token is the refresh itself.
+// All of them are still held to sameOrigin, except /auth/passkey/finish, which only
+// the candy host's page may post (its Origin is exactly https://<candy host>)
+const TOKENLESS_ROUTES = new Set(["/auth/login", "/auth/logout", "/token", "/auth/passkey/finish"])
 
 // Whether /etc/pam.d/candy is there. Login fails closed (with a message) while it isn't.
 let pamReady = false
@@ -5338,7 +5465,10 @@ const passkeyDeps: PasskeyDeps = {
 
 // Passkeys of accounts that are gone, or that are another account now (the
 // name was reused): dropped. Login checks the uid anyway; this cleans up.
-const prunePasskeys = () => prunePasskeyAccounts(passkeyDeps).catch(e => console.error(`\x1b[33mPasskey cleanup: ${(e as Error).message}\x1b[0m`))
+const prunePasskeys = () => {
+  prunePasskeyRpIds()
+  return prunePasskeyAccounts(passkeyDeps).catch(e => console.error(`\x1b[33mPasskey cleanup: ${(e as Error).message}\x1b[0m`))
+}
 setTimeout(prunePasskeys, 30 * 1000)
 setInterval(prunePasskeys, 10 * 60 * 1000)
 
@@ -5359,23 +5489,28 @@ const appAuthSites: SiteLookup = {
   ownerOf: (name: string) => nameInUse(name) ? nameOwner(name) : null,
 }
 
+// The password login's address lockout, which passkey logins honour too
+const passwordAddressWait = async (ip: string): Promise<number> => {
+  const local = isLoopback(ip)
+  const key = loginKeys("", ip, local).ip
+  if (local) return Math.ceil(loginDeps.soft.wait(key) / 1000)
+  const hard = await checkAuthBlocked(key)
+  return hard.blocked ? Math.max(1, hard.retryAfter) : 0
+}
+
 const appAuthRoutes = createAuthRoutes({
   appKeys,
   consents: appConsents,
   pending: appPending,
   passkeys: passkeyDeps,
+  candyHost,
+  tickets: passkeyTickets,
   sessions: portalSessions,
   pageTokens,
   site: appAuthSites,
   mayUse: (auth, name) => mayChangeName(auth, name),
   passwordLogin: input => attemptLogin(loginDeps, input),
-  addressWait: async (ip: string) => {
-    const local = isLoopback(ip)
-    const key = loginKeys("", ip, local).ip
-    if (local) return Math.ceil(loginDeps.soft.wait(key) / 1000)
-    const hard = await checkAuthBlocked(key)
-    return hard.blocked ? Math.max(1, hard.retryAfter) : 0
-  },
+  addressWait: passwordAddressWait,
   siteForKeyFetch: body => {
     if (typeof body.configId === "string" && body.configId) {
       for (const [name, configs] of serverConfigs) if (configs.some(c => c.id === body.configId)) return name
@@ -5394,6 +5529,21 @@ const appAuthRoutes = createAuthRoutes({
   sessionCookie: sessionCookieHeader,
   sessionHeader: SESSION_HEADER,
   audit: (action, details, actor) => { auditLog(action, details, actor as Actor) },
+  now: () => Date.now(),
+})
+
+// candy.<zone>: the passkey ceremonies, nothing else (candy-host.ts). Handled
+// before the guard by Host, like the public MCP host; it never falls through.
+const candyHostRoutes = createCandyHost({
+  host: candyHost,
+  tickets: passkeyTickets,
+  passkeys: passkeyDeps,
+  isPortalHost: (h: string) => isPortalHost(h),
+  session: (id: string) => portalSessions.byId(id),
+  enrolled: (id: string) => { portalSessions.bumpEnroll(id) },
+  addressWait: passwordAddressWait,
+  page: () => Bun.file(`${import.meta.dir}/public/passkey-host.html`).text(),
+  audit: (action, details) => { auditLog(action, details, 'Network') },
   now: () => Date.now(),
 })
 
@@ -5419,8 +5569,8 @@ const ROUTE_TABLE: readonly RouteRule[] = [
   ["GET", "/auth/users", "public"],
   ["POST", "/auth/login", "public"],
   ["POST", "/auth/logout", "public"],
-  ["POST", "/auth/passkey/options", "public"],
-  ["POST", "/auth/passkey", "public"],
+  ["GET", "/auth/passkey/start", "public"],
+  ["POST", "/auth/passkey/finish", "public"],
   ["GET", "/app-auth/authorize", "public"],
   ["GET", "/favicon.svg", "public"],
   ["POST", "/mcp/auth", "public"],
@@ -5440,6 +5590,7 @@ const ROUTE_TABLE: readonly RouteRule[] = [
   ["POST", "/oauth/decision", "user"],
   ["GET", "/app-auth/consent", "user"],
   ["POST", "/app-auth/decision", "user"],
+  ["POST", "/app-auth/fresh", "user"],
   ["GET", "/app-auth/sites", "user"],
   ["POST", "/app-auth/rotate", "user"],
   ["GET", "/app-auth/consents", "user"],
@@ -5447,8 +5598,7 @@ const ROUTE_TABLE: readonly RouteRule[] = [
   ["POST", "/auth/reauth", "user"],
   ["GET", "/passkeys", "user"],
   ["GET", "/passkeys/list", "user"],
-  ["POST", "/passkeys/register/options", "user"],
-  ["POST", "/passkeys/register", "user"],
+  ["POST", "/passkeys/enroll/start", "user"],
   ["POST", "/passkeys/rename", "user"],
   ["POST", "/passkeys/delete", "user"],
   ["POST", "/auth/set", "user"],
@@ -5554,8 +5704,15 @@ async function controlFetch(req: Request): Promise<Response> {
     // Before any route: who sent it (our Caddy or not), then the tag is gone
     markProxyHeaders(req, peerIp)
 
-    // Public MCP host: its own small surface (OAuth + /mcp), nothing else
+    // candy's own host (candy.<zone>): the passkey ceremonies with a stamp, and
+    // /mcp + its OAuth paths when the public MCP endpoint shares the host. Nothing else.
     const requestHostname = (req.headers.get("host") || "").replace(/:\d+$/, "").toLowerCase()
+    const ownHost = candyHost()
+    if (requestHostname && ownHost && requestHostname === ownHost) {
+      if (publicMcpFqdn() === ownHost && isPublicMcpPath(url.pathname)) return await handlePublicMcp(req, url, controlServer)
+      return await candyHostRoutes.handle(req, url, { ip: publicClientIp(req) })
+    }
+    // Public MCP host: its own small surface (OAuth + /mcp), nothing else
     if (requestHostname && requestHostname === publicMcpFqdn()) {
       return await handlePublicMcp(req, url, controlServer)
     }
@@ -5877,7 +6034,9 @@ async function controlFetch(req: Request): Promise<Response> {
       // Anything that changes state from the portal: sent by a portal page (Origin),
       // and carrying that page's token, minted for this very login
       if (portalHost && req.method !== "GET" && req.method !== "HEAD") {
-        if (!sameOrigin(req.headers, isPortalHost)) {
+        // The passkey login code comes back as a form the candy host's page submits
+        const fromOwnHost = url.pathname === PASSKEY_FINISH_PATH && fromCandyHost(req.headers, candyHost())
+        if (!fromOwnHost && !sameOrigin(req.headers, isPortalHost)) {
           return Response.json({ error: "Cross-site request refused." }, { status: 403, headers: corsHeaders })
         }
         if (auth?.via === "portal" && !TOKENLESS_ROUTES.has(url.pathname) && !pageTokens.consume(req.headers.get("X-Candy-Token"), auth.sessionId)) {
@@ -5917,15 +6076,18 @@ async function controlFetch(req: Request): Promise<Response> {
       const next = safeNext(url.searchParams.get("next"))
       if (auth?.via === "portal") return new Response(null, { status: 302, headers: { Location: next, "Cache-Control": "no-store" } })
       const rawHtml = await Bun.file(import.meta.dir + "/public/portal-login.html").text()
-      // Passkey login works without PAM installed
-      const vars = { next, available: pamReady, passkeys: true }
+      // Passkey login works without PAM installed, and only with a bound domain (candy.<zone> runs it).
+      // Signing in to an app goes straight to the passkey unless the password was asked for.
+      const passkeysOn = candyHost() !== null
+      const autoPasskey = passkeysOn && next.startsWith("/app-auth/consent?") && url.searchParams.get("with") !== "password"
+      const vars = { next, available: pamReady, passkeys: passkeysOn, autoPasskey }
       const html = rawHtml.replace('<script>', `<script>window.CANDY_VARS=${scriptJson(vars)};</script><script>`)
       return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } })
     }
 
     if (req.method === "GET" && url.pathname === "/auth/users") {
       if (!portalHost) return Response.json({ error: "not found" }, { status: 404, headers: corsHeaders })
-      return Response.json({ users: await loginUsers().catch(() => []), available: pamReady, passkeys: true }, { headers: { ...corsHeaders, "Cache-Control": "no-store" } })
+      return Response.json({ users: await loginUsers().catch(() => []), available: pamReady, passkeys: candyHost() !== null }, { headers: { ...corsHeaders, "Cache-Control": "no-store" } })
     }
 
     if (req.method === "POST" && url.pathname === "/auth/login") {
@@ -5964,12 +6126,12 @@ async function controlFetch(req: Request): Promise<Response> {
     // === Sign in with candy, and passkeys (app-auth-routes.ts) ===
     // After the guard: the class, the login, and for state-changing portal
     // requests sameOrigin and the page token (passkey login is TOKENLESS)
-    if (url.pathname === "/app-auth/authorize" || url.pathname === "/app-auth/consent" || url.pathname === "/app-auth/decision"
+    if (url.pathname === "/app-auth/authorize" || url.pathname === "/app-auth/consent" || url.pathname === "/app-auth/decision" || url.pathname === "/app-auth/fresh"
       || url.pathname === "/app-auth/sites" || url.pathname === "/app-auth/rotate"
       || url.pathname === "/app-auth/consents" || url.pathname === "/app-auth/consents/revoke"
-      || url.pathname === "/auth/passkey/options" || url.pathname === "/auth/passkey" || url.pathname === "/auth/reauth"
-      || url.pathname === "/passkeys" || url.pathname === "/passkeys/list" || url.pathname === "/passkeys/register/options"
-      || url.pathname === "/passkeys/register" || url.pathname === "/passkeys/rename" || url.pathname === "/passkeys/delete") {
+      || url.pathname === "/auth/passkey/start" || url.pathname === "/auth/passkey/finish" || url.pathname === "/auth/reauth"
+      || url.pathname === "/passkeys" || url.pathname === "/passkeys/list" || url.pathname === "/passkeys/enroll/start"
+      || url.pathname === "/passkeys/rename" || url.pathname === "/passkeys/delete") {
       const answer = await appAuthRoutes.handle(req, url, appAuthContext(req, auth, portalHost, corsHeaders, requestActor))
       return answer ?? Response.json({ error: "not found" }, { status: 404, headers: corsHeaders })
     }
@@ -7735,6 +7897,9 @@ async function controlFetch(req: Request): Promise<Response> {
       }
 
       const fqdn = `${subdomain}.${domainConfig.zone.domain}`
+      if (subdomain === CANDY_SUBDOMAIN) {
+        return Response.json({ error: `${fqdn} is candy's own address (passkey login). Pick another subdomain.` }, { status: 409, headers: corsHeaders })
+      }
       if (fqdn.toLowerCase() === publicMcpFqdn()) {
         return Response.json({ error: `${fqdn} is the public MCP endpoint. Pick another subdomain, or turn that off first.` }, { status: 409, headers: corsHeaders })
       }
@@ -7915,6 +8080,13 @@ async function controlFetch(req: Request): Promise<Response> {
 
       await saveDomainConfig()
       auditLog('DOMAIN_CONFIG', `zone: ${domainConfig.zone.domain}, tunnel: ${domainConfig.tunnel.name}`, requestActor)
+      // candy.<zone> (passkeys): bindings that now sit on it go, then DNS, Caddy, the tunnel
+      if (dropInvalidBindings()) await saveDomainConfig()
+      prunePasskeyRpIds()
+      await ensureCandyHostDns()
+      await syncCaddy()
+      await syncCloudflaredIngress()
+      await restartCloudflared()
 
       return Response.json({
         message: "Domain config updated",
@@ -8294,6 +8466,12 @@ await loadAuthFailures('startup')
 await watchAuthFailures()
 await syncCloudflaredIngress()
 await restartCloudflared()
+// candy.<zone>'s DNS record (once per host, in the background), and passkeys made for another host
+ensureCandyHostDns().catch(() => {})
+prunePasskeyRpIds()
+
+// The function shim's installed copies (sdk-auth.ts, jwe.ts, ...) match this checkout
+await syncFnShim().catch(e => console.error(`\x1b[33mFunction shim update: ${(e as Error).message}\x1b[0m`))
 
 // Initialize MCP auth (write bootstrap secret to file)
 await initMcpAuth()

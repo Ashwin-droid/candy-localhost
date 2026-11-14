@@ -177,8 +177,10 @@ describe("controlFetch (daemon.ts)", () => {
     expect(start).toBeGreaterThan(0)
     expect(gate).toBeGreaterThan(start)
     const before = source.slice(start, gate).split("\n").filter(l => !l.trim().startsWith("//")).join("\n")
-    // Ahead of it: only the peer check, the public MCP host and functions (other hosts)
-    expect(before.match(/\breturn\b/g)?.length).toBe(3)
+    // Ahead of it: only the peer check, candy's own host (its MCP paths, else the passkey
+    // ceremonies), the public MCP host and functions (other hosts)
+    expect(before.match(/\breturn\b/g)?.length).toBe(5)
+    expect(before).toContain("return await candyHostRoutes.handle(")
     expect(before).toContain('return new Response("Forbidden", { status: 403 })')
     expect(before).toContain("return await handlePublicMcp(")
     expect(before).toContain("return await serveFunction(")

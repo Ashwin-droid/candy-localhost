@@ -165,7 +165,7 @@
     <section class="sheet">
       <h1>Passkeys</h1>
       <p class="lede">Log in to the portal as <b id="me"></b> with a passkey instead of your password: Touch ID, Windows Hello, your phone or a security key.</p>
-      <p class="note" id="rpnote"></p>
+      <p class="note" id="rpnote" hidden></p>
     </section>
 
     <section class="sheet" id="reauth" hidden>
@@ -210,60 +210,20 @@
     const vars = window.CANDY_VARS || {};
     let token = window.CANDY_TOKEN || '';
     let pamUntil = typeof vars.pamUntil === 'number' ? vars.pamUntil : null;
-    const rpId = String(vars.rpId || location.hostname);
+    // candy.<zone>: where every passkey ceremony runs (a real certificate); null without a bound domain
+    const candyHost = typeof vars.candyHost === 'string' && vars.candyHost ? vars.candyHost : null;
+    const candyOrigin = candyHost ? 'https://' + candyHost : null;
     const $ = (id) => document.getElementById(id);
 
     $('me').textContent = String(vars.user || '');
     $('reauthUser').value = String(vars.user || '');
-    $('rpnote').textContent = '';
-    $('rpnote').append('Passkeys work only on the portal address they were made on (', Object.assign(document.createElement('code'), { textContent: rpId }), '). Make one on each portal address you use.');
+    if (!candyHost) {
+      $('rpnote').hidden = false;
+      $('rpnote').textContent = 'Passkeys need a bound domain: candy checks them on candy.<your domain>, which has a real certificate. Set up a domain (candy domain config) to use them; until then, log in with your password.';
+    }
 
     const platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || 'this device';
     $('newName').value = ('Passkey on ' + platform).slice(0, 64);
-
-    // ---- base64url <-> ArrayBuffer (for browsers without the JSON helpers) ----
-    const b64urlToBuf = (s) => {
-      s = String(s).replace(/-/g, '+').replace(/_/g, '/');
-      while (s.length % 4) s += '=';
-      const bin = atob(s);
-      const out = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-      return out.buffer;
-    };
-    const bufToB64url = (buf) => {
-      const bytes = new Uint8Array(buf);
-      let bin = '';
-      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-      return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    };
-    const creationOptions = (json) => {
-      if (typeof PublicKeyCredential.parseCreationOptionsFromJSON === 'function') {
-        try { return PublicKeyCredential.parseCreationOptionsFromJSON(json); } catch {}
-      }
-      return Object.assign({}, json, {
-        challenge: b64urlToBuf(json.challenge),
-        user: Object.assign({}, json.user, { id: b64urlToBuf(json.user.id) }),
-        excludeCredentials: (json.excludeCredentials || []).map(c => Object.assign({}, c, { id: b64urlToBuf(c.id) })),
-      });
-    };
-    const registrationJSON = (cred) => {
-      if (typeof cred.toJSON === 'function') {
-        try { return cred.toJSON(); } catch {}
-      }
-      const r = cred.response;
-      return {
-        id: cred.id,
-        rawId: bufToB64url(cred.rawId),
-        type: cred.type,
-        response: {
-          clientDataJSON: bufToB64url(r.clientDataJSON),
-          attestationObject: bufToB64url(r.attestationObject),
-          transports: typeof r.getTransports === 'function' ? r.getTransports() : [],
-        },
-        authenticatorAttachment: cred.authenticatorAttachment || null,
-        clientExtensionResults: typeof cred.getClientExtensionResults === 'function' ? cred.getClientExtensionResults() : {},
-      };
-    };
 
     // ---- requests ----
     const toLogin = () => { location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search); };
@@ -372,8 +332,7 @@
       nameBtn.textContent = p.name;
       nameBtn.addEventListener('click', () => rename(p, name, nameBtn));
       name.append(nameBtn);
-      if (p.here) name.append(Object.assign(document.createElement('span'), { className: 'badge here', textContent: 'this portal' }));
-      else name.append(' ', Object.assign(document.createElement('span'), { className: 'mono', textContent: p.rpId }));
+      if (!p.here) name.append(' ', Object.assign(document.createElement('span'), { className: 'mono', textContent: 'for ' + p.rpId + ' (unusable)' }));
       if (p.backedUp) name.append(Object.assign(document.createElement('span'), { className: 'badge synced', textContent: 'synced', title: 'Backed up by your passkey provider' }));
 
       const created = document.createElement('td');
@@ -464,44 +423,107 @@
     }
 
     // ---- add ----
+    // The passkey is made on candy's own host, in a popup: it adds the passkey,
+    // tells this page (postMessage, this exact origin) and closes
     const addBtn = $('add');
     const addMsg = $('addMsg');
-    if (!window.PublicKeyCredential || !navigator.credentials) {
+    let popup = null;
+    let popupTimer = null;
+    if (!candyHost) {
+      addBtn.disabled = true;
+      $('newName').disabled = true;
+      addMsg.className = 'msg wait';
+      addMsg.textContent = 'Needs a bound domain (see above).';
+    } else if (!window.PublicKeyCredential || !navigator.credentials) {
       addBtn.disabled = true;
       addMsg.textContent = 'This browser can’t make passkeys.';
     }
+
+    const resetAdd = () => {
+      clearInterval(popupTimer);
+      popupTimer = null;
+      popup = null;
+      addBtn.disabled = !candyHost || !window.PublicKeyCredential;
+    };
+
+    window.addEventListener('message', (e) => {
+      // Only our candy host, only from the popup this page opened
+      if (!candyOrigin || e.origin !== candyOrigin || !popup || e.source !== popup) return;
+      const d = e.data || {};
+      if (d.type !== 'candy-passkey' || d.purpose !== 'enroll') return;
+      if (d.ok === true) {
+        addMsg.className = 'msg ok';
+        addMsg.textContent = 'Passkey added.';
+        load();
+      }
+    });
+
+    // Opened in the click itself (popup blockers), pointed at the candy host once the stamp is there
+    function openPopup() {
+      const w = 470, h = 640;
+      const left = Math.max(0, Math.round((window.screenX || 0) + ((window.outerWidth || w) - w) / 2));
+      const top = Math.max(0, Math.round((window.screenY || 0) + ((window.outerHeight || h) - h) / 2));
+      const win = window.open('', 'candy-passkey', `popup,width=${w},height=${h},left=${left},top=${top}`);
+      try { if (win) win.document.title = 'Passkey · candy'; } catch {}
+      return win;
+    }
+
+    async function startEnroll(win) {
+      addMsg.className = 'msg wait';
+      addMsg.textContent = 'Opening ' + candyHost + '…';
+      const name = $('newName').value.trim() || 'Passkey';
+      const out = await post('/passkeys/enroll/start', { name });
+      if (out.res.status === 403 && out.data.reauth) { pamUntil = null; return out; }
+      if (!out.res.ok) throw new Error(out.data.error || `Failed (HTTP ${out.res.status})`);
+      let target;
+      try { target = new URL(out.data.url); } catch { throw new Error('Something went wrong. Try again.'); }
+      if (target.origin !== candyOrigin) throw new Error('Something went wrong. Try again.');
+      if (win && !win.closed) {
+        popup = win;
+        win.location.replace(target.href);
+      } else {
+        // The popup was blocked: go there in this tab (its page links back here when done)
+        location.assign(target.href);
+        return out;
+      }
+      addMsg.className = 'msg wait';
+      addMsg.textContent = 'Follow the steps in the candy window…';
+      clearInterval(popupTimer);
+      popupTimer = setInterval(() => {
+        if (popup && popup.closed) {
+          const wasWaiting = addMsg.className.includes('wait');
+          resetAdd();
+          if (wasWaiting) { addMsg.className = 'msg'; addMsg.textContent = ''; }
+          load();
+        }
+      }, 500);
+      return out;
+    }
+
     addBtn.addEventListener('click', async () => {
-      if (addBtn.disabled) return;
+      if (addBtn.disabled || !candyHost) return;
       addBtn.disabled = true;
       addMsg.className = 'msg';
       addMsg.textContent = '';
+      // A stale password first: the popup opens when the password form is sent
+      if (needsPassword()) {
+        if (!(await askPassword())) { resetAdd(); return; }
+      }
+      // Still inside a user gesture when the password wasn't needed; after the
+      // password prompt, the Confirm press counts (transient activation)
+      const win = openPopup();
       try {
-        const opts = await withRecentPassword(() => post('/passkeys/register/options', {}));
-        if (!opts) return;
-        if (!opts.res.ok) throw new Error(opts.data.error || `Failed (HTTP ${opts.res.status})`);
-        addMsg.className = 'msg wait';
-        addMsg.textContent = 'Follow your browser’s prompt…';
-        let cred;
-        try {
-          cred = await navigator.credentials.create({ publicKey: creationOptions(opts.data.publicKey) });
-        } catch (e) {
-          if (e && e.name === 'NotAllowedError') { addMsg.textContent = ''; return; }   // cancelled
-          if (e && e.name === 'InvalidStateError') throw new Error('That device already has a passkey for you here.');
-          throw new Error('Your browser couldn’t make a passkey' + (e && e.message ? ': ' + e.message : '.'));
+        let out = await startEnroll(win);
+        if (out.res.status === 403 && out.data.reauth) {
+          if (win && !win.closed) win.close();
+          if (!(await askPassword())) { resetAdd(); return; }
+          out = await startEnroll(openPopup());
         }
-        if (!cred) { addMsg.textContent = ''; return; }
-        const name = $('newName').value.trim() || 'Passkey';
-        const { res, data } = await post('/passkeys/register', { challengeId: opts.data.challengeId, credential: registrationJSON(cred), name });
-        if (res.status === 403 && data.reauth) { pamUntil = null; throw new Error(data.error || 'Enter your password again, then add the passkey again.'); }
-        if (!res.ok) throw new Error(data.error || `Failed (HTTP ${res.status})`);
-        addMsg.className = 'msg ok';
-        addMsg.textContent = 'Passkey added. You can log in with it on ' + rpId + '.';
-        await load();
       } catch (e) {
+        if (win && !win.closed) win.close();
+        resetAdd();
         addMsg.className = 'msg';
         addMsg.textContent = e instanceof TypeError ? 'Can’t reach the candy daemon.' : e.message;
-      } finally {
-        addBtn.disabled = !window.PublicKeyCredential;
       }
     });
 

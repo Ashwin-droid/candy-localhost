@@ -6,7 +6,7 @@ import { SoftLockout } from "../portal-auth.ts"
 import {
   PasskeyStore, ChallengeStore, mayManagePasskeys, passkeyLoginKey, cleanPasskeyName, isRpId,
   startPasskeyLogin, attemptPasskeyLogin, startRegistration, finishRegistration, deletePasskey, renamePasskey,
-  MAX_PER_USER_RP, MAX_PER_USER, MAX_PASSKEYS, MAX_NAME_LENGTH, CHALLENGE_TTL_MS, MAX_CHALLENGES,
+  MAX_PER_USER, MAX_PASSKEYS, MAX_NAME_LENGTH, CHALLENGE_TTL_MS, MAX_CHALLENGES,
   prunePasskeyAccounts,
   RECENT_PAM_MS, PASSKEY_FAILURE_FLOOR_MS, PASSKEY_FAILED, PASSKEY_SLOWED, PASSKEY_NEEDS_PASSWORD, PASSKEY_LIMIT,
   PASSKEY_EXISTS, PASSKEY_EXPIRED, PASSKEY_NOT_FOUND, PASSKEY_INVALID, MAX_CREDENTIAL_ID_CHARS,
@@ -148,22 +148,28 @@ describe("PasskeyStore basics", () => {
 })
 
 describe("PasskeyStore limits", () => {
-  it(`allows ${MAX_PER_USER_RP} per user per rpId`, () => {
+  // One rpId now (the candy host): no per-rpId cap, only per user and the whole store
+  it(`allows ${MAX_PER_USER} per user, whatever the rpId`, () => {
     const { store } = makeStore(null)
-    for (let i = 0; i < MAX_PER_USER_RP; i++) added(store)
-    expect(store.atLimit("alice", "portal.localhost")).toBe(true)
-    expect(store.add(rec())).toEqual({ ok: false, error: PASSKEY_LIMIT })
-    // Another host, or another user, still has room
-    expect(store.add(rec({ rpId: "portal.candy" })).ok).toBe(true)
+    for (let i = 0; i < MAX_PER_USER; i++) added(store, { rpId: i % 2 ? "candy.example.com" : "candy.example.org" })
+    expect(store.atLimit("alice")).toBe(true)
+    expect(store.add(rec({ rpId: "candy.example.net" }))).toEqual({ ok: false, error: PASSKEY_LIMIT })
     expect(store.add(rec({ user: "bob" })).ok).toBe(true)
+    expect(store.atLimit("bob")).toBe(false)
   })
 
-  it(`allows ${MAX_PER_USER} per user across rpIds`, () => {
-    const { store } = makeStore(null)
-    for (let i = 0; i < MAX_PER_USER; i++) added(store, { rpId: `portal${i % 3}.candy` })
-    expect(store.add(rec({ rpId: "portal9.candy" }))).toEqual({ ok: false, error: PASSKEY_LIMIT })
-    expect(store.atLimit("alice", "fresh.candy")).toBe(true)
-    expect(store.add(rec({ user: "bob" })).ok).toBe(true)
+  it("drops passkeys made for another rpId (the zone changed), and only those", () => {
+    const { store } = makeStore()
+    const keep = added(store, { rpId: "candy.example.com" })
+    const old1 = added(store, { rpId: "candy.old.example" })
+    const old2 = added(store, { rpId: "portal.localhost", user: "bob" })
+    const dropped = store.dropOtherRpIds("candy.example.com")
+    expect(dropped.map(r => r.id).sort()).toEqual([old1.id, old2.id].sort())
+    expect(store.list("alice").map(r => r.id)).toEqual([keep.id])
+    expect(store.list("bob")).toEqual([])
+    // Saved
+    expect(makeStore().store.size).toBe(1)
+    expect(store.dropOtherRpIds("candy.example.com")).toEqual([])
   })
 
   it(`allows ${MAX_PASSKEYS} in the whole store`, () => {
@@ -380,11 +386,11 @@ describe("PasskeyStore file", () => {
   it("enforces the limits on load", () => {
     const { store } = makeStore()
     store.userHandle("x", uidFor("x"))
-    const many = Array.from({ length: MAX_PER_USER_RP + 5 }, (_, i) => ({ ...rec(), created: T0 + i, lastUsed: null }))
+    const many = Array.from({ length: MAX_PER_USER + 5 }, (_, i) => ({ ...rec(), created: T0 + i, lastUsed: null }))
     const others = Array.from({ length: MAX_PASSKEYS + 20 }, (_, i) => ({ ...rec({ user: `u${Math.floor(i / 10)}` }), created: T0, lastUsed: null }))
     writeFileSync(file, JSON.stringify({ version: 1, handles: {}, credentials: [...many, ...others] }), { mode: 0o600 })
     const again = makeStore().store
-    expect(again.list("alice")).toHaveLength(MAX_PER_USER_RP)
+    expect(again.list("alice")).toHaveLength(MAX_PER_USER)
     expect(again.list("alice")[0]!.id).toBe(many[0]!.id)
     expect(again.size).toBe(MAX_PASSKEYS)
   })
@@ -517,13 +523,24 @@ describe("ChallengeStore", () => {
     expect(c.take(victim.id, "login")).toMatchObject({ challenge: victim.challenge })
   })
 
-  it(`remembers at most ${MAX_CHALLENGES} used ids, dropping expired ones first`, () => {
+  it(`remembers at most ${MAX_CHALLENGES} used ids, dropping expired ones first, and fails closed when full of live ones`, () => {
     const { c, clock } = make({ maxUsed: 3 })
-    c.take(c.issue(ch()).id, "login"); c.take(c.issue(ch()).id, "login")
+    c.take(c.issue(ch({ key: "a" })).id, "login"); c.take(c.issue(ch({ key: "b" })).id, "login")
     clock.t += CHALLENGE_TTL_MS
-    for (let i = 0; i < 3; i++) c.take(c.issue(ch()).id, "login")
+    for (const key of ["c", "d", "e"]) expect(c.take(c.issue(ch({ key })).id, "login")).not.toBeNull()
+    expect(c.size).toBe(3)
+    // Full of live ones: a fourth can't be recorded, so it is refused rather than evicting one
+    const late = c.issue(ch({ key: "f" }))
+    expect(c.take(late.id, "login")).toBeNull()
     expect(c.size).toBe(3)
     expect(c.sweep()).toBe(0)
+  })
+
+  it("one address may use up only a share of the used set", () => {
+    const { c } = make({ maxUsed: 100 })   // share: 5
+    for (let i = 0; i < 5; i++) expect(c.take(c.issue(ch({ key: "passkey:ip:loopback" })).id, "login")).not.toBeNull()
+    expect(c.take(c.issue(ch({ key: "passkey:ip:loopback" })).id, "login")).toBeNull()
+    expect(c.take(c.issue(ch({ key: "passkey:ip:203.0.113.9" })).id, "login")).not.toBeNull()
   })
 })
 
@@ -965,9 +982,10 @@ describe("startRegistration", () => {
 
   it("is 409 at the limit", async () => {
     const { d } = makeDeps()
-    for (let i = 0; i < MAX_PER_USER_RP; i++) enrolled(d)
+    for (let i = 0; i < MAX_PER_USER; i++) enrolled(d)
     expect(await startRegistration(d, { ...LOCAL, session: pamSession() })).toEqual({ ok: false, status: 409, body: { error: PASSKEY_LIMIT } })
-    expect((await startRegistration(d, { ...CANDY, session: pamSession() })).ok).toBe(true)
+    // One cap per user, whatever the rpId
+    expect(await startRegistration(d, { ...CANDY, session: pamSession() })).toEqual({ ok: false, status: 409, body: { error: PASSKEY_LIMIT } })
   })
 
   it("stores nothing for any number of register challenges", async () => {
@@ -1085,7 +1103,7 @@ describe("finishRegistration", () => {
 
   it("is 409 when the limit was reached between start and finish", async () => {
     const { d } = makeDeps()
-    for (let i = 0; i < MAX_PER_USER_RP - 1; i++) enrolled(d)
+    for (let i = 0; i < MAX_PER_USER - 1; i++) enrolled(d)
     const s = await startRegistration(d, { ...LOCAL, session: pamSession() })
     if (!s.ok) throw new Error()
     enrolled(d)

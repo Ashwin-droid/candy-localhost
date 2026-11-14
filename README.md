@@ -932,7 +932,11 @@ The portal (`portal.localhost`, `portal.candy`) and the public MCP consent page 
 
 ### Sign in with candy
 
-Apps hosted on candy don't need their own login: they send the browser to the portal, the user logs in there (password or passkey) and approves the app once, and the browser comes back with a one-shot token that only that site's key opens. The backend learns the unix user (`ashwin`, `claude`, …). Design: [SDK_AUTH_DESIGN.md](SDK_AUTH_DESIGN.md).
+Apps hosted on candy don't need their own login: they send the browser to the portal, the user logs in there (password or passkey) and approves the app once, and the browser comes back with a one-shot token that only that site's key opens. The backend learns the unix user (`ashwin`, `claude`, …) and whether the account is an administrator (a sudoer). Design: [SDK_AUTH_DESIGN.md](SDK_AUTH_DESIGN.md).
+
+An app on a bound domain (`app.example.com`) still sends the browser to `https://portal.candy`, which only resolves on your tailnet: passing through it is the tailnet check.
+
+**Update the SDK with candy.** Tokens now carry a `superuser` claim and the state cookie is signed, so an older copy of `sdk-auth.ts` / `jwe.ts` refuses every new sign-in ("invalid contents"). Apps that import `candy-localhost` from this checkout pick it up on restart; an app that vendors or bundles its own copy must update it. Functions use the copies in `/usr/lib/candy`, which the daemon (root mode) brings up to date at start (`FN_SHIM_SYNC` in the audit log) and `install-service.sh` installs.
 
 A plain Bun server started by candy:
 
@@ -944,7 +948,8 @@ Bun.serve({
   async fetch(req) {
     // GET /_candy/auth/login?next=/x starts it; POST /_candy/auth/callback finishes it
     const r = await auth.handle(req, u => {
-      // u.user is the unix user, u.amr is ["pam"] or ["passkey"]. Issue a FRESH session id here.
+      // u.user is the unix user, u.superuser whether it's a sudoer, u.amr ["pam"] or ["passkey"],
+      // u.authTime when they last authenticated (ms). Issue a FRESH session id here.
       return redirectAfterLogin(u.next, `sid=${newSession(u.user)}; Path=/; Secure; HttpOnly; SameSite=Lax`)
     })
     if (r) return r
@@ -952,6 +957,14 @@ Bun.serve({
     return new Response("hello")
   },
 })
+```
+
+A sensitive action can ask for a recent authentication (`maxAge`, seconds, 0 to 86400; `0` = authenticate again every time). The portal then asks for a passkey (or the password) again before it answers, even with a live login and a remembered approval, and the SDK refuses (`stale_auth`) a token whose `authTime` is older, whatever happened to the URL on the way:
+
+```ts
+// GET /_candy/auth/confirm?next=/pay: a fresh sign-in, then on to /pay
+if (new URL(req.url).pathname === "/_candy/auth/confirm") return auth.login(req, { maxAge: 0 })
+// or for every sign-in of this app: appAuth({ maxAge: 300 }), or per call: auth.handle(req, onLogin, { maxAge: 60 })
 ```
 
 A candy function gets the same object as `env.CANDY_AUTH`:
@@ -970,8 +983,8 @@ export default {
 - `return_to` must be exactly `https://<host>/_candy/auth/callback` (no port, query or fragment) on a host candy routes to that same site: `<name>.localhost`, `<name>.candy` or one of its bound domains. Anything else gets an error page, never a redirect. The SDK only accepts a token at the URL it was minted for (the callback it arrived at), never one picked by a cookie.
 - The first time, the portal asks "<site> wants to know who you are" and says who runs the site; "Remember for this site" skips the question for 30 days (per user and site; `candy app-auth revoke <site>` undoes it). Remembered or not, the token is only minted by a POST from the portal page.
 - Keys: one random 256-bit key per site, made when the site first starts (or the SDK first asks), kept by the daemon in a root-only file. Sandboxed servers and functions get it as a systemd credential (`$CREDENTIALS_DIRECTORY/candy-auth-keys`), other launches as `CANDY_AUTH_KEYS`; never on a command line. Anything else (a server you run yourself) fetches it with your API key: `appAuth({ site: "notes" })`. Only the site's owner gets it. `candy app-auth rotate <name>` makes a new key. The ring the SDK gets marks the old key as retired, so it only opens tokens made before the rotation (a token lives a minute at most): a leaked old key can't mint sign-ins afterwards, in any copy of the ring. An app using `appAuth()` refetches the ring every 5 minutes and when it meets a new key; a server holding only the old ring (started before the rotation, no API key to refetch) keeps accepting the old key until it restarts, so `candy restart` the names the command lists. Functions are restarted for you.
-- Passkeys: after a password login, open **Passkeys** in the portal (`/passkeys`) to add one; then the login page offers "Log in with a passkey". A passkey works only on the portal address it was made on (`portal.localhost` or `portal.candy`). Adding or removing one asks for the password again if it wasn't entered in the last 10 minutes, so a passkey login can't add more passkeys. A sudoer who logged in with a passkey is a superuser straight away, as after a password login. Passkey login is rate limited like password login and runs PAM's account checks (an expired password, `pam_access`, `pam_nologin` stop it); an account that can't log in any more can't use its passkeys either. A passkey belongs to the account (name and uid): it's removed when the account is deleted or leaves the `candy` group, and a new account that reuses the name never inherits it.
-- Audit log: `APP_AUTH_GRANT` / `APP_AUTH_DENY` (user, site, how they logged in, the token's id), `APP_AUTH_KEY_FETCH`, `APP_AUTH_KEY_ROTATE`, `APP_AUTH_RESET` (a name changed hands: new key, approvals dropped), `PASSKEY_ADD` / `PASSKEY_DELETE` / `PASSKEY_COUNTER` / `PASSKEY_DROP`, `AUTH_REAUTH`. Never a token or a key.
+- Passkeys need a bound domain (`candy domain config`): browsers refuse passkeys on a page with a certificate error, and `portal.candy` / `portal.localhost` use Caddy's local CA. So every passkey check runs on `candy.<your domain>` (a real certificate, through the Cloudflare tunnel), and the browser comes back to the portal afterwards. Nothing else is ever served there (the public MCP endpoint too, if you put it on that subdomain), and the name can't be bound. After a password login, open **Passkeys** in the portal (`/passkeys`): "Add a passkey" opens a small `candy.<your domain>` window that makes it and closes. The login page's "Use a passkey" goes there and back; when you're signing in to an app it goes straight there. One passkey works from every portal address. Without a bound domain the portal has password login only and says why. If the domain changes, passkeys made for the old one are removed (audited). Adding or removing one asks for the password again if it wasn't entered in the last 10 minutes, so a passkey login can't add more passkeys. A sudoer who logged in with a passkey is a superuser straight away, as after a password login. Passkey login is rate limited like password login and runs PAM's account checks (an expired password, `pam_access`, `pam_nologin` stop it); an account that can't log in any more can't use its passkeys either. A passkey belongs to the account (name and uid): it's removed when the account is deleted or leaves the `candy` group, and a new account that reuses the name never inherits it.
+- Audit log: `APP_AUTH_GRANT` / `APP_AUTH_DENY` (user, site, how they logged in, the token's id), `APP_AUTH_KEY_FETCH`, `APP_AUTH_KEY_ROTATE`, `APP_AUTH_RESET` (a name changed hands: new key, approvals dropped), `PASSKEY_ADD` / `PASSKEY_DELETE` / `PASSKEY_COUNTER` / `PASSKEY_DROP`, `AUTH_REAUTH`, `CANDY_HOST_DNS`. Never a token, a key, a passkey stamp or login code.
 
 ### Multiple Users
 

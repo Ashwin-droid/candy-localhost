@@ -31,7 +31,7 @@ describe("create and get", () => {
     const { s } = make(null)
     const { id, cookie, secret } = s.create("alice", { ip: "127.0.0.1", ua: "test" })
     expect(cookie).toMatch(/^[A-Za-z0-9_-]{43}$/)
-    expect(s.get(cookie, secret)).toEqual({ id, user: "alice", created: T0, lastSeen: T0, amr: "pam", pamAt: T0 })
+    expect(s.get(cookie, secret)).toEqual({ id, user: "alice", created: T0, lastSeen: T0, amr: "pam", pamAt: T0, authAt: T0, authMethod: "pam", freshFor: null, enrollSeq: 0 })
     expect(s.get(cookie + "x", secret)).toBeNull()
     expect(s.get("", secret)).toBeNull()
     expect(s.get(null, secret)).toBeNull()
@@ -166,7 +166,7 @@ describe("persistence", () => {
     const { s } = make(file)
     const { id, cookie, secret } = s.create("alice", { ip: "100.64.0.1", ua: "firefox" })
     const { s: again } = make(file)
-    expect(again.get(cookie, secret)).toEqual({ id, user: "alice", created: T0, lastSeen: T0, amr: "pam", pamAt: T0 })
+    expect(again.get(cookie, secret)).toEqual({ id, user: "alice", created: T0, lastSeen: T0, amr: "pam", pamAt: T0, authAt: T0, authMethod: "pam", freshFor: null, enrollSeq: 0 })
     expect(again.list()[0]).toMatchObject({ ip: "100.64.0.1", ua: "firefox" })
   })
 
@@ -390,6 +390,67 @@ describe("amr and pamAt", () => {
       writeFileSync(file, JSON.stringify(data), { mode: 0o600 })
       const { s: again } = make(file)
       expect(again.get(a.cookie, a.secret)).toBeNull()
+      rmSync(file, { force: true })
+    }
+  })
+})
+
+// Sign in with candy's max_age: when and how the user last authenticated, and for which request
+describe("authAt, authMethod and freshFor", () => {
+  const KEY = "k".repeat(43)
+  it("a login sets authAt = now and authMethod = its amr; nothing is fresh for a request yet", () => {
+    const { s } = make(null)
+    const key = s.create("alice", {}, { amr: "passkey" })
+    expect(s.get(key.cookie, key.secret)).toMatchObject({ authAt: T0, authMethod: "passkey", freshFor: null })
+  })
+
+  it("markAuth records a fresh passkey (pamAt unchanged), markPam a password; both persist; clearFresh uses it up", () => {
+    const { s, clock } = make(file, { idleMs: HOUR, maxMs: 10 * HOUR })
+    const a = s.create("alice")
+    clock.t += 5 * MIN
+    expect(s.markAuth(a.id, "passkey", KEY)).toBe(T0 + 5 * MIN)
+    expect(s.byId(a.id)).toMatchObject({ pamAt: T0, authAt: T0 + 5 * MIN, authMethod: "passkey", freshFor: KEY })
+    expect(make(file, { idleMs: HOUR, maxMs: 10 * HOUR }).s.byId(a.id)).toMatchObject({ authMethod: "passkey", freshFor: KEY })
+    s.clearFresh(a.id)
+    expect(s.byId(a.id)?.freshFor).toBeNull()
+    clock.t += MIN
+    expect(s.markPam(a.id)).toBe(T0 + 6 * MIN)
+    expect(s.byId(a.id)).toMatchObject({ pamAt: T0 + 6 * MIN, authAt: T0 + 6 * MIN, authMethod: "pam", freshFor: null })
+    expect(() => s.markAuth(a.id, "sms" as any)).toThrow()
+    expect(() => s.markAuth(a.id, "pam", "short")).toThrow()
+    expect(s.markAuth("nope", "pam")).toBeNull()
+  })
+
+  it("byId never slides the session and is null once it expired", () => {
+    const { s, clock } = make(null, { idleMs: HOUR, maxMs: 10 * HOUR })
+    const a = s.create("alice")
+    clock.t += 30 * MIN
+    expect(s.byId(a.id)?.lastSeen).toBe(T0)
+    clock.t += 31 * MIN
+    expect(s.byId(a.id)).toBeNull()
+    expect(s.byId("")).toBeNull()
+  })
+
+  it("loads sessions from before authAt existed: the password check, else the login", () => {
+    const { s } = make(file)
+    const a = s.create("alice")
+    const p = s.create("bob", {}, { amr: "passkey" })
+    const data = JSON.parse(readFileSync(file, "utf8"))
+    for (const x of data.sessions) { delete x.authAt; delete x.authMethod; delete x.freshFor }
+    writeFileSync(file, JSON.stringify(data), { mode: 0o600 })
+    const { s: again } = make(file)
+    expect(again.byId(a.id)).toMatchObject({ authAt: T0, authMethod: "pam", freshFor: null, enrollSeq: 0 })
+    expect(again.byId(p.id)).toMatchObject({ authAt: T0, authMethod: "passkey", freshFor: null })
+  })
+
+  it("drops stored sessions with a bad authAt or authMethod", () => {
+    for (const bad of [{ authAt: "x", authMethod: "pam" }, { authAt: T0 - 1, authMethod: "pam" }, { authAt: T0, authMethod: "sms" }, { authAt: T0 + 24 * HOUR, authMethod: "pam" }]) {
+      const { s } = make(file)
+      const a = s.create("alice")
+      const data = JSON.parse(readFileSync(file, "utf8"))
+      Object.assign(data.sessions[0], bad)
+      writeFileSync(file, JSON.stringify(data), { mode: 0o600 })
+      expect(make(file).s.get(a.cookie, a.secret)).toBeNull()
       rmSync(file, { force: true })
     }
   })

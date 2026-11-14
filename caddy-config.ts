@@ -105,6 +105,21 @@ export const isQuickTunnelUrl = (s: unknown): s is string =>
 // Bound domains
 // ----------------------------------------------------------------------------
 
+/**
+ * candy's own host on the bound zone: candy.<zone>. It is never a binding, a
+ * route or anything else; the daemon serves only the passkey ceremony there
+ * (candy-host.ts) and, when the public MCP endpoint uses the same subdomain,
+ * /mcp and its OAuth paths. It is the one WebAuthn rpId.
+ */
+export const CANDY_SUBDOMAIN = "candy"
+
+/** candy.<zone>, or null when the zone isn't a domain name (no bound domain: no passkeys). */
+export const candyHostFor = (zone: unknown): string | null => {
+  if (typeof zone !== "string") return null
+  const z = zone.trim().toLowerCase()
+  return isZoneName(z) ? `${CANDY_SUBDOMAIN}.${z}` : null
+}
+
 export interface BindingLike {
   subdomain: string
   fqdn: string
@@ -129,6 +144,7 @@ export const checkBindings = <B extends BindingLike>(
   for (const [key, b] of Object.entries(bindings ?? {})) {
     const why = !b || typeof b !== "object" ? "not an object"
       : !isDnsLabel(key) ? "the subdomain isn't one DNS label"
+      : key === CANDY_SUBDOMAIN ? `${CANDY_SUBDOMAIN}.<zone> is candy's own host (passkeys), never a binding`
       : b.subdomain !== key ? "the subdomain doesn't match its key"
       : !isZoneName(zone) ? "the zone isn't a domain name"
       : b.fqdn !== `${key}.${zone}` ? "the domain isn't <subdomain>.<zone>"
@@ -154,7 +170,7 @@ export const caddyAdminAddress = (socket: string): string => `unix/${socket}|060
  * cookies. Caddy logs header names in Go's canonical form.
  */
 export const LOG_REDACTED_REQUEST_HEADERS = [
-  "X-Candy-Session", "X-Candy-Token", "X-Candy-Api-Key", "X-Candy-Auth", "X-Candy-Proxy", "X-Candy-Verified",
+  "X-Candy-Session", "X-Candy-Token", "X-Candy-Api-Key", "X-Candy-Auth", "X-Candy-Proxy", "X-Candy-Tunnel", "X-Candy-Verified",
   "Authorization", "Proxy-Authorization", "Cookie", "X-Auth-Token",
 ] as const
 export const LOG_REDACTED_RESPONSE_HEADERS = ["Set-Cookie"] as const
@@ -162,8 +178,11 @@ export const LOG_REDACTED_RESPONSE_HEADERS = ["Set-Cookie"] as const
  * Query parameters dropped from the logged URI. Sign in with candy never puts
  * its token in a URL (it is a form POST), but an app that misuses the SDK, or
  * a hand-made link, must not get a live login token into the log either.
+ * `candy_stamp` is the passkey ceremony ticket the portal sends to the candy
+ * host in a URL (once); `candy_code`, the one-time login code, only ever
+ * travels in a POST body, and is listed in case a hand-made link carries it.
  */
-export const LOG_REDACTED_QUERY_PARAMS = ["candy_token"] as const
+export const LOG_REDACTED_QUERY_PARAMS = ["candy_token", "candy_stamp", "candy_code"] as const
 
 export const caddyGlobalBlock = (o: { adminSocket: string; accessLog: string }): string => {
   if (!o.adminSocket.startsWith("/") || /[\s{}"'#|]/.test(o.adminSocket)) throw new Error(`bad admin socket path: ${o.adminSocket}`)
@@ -224,6 +243,40 @@ export const coalesced = (fn: () => Promise<void>): (() => Promise<void>) => {
 
 /** The header Caddy puts on everything it sends the daemon, so the daemon can tell Caddy from any other local caller. */
 export const PROXY_TAG_HEADER = "X-Candy-Proxy"
+/**
+ * The header Caddy adds (with another per-boot value) only in the site blocks
+ * bound to the tunnel socket (tunnelSiteBlock): the request came through
+ * cloudflared, the one caller that can open that root-only socket. Only then
+ * is Cf-Connecting-Ip the visitor's address (a local user can send any
+ * Cf-Connecting-Ip to 127.0.0.1:80 or :9999).
+ */
+export const TUNNEL_TAG_HEADER = "X-Candy-Tunnel"
+
+/** An absolute unix socket path safe to put into the Caddyfile and cloudflared's YAML. */
+export const isSocketPath = (s: unknown): s is string =>
+  typeof s === "string" && s.startsWith("/") && s.length <= 100 && /^[A-Za-z0-9/._-]+$/.test(s) && !s.includes("..")
+
+/**
+ * A site block that only cloudflared can reach: bound to a 0600 unix socket
+ * (Caddy runs as root, so does cloudflared), never to a TCP port, and tagged
+ * with TUNNEL_TAG_HEADER for the daemon. For hosts the tunnel is the only
+ * legitimate way to: candy's own host, the public MCP host.
+ */
+export const tunnelSiteBlock = (host: string, socket: string, tag: string, mark: string): string => {
+  if (!isZoneName(host)) throw new Error(`bad tunnel host: ${host}`)
+  if (!isSocketPath(socket)) throw new Error(`bad tunnel socket: ${socket}`)
+  if (!/^[A-Za-z0-9_-]{16,128}$/.test(tag)) throw new Error("bad tunnel tag")
+  return `${mark}
+http://${host} {
+  bind unix/${socket}|0600
+  reverse_proxy localhost:9999 {
+    header_up ${TUNNEL_TAG_HEADER} ${tag}
+  }
+  log
+}
+
+`
+}
 
 /**
  * Adds `header_up X-Candy-Proxy <tag>` to every reverse_proxy / forward_auth
@@ -249,6 +302,7 @@ export const tagDaemonUpstreams = (content: string, tag: string): string => {
  */
 export const stripProxyHeaders = (headers: Headers, fromOwnCaddy: boolean): void => {
   headers.delete(PROXY_TAG_HEADER)
+  headers.delete(TUNNEL_TAG_HEADER)
   if (fromOwnCaddy) return
   for (const name of [...headers.keys()]) {
     if (name.startsWith("x-forwarded-") || name.startsWith("cf-") || name === "forwarded") headers.delete(name)
@@ -262,13 +316,21 @@ export const loopbackBind = (hasIpv6Loopback: boolean): string => `bind 127.0.0.
 // cloudflared
 // ----------------------------------------------------------------------------
 
-/** cloudflared's config, or null when the tunnel settings aren't safe to write. Bad hostnames are left out. */
-export const cloudflaredYaml = (tunnel: { id: string; credentialsFile: string }, hostnames: string[]): string | null => {
+/**
+ * cloudflared's config, or null when the tunnel settings aren't safe to write.
+ * Bad hostnames are left out. A plain hostname goes to Caddy on :80; one with
+ * `unix` to that socket (tunnelSiteBlock: hosts only the tunnel may reach).
+ */
+export const cloudflaredYaml = (tunnel: { id: string; credentialsFile: string }, hostnames: (string | { hostname: string; unix: string })[]): string | null => {
   if (!isTunnelId(tunnel.id) || !isCredentialsPath(tunnel.credentialsFile)) return null
   let yaml = `tunnel: ${tunnel.id}\ncredentials-file: ${tunnel.credentialsFile}\n\ningress:\n`
-  for (const h of hostnames) {
-    if (!isZoneName(h)) continue
-    yaml += `  - hostname: ${h}\n    service: http://localhost:80\n`
+  const seen = new Set<string>()
+  for (const entry of hostnames) {
+    const h = typeof entry === "string" ? entry : entry.hostname
+    if (!isZoneName(h) || seen.has(h)) continue
+    if (typeof entry !== "string" && !isSocketPath(entry.unix)) continue
+    seen.add(h)
+    yaml += `  - hostname: ${h}\n    service: ${typeof entry === "string" ? "http://localhost:80" : `unix:${entry.unix}`}\n`
   }
   // Catch-all must always be last
   yaml += `  - service: http_status:404\n`

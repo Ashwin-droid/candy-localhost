@@ -11,6 +11,7 @@
 // owner's API key (`mayFetchSiteKey`).
 import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
+import { createHash } from "node:crypto"
 import {
   generateKey, sealClaims, randomB64url, b64urlEncode, b64urlDecode,
   KID_RE, MAX_RING_KEYS, STATE_RE, NONCE_RE, SITE_RE, USER_RE, DEFAULT_TTL_S, KEY_BYTES,
@@ -35,6 +36,10 @@ export const AUTHZ_BAD_NONCE = "nonce must be 16 to 128 characters of A-Z, a-z, 
 export const AUTHZ_DUPLICATE = "Each parameter may appear only once."
 export const AUTHZ_EXPIRED = "This sign-in request expired. Go back to the app and try again."
 export const AUTHZ_CHANGED = "This site changed hands since it asked. Go back to the app and try again."
+export const AUTHZ_BAD_MAX_AGE = "max_age must be a whole number of seconds from 0 to 86400."
+export const AUTHZ_NEEDS_FRESH = "This site asks you to confirm it's you again first."
+/** max_age (seconds) an app may ask for: 0 (always authenticate again) to one day */
+export const MAX_MAX_AGE_S = 86_400
 
 const MAX_SITE_LENGTH = 128
 const MAX_IP_LENGTH = 64
@@ -56,6 +61,8 @@ export interface AuthorizeRequest {
   state: string; nonce: string | null
   issuer: string            // "https://<portal host this arrived on>"
   ip: string; created: number
+  /** max_age (s) the app asked for: the user must have authenticated within it, or again for this request; null: no demand */
+  maxAge: number | null
 }
 export interface FormPost { action: string; fields: Record<string, string> }
 export interface SiteLookup {
@@ -400,6 +407,7 @@ export class PendingRequests {
     const p: ParkedPayload = {
       site: r.site, owner: r.owner, returnTo: r.returnTo, returnHost: r.returnHost,
       state: r.state, nonce: r.nonce, issuer: r.issuer, ip: String(r.ip).slice(0, MAX_IP_LENGTH), created,
+      maxAge: r.maxAge ?? null,
     }
     return { id: this.ids.seal(p, created + this.ttlMs), ...p }
   }
@@ -411,11 +419,16 @@ export class PendingRequests {
     return toRequest(id as string, o.payload)
   }
 
-  /** Single use: gone after this, whatever the outcome. */
-  take(id: unknown): AuthorizeRequest | null {
+  /**
+   * Single use: gone after this, whatever the outcome. The use is counted on
+   * `owner` (the user deciding); when it can't be recorded (full of live
+   * used ids, or that user holds their share) the request is refused, never
+   * answered unrecorded.
+   */
+  take(id: unknown, owner = ""): AuthorizeRequest | null {
     const o = this.ids.open(id)
     if (!o || this.ids.isUsed(o.jti)) return null
-    this.ids.markUsed(o.jti, o.expires)
+    if (!this.ids.markUsed(o.jti, o.expires, owner)) return null
     if (this.ids.expired(o)) return null
     return toRequest(id as string, o.payload)
   }
@@ -432,13 +445,32 @@ const toRequest = (id: string, p: ParkedPayload): AuthorizeRequest | null => {
   return {
     id, site: p.site, owner: p.owner, returnTo: p.returnTo, returnHost: p.returnHost,
     state: p.state, nonce: p.nonce ?? null, issuer: p.issuer, ip: p.ip, created: p.created,
+    maxAge: isMaxAge(p.maxAge) ? p.maxAge : null,
   }
 }
+
+const isMaxAge = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0 && (v as number) <= MAX_MAX_AGE_S
+
+/**
+ * What a parked request's freshness demand needs from this login. `ok` when
+ * the app asked for nothing, or the latest authentication is within max_age,
+ * or the session's latest authentication was made for this very request
+ * (`freshFor`, bound to its id) after it was parked. max_age=0 is only ever
+ * met the last way: every sign-in authenticates again.
+ */
+export const freshnessOk = (r: AuthorizeRequest, s: { authAt: number; freshFor: string | null }, now: number): boolean => {
+  if (r.maxAge === null) return true
+  if (s.freshFor !== null && s.freshFor === freshKey(r.id) && s.authAt >= r.created) return true
+  return r.maxAge > 0 && now - s.authAt <= r.maxAge * 1000
+}
+
+/** What a session records as "authenticated again for this request": a hash of the parked id, never the id. */
+export const freshKey = (requestId: string): string => createHash("sha256").update(`candy fresh ${requestId}`, "utf8").digest("base64url")
 
 // ---------------------------------------------------------------------------
 // Request checks
 
-type AuthorizeOk = { ok: true; site: string; owner: string; returnTo: string; returnHost: string; state: string; nonce: string | null }
+type AuthorizeOk = { ok: true; site: string; owner: string; returnTo: string; returnHost: string; state: string; nonce: string | null; maxAge: number | null }
 type AuthorizeFail = { ok: false; status: 400 | 404; error: string }
 
 /**
@@ -448,7 +480,7 @@ type AuthorizeFail = { ok: false; status: 400 | 404; error: string }
  * is the normalized `url.href`.
  */
 export const validateAuthorize = (params: URLSearchParams, look: SiteLookup): AuthorizeOk | AuthorizeFail => {
-  for (const k of ["return_to", "state", "nonce", "site"]) {
+  for (const k of ["return_to", "state", "nonce", "site", "max_age"]) {
     if (params.getAll(k).length > 1) return { ok: false, status: 400, error: AUTHZ_DUPLICATE }
   }
   const raw = params.get("return_to")
@@ -482,8 +514,15 @@ export const validateAuthorize = (params: URLSearchParams, look: SiteLookup): Au
   if (state === null || !STATE_RE.test(state)) return { ok: false, status: 400, error: AUTHZ_BAD_STATE }
   const nonce = params.get("nonce")
   if (nonce !== null && !NONCE_RE.test(nonce)) return { ok: false, status: 400, error: AUTHZ_BAD_NONCE }
+  // Digits only (no sign, space, exponent or fraction), 0..86400
+  const rawAge = params.get("max_age")
+  let maxAge: number | null = null
+  if (rawAge !== null) {
+    if (!/^[0-9]{1,5}$/.test(rawAge) || !isMaxAge(Number(rawAge))) return { ok: false, status: 400, error: AUTHZ_BAD_MAX_AGE }
+    maxAge = Number(rawAge)
+  }
 
-  return { ok: true, site, owner, returnTo: url.href, returnHost: host, state, nonce }
+  return { ok: true, site, owner, returnTo: url.href, returnHost: host, state, nonce, maxAge }
 }
 
 /**
@@ -503,10 +542,15 @@ export const recheckRequest = (r: AuthorizeRequest, look: SiteLookup): { ok: tru
 
 /** The one-shot login assertion for `req.site`, sealed with that site's key. */
 export const mintAppToken = async (o: {
-  req: AuthorizeRequest; user: string; amr: "pam" | "passkey"; sessionCreated: number /* ms */
+  req: AuthorizeRequest; user: string
+  /** How and when (ms) the user last authenticated: the token's amr and auth_time */
+  amr: "pam" | "passkey"; authAt: number
+  /** isSuperuser(user) right now (sudoers), never a cached session value */
+  superuser: boolean
   key: JweKey; now: number /* ms */; ttlS?: number
 }): Promise<{ token: string; claims: AppClaims }> => {
   if (o.amr !== "pam" && o.amr !== "passkey") throw new Error("invalid amr")
+  if (typeof o.superuser !== "boolean") throw new Error("invalid superuser")
   const iat = Math.floor(o.now / 1000)
   const claims: AppClaims = {
     iss: o.req.issuer,
@@ -515,7 +559,8 @@ export const mintAppToken = async (o: {
     amr: [o.amr],
     iat,
     exp: iat + (o.ttlS ?? DEFAULT_TTL_S),
-    auth_time: Math.floor(o.sessionCreated / 1000),
+    auth_time: Math.floor(Math.min(o.authAt, o.now) / 1000),
+    superuser: o.superuser,
     jti: randomB64url(16),
     state: o.req.state,
     ...(o.req.nonce !== null ? { nonce: o.req.nonce } : {}),
@@ -541,7 +586,7 @@ export const hostKind = (host: string): HostKind => {
 }
 
 /** What the consent page shows (its CANDY_VARS). Never contains the state, nonce or any key. */
-export const consentView = (r: AuthorizeRequest, user: string, remembered: boolean, amr: "pam" | "passkey") => ({
+export const consentView = (r: AuthorizeRequest, user: string, remembered: boolean, amr: "pam" | "passkey", fresh: { needed: boolean; passkeys: boolean } = { needed: false, passkeys: false }) => ({
   request: r.id,
   site: r.site,
   owner: r.owner,
@@ -552,6 +597,8 @@ export const consentView = (r: AuthorizeRequest, user: string, remembered: boole
   hostKind: hostKind(r.returnHost),
   remembered,
   amr,
+  /** The app asked for a recent authentication (max_age) this login doesn't have yet */
+  fresh: { needed: fresh.needed, passkeys: fresh.passkeys, maxAge: r.maxAge },
 })
 
 /**

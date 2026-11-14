@@ -9,11 +9,15 @@
 //    this module never needs webauthn.ts at runtime.
 //
 // A passkey only ever logs in the account it was registered for (its name
-// and uid: a name reused by a new account never inherits one), only on the
-// portal host (rpId) it was registered on, and only while that account is
-// still allowed to log in, PAM's account checks included. Adding or deleting
-// one needs a recent password login: a session that came from a passkey can't
-// add more passkeys until the password is entered again.
+// and uid: a name reused by a new account never inherits one), only for the
+// rpId it was made for (always candy's own host, candy.<zone>: see
+// candy-host.ts), and only while that account is still allowed to log in,
+// PAM's account checks included. Adding or deleting one needs a recent
+// password login: a session that came from a passkey can't add more passkeys
+// until the password is entered again.
+//
+// Challenges can be bound to a ceremony (`bind`: the stamp that opened it on
+// the candy host), so an answer made in one ceremony can't finish another.
 import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 import { timingSafeEqual } from "node:crypto"
@@ -21,8 +25,7 @@ import { SoftLockout, logSafe } from "./portal-auth.ts"
 import { SealedIds } from "./sealed-ids.ts"
 import type { CoseAlg, CreationOptionsJSON, RequestOptionsJSON, RegistrationVerdict, AssertionVerdict, StoredCredentialKey } from "./webauthn.ts"
 
-export const MAX_PER_USER_RP = 10          // passkeys per user per rpId
-export const MAX_PER_USER = 25             // per user across rpIds
+export const MAX_PER_USER = 25             // per user
 export const MAX_PASSKEYS = 1000           // whole store
 export const MAX_NAME_LENGTH = 64
 export const CHALLENGE_TTL_MS = 5 * 60_000
@@ -46,7 +49,7 @@ export interface PasskeyRecord {
   id: string            // credential id, b64url (unique across the store)
   user: string          // USER_RE
   uid: number           // the account's uid when it was registered: a new account with the same name doesn't get it
-  rpId: string          // portal host it was registered on, e.g. "portal.localhost"
+  rpId: string          // the candy host it was made for, e.g. "candy.example.com"
   publicKey: string     // b64url COSE bytes; public keys only, never private material
   alg: CoseAlg
   signCount: number
@@ -58,7 +61,7 @@ export interface PasskeyRecord {
 }
 export interface PasskeyView { id: string; name: string; rpId: string; created: number; lastUsed: number | null; backedUp: boolean; alg: "ES256" | "RS256" | "EdDSA"; here: boolean }
 export type ChallengeKind = "login" | "register"
-export interface Challenge { id: string; challenge: string; kind: ChallengeKind; rpId: string; origin: string; key: string; sessionId: string | null; user: string | null; expires: number }
+export interface Challenge { id: string; challenge: string; kind: ChallengeKind; rpId: string; origin: string; key: string; sessionId: string | null; user: string | null; bind: string | null; expires: number }
 export interface WebAuthnImpl {
   newChallenge(): string
   registrationOptions(o: { rpId: string; rpName: string; userHandle: string; userName: string; displayName: string; challenge: string; exclude: { id: string; transports?: string[] }[] }): CreationOptionsJSON
@@ -234,22 +237,29 @@ export class PasskeyStore {
     const r = toRecord({ ...input, created: this.now(), lastUsed: null })
     if (!r) throw new Error("invalid passkey record")
     if (this.byId.has(r.id)) return { ok: false, error: PASSKEY_EXISTS }
-    if (this.atLimit(r.user, r.rpId)) return { ok: false, error: PASSKEY_LIMIT }
+    if (this.atLimit(r.user)) return { ok: false, error: PASSKEY_LIMIT }
     this.byId.set(r.id, r)
     this.save()
     return { ok: true, record: copy(r) }
   }
 
-  /** Whether `user` may not add one more passkey on `rpId` (per rpId, per user, or the whole store). */
-  atLimit(user: string, rpId: string): boolean {
+  /** Whether `user` may not add one more passkey (per user, or the whole store). */
+  atLimit(user: string): boolean {
     if (this.byId.size >= MAX_PASSKEYS) return true
-    let mine = 0, here = 0
-    for (const r of this.byId.values()) {
-      if (r.user !== user) continue
-      mine++
-      if (r.rpId === rpId) here++
-    }
-    return mine >= MAX_PER_USER || here >= MAX_PER_USER_RP
+    let mine = 0
+    for (const r of this.byId.values()) if (r.user === user) mine++
+    return mine >= MAX_PER_USER
+  }
+
+  /**
+   * Every passkey made for another rpId than `rpId` (the candy host changed
+   * with the zone: those can never log in again). Returns what was removed.
+   */
+  dropOtherRpIds(rpId: string): PasskeyRecord[] {
+    const out: PasskeyRecord[] = []
+    for (const [id, r] of this.byId) if (r.rpId !== rpId) { this.byId.delete(id); out.push(copy(r)) }
+    if (out.length) this.save()
+    return out
   }
 
   /**
@@ -351,7 +361,7 @@ export class PasskeyStore {
     for (const e of raw.credentials) {
       if (this.byId.size >= MAX_PASSKEYS) break
       const r = toRecord(e)
-      if (!r || this.byId.has(r.id) || this.atLimit(r.user, r.rpId)) continue
+      if (!r || this.byId.has(r.id) || this.atLimit(r.user)) continue
       this.byId.set(r.id, r)
     }
   }
@@ -395,10 +405,12 @@ export class ChallengeStore {
     this.ids = new SealedIds<ChallengePayload>("candy passkey challenge v1", { now: this.now, maxUsed: opts.maxUsed ?? MAX_CHALLENGES })
   }
 
-  issue(c: Omit<Challenge, "id" | "expires">): Challenge {
+  issue(input: Omit<Challenge, "id" | "expires" | "bind"> & { bind?: string | null }): Challenge {
+    const c = { ...input, bind: input.bind ?? null }
     if (c.kind !== "login" && c.kind !== "register") throw new Error("invalid challenge kind")
     if (typeof c.challenge !== "string" || !c.challenge || c.challenge.length > MAX_CHALLENGE_LENGTH) throw new Error("invalid challenge")
-    const p: ChallengePayload = { challenge: c.challenge, kind: c.kind, rpId: c.rpId, origin: c.origin, key: c.key, sessionId: c.sessionId, user: c.user }
+    if (c.bind !== null && (typeof c.bind !== "string" || !c.bind || c.bind.length > MAX_CHALLENGE_LENGTH)) throw new Error("invalid challenge binding")
+    const p: ChallengePayload = { challenge: c.challenge, kind: c.kind, rpId: c.rpId, origin: c.origin, key: c.key, sessionId: c.sessionId, user: c.user, bind: c.bind }
     const expires = this.now() + this.ttlMs
     return { id: this.ids.seal(p, expires), ...p, expires }
   }
@@ -407,10 +419,12 @@ export class ChallengeStore {
   take(id: unknown, kind: ChallengeKind): Challenge | null {
     const o = this.ids.open(id)
     if (!o || this.ids.isUsed(o.jti)) return null
-    this.ids.markUsed(o.jti, o.expires)
+    // Counted on the challenge's key (its address, or its session); when the use can't be recorded, it's refused
+    const owner = isObject(o.payload) && typeof o.payload.key === "string" ? o.payload.key : ""
+    if (!this.ids.markUsed(o.jti, o.expires, owner)) return null
     const p = o.payload
     if (!isObject(p) || p.kind !== kind || this.ids.expired(o)) return null
-    return { id: id as string, challenge: p.challenge, kind: p.kind, rpId: p.rpId, origin: p.origin, key: p.key, sessionId: p.sessionId, user: p.user, expires: o.expires }
+    return { id: id as string, challenge: p.challenge, kind: p.kind, rpId: p.rpId, origin: p.origin, key: p.key, sessionId: p.sessionId, user: p.user, bind: p.bind ?? null, expires: o.expires }
   }
 
   /** Forgets used ids that expired. */
@@ -445,8 +459,8 @@ export interface PasskeyDeps {
   now(): number; sleep(ms: number): Promise<void>
 }
 
-const checkPortal = (rpId: string, origin: string) => {
-  // The daemon passes rpId = the portal host and origin = "https://" + host; anything else is a bug there
+const checkRp = (rpId: string, origin: string) => {
+  // The daemon passes rpId = the candy host and origin = "https://" + host; anything else is a bug there
   if (!isRpId(rpId) || !originMatches(rpId, origin)) throw new Error("invalid passkey rpId or origin")
 }
 
@@ -455,14 +469,14 @@ const errorCode = (e: unknown): string => {
   return typeof code === "string" ? logSafe(code) : "verify failed"
 }
 
-export const startPasskeyLogin = (d: PasskeyDeps, i: { rpId: string; origin: string; ip: string }):
+export const startPasskeyLogin = (d: PasskeyDeps, i: { rpId: string; origin: string; ip: string; bind?: string }):
   { ok: true; challengeId: string; publicKey: RequestOptionsJSON } | { ok: false; status: 429; body: { error: string; retryAfter: number } } => {
-  checkPortal(i.rpId, i.origin)
+  checkRp(i.rpId, i.origin)
   const key = passkeyLoginKey(i.ip, d.isLoopback(i.ip))
   const wait = d.soft.wait(key)
   if (wait > 0) return { ok: false, status: 429, body: { error: PASSKEY_SLOWED, retryAfter: Math.max(1, Math.ceil(wait / 1000)) } }
   const challenge = d.webauthn.newChallenge()
-  const ch = d.challenges.issue({ challenge, kind: "login", rpId: i.rpId, origin: i.origin, key, sessionId: null, user: null })
+  const ch = d.challenges.issue({ challenge, kind: "login", rpId: i.rpId, origin: i.origin, key, sessionId: null, user: null, bind: i.bind ?? null })
   return { ok: true, challengeId: ch.id, publicKey: d.webauthn.authenticationOptions({ rpId: i.rpId, challenge }) }
 }
 
@@ -472,7 +486,7 @@ export const startPasskeyLogin = (d: PasskeyDeps, i: { rpId: string; origin: str
  * is counted before anything is checked and cleared on success, so parallel
  * attempts can't outrun the lockout.
  */
-export const attemptPasskeyLogin = async (d: PasskeyDeps, i: { challengeId: unknown; credential: unknown; rpId: string; origin: string; ip: string }):
+export const attemptPasskeyLogin = async (d: PasskeyDeps, i: { challengeId: unknown; credential: unknown; rpId: string; origin: string; ip: string; bind?: string }):
   Promise<{ ok: true; user: string; superuser: boolean; credentialId: string } | { ok: false; status: 401 | 429; body: { error: string; retryAfter?: number } }> => {
   const start = d.now()
   const key = passkeyLoginKey(i.ip, d.isLoopback(i.ip))
@@ -489,10 +503,11 @@ export const attemptPasskeyLogin = async (d: PasskeyDeps, i: { challengeId: unkn
   }
 
   try {
-    if (!isRpId(i.rpId) || !originMatches(i.rpId, i.origin)) return failed("bad portal host")
+    if (!isRpId(i.rpId) || !originMatches(i.rpId, i.origin)) return failed("bad rp host")
     const ch = d.challenges.take(i.challengeId, "login")
     if (!ch) return failed("no such challenge")
     if (ch.rpId !== i.rpId || ch.origin !== i.origin) return failed("challenge for another host")
+    if (ch.bind !== (i.bind ?? null)) return failed("challenge from another ceremony")
 
     const id = isObject(i.credential) ? i.credential.id : undefined
     if (!isCredentialId(id)) return failed("malformed credential")
@@ -544,24 +559,24 @@ export const attemptPasskeyLogin = async (d: PasskeyDeps, i: { challengeId: unkn
 type Refusal<S> = { ok: false; status: S; body: { error: string; reauth?: true } }
 const needsPassword = (): Refusal<403> => ({ ok: false, status: 403, body: { error: PASSKEY_NEEDS_PASSWORD, reauth: true } })
 
-export const startRegistration = async (d: PasskeyDeps, i: { rpId: string; origin: string; session: SessionAuthState }):
+export const startRegistration = async (d: PasskeyDeps, i: { rpId: string; origin: string; session: SessionAuthState; bind?: string }):
   Promise<{ ok: true; challengeId: string; publicKey: CreationOptionsJSON } | Refusal<403 | 409>> => {
-  checkPortal(i.rpId, i.origin)
+  checkRp(i.rpId, i.origin)
   if (!mayManagePasskeys(i.session, d.now())) return needsPassword()
   const user = i.session.user
   const uid = await d.uidOf(user).catch(() => null)
   if (uid === null) return needsPassword()
   // Before the limit check: a handle for an older account of this name drops that account's passkeys
   const userHandle = d.store.userHandle(user, uid)
-  if (d.store.atLimit(user, i.rpId)) return { ok: false, status: 409, body: { error: PASSKEY_LIMIT } }
+  if (d.store.atLimit(user)) return { ok: false, status: 409, body: { error: PASSKEY_LIMIT } }
   const challenge = d.webauthn.newChallenge()
-  const ch = d.challenges.issue({ challenge, kind: "register", rpId: i.rpId, origin: i.origin, key: `session:${i.session.id}`, sessionId: i.session.id, user })
+  const ch = d.challenges.issue({ challenge, kind: "register", rpId: i.rpId, origin: i.origin, key: `session:${i.session.id}`, sessionId: i.session.id, user, bind: i.bind ?? null })
   const exclude = d.store.list(user, i.rpId).map(r => r.transports.length ? { id: r.id, transports: r.transports } : { id: r.id })
   const publicKey = d.webauthn.registrationOptions({ rpId: i.rpId, rpName: "candy", userHandle, userName: user, displayName: user, challenge, exclude })
   return { ok: true, challengeId: ch.id, publicKey }
 }
 
-export const finishRegistration = async (d: PasskeyDeps, i: { challengeId: unknown; credential: unknown; name: unknown; rpId: string; origin: string; session: SessionAuthState }):
+export const finishRegistration = async (d: PasskeyDeps, i: { challengeId: unknown; credential: unknown; name: unknown; rpId: string; origin: string; session: SessionAuthState; bind?: string }):
   Promise<{ ok: true; record: PasskeyRecord } | Refusal<400 | 403 | 409>> => {
   // Checked before the challenge is taken: after a re-entered password the same answer can still be sent
   if (!mayManagePasskeys(i.session, d.now())) return needsPassword()
@@ -569,6 +584,7 @@ export const finishRegistration = async (d: PasskeyDeps, i: { challengeId: unkno
   const ch = d.challenges.take(i.challengeId, "register")
   if (!ch) return expired
   if (ch.sessionId !== i.session.id || ch.user !== i.session.user || ch.rpId !== i.rpId || ch.origin !== i.origin) return expired
+  if (ch.bind !== (i.bind ?? null)) return expired
   if (!isRpId(i.rpId) || !originMatches(i.rpId, i.origin)) return expired
 
   let v: RegistrationVerdict

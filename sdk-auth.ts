@@ -33,6 +33,9 @@ export const REFETCH_MIN_INTERVAL_MS = 30_000
 /** With a fetchKeys, the ring is fetched again once it is this old (shorter than the daemon's 10 min rotation overlap) */
 export const RING_REFRESH_MS = 5 * 60_000
 export const MAX_REPLAY_ENTRIES = 10_000
+/** max_age an app may ask for (seconds): 0 = authenticate again every time, up to one day */
+export const MAX_MAX_AGE_S = 86_400
+export const isMaxAge = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0 && (v as number) <= MAX_MAX_AGE_S
 
 const DEFAULT_PORTAL = "https://portal.localhost"
 const MAX_SITE_LENGTH = 128
@@ -40,8 +43,13 @@ const MAX_NEXT_LENGTH = 1024
 const MAX_DEST_LENGTH = 2048
 const MAX_CREDENTIAL_BYTES = 8192
 
-export type AuthErrorCode = JweErrorCode | "replay" | "state" | "nonce" | "dest" | "no_keys" | "denied" | "bad_request"
-export interface AuthUser { user: string; amr: Amr[]; authTime: number /* ms */; claims: AppClaims }
+export type AuthErrorCode = JweErrorCode | "replay" | "state" | "nonce" | "dest" | "no_keys" | "denied" | "bad_request" | "stale_auth"
+/**
+ * Who signed in. amr and authTime describe their latest authentication (a
+ * fresh one when the app asked for maxAge); superuser: whether the account is
+ * a sudoer, checked by candy when the token was made.
+ */
+export interface AuthUser { user: string; amr: Amr[]; authTime: number /* ms */; superuser: boolean; claims: AppClaims }
 export type VerifyResult = ({ ok: true } & AuthUser) | { ok: false; error: AuthErrorCode; message: string }
 export type CallbackResult =
   | ({ ok: true; next: string; clearCookie: string } & AuthUser)
@@ -67,6 +75,7 @@ const MESSAGES: Record<AuthErrorCode, string> = {
   no_keys: "This app has no candy auth key.",
   denied: "Signing in was cancelled.",
   bad_request: "Bad sign-in request.",
+  stale_auth: "This needs a recent sign-in, and that one isn't. Try signing in again.",
 }
 
 const fail = (error: AuthErrorCode, message?: string): { ok: false; error: AuthErrorCode; message: string } =>
@@ -127,15 +136,24 @@ export interface AppAuthOptions {
   env?: Record<string, string | undefined>         // default process.env
   readFile?: (path: string) => string | null       // default: readFileSync utf8, null on error
   now?: () => number
+  /** Default freshness for login()/handle(): the user must have authenticated within this many seconds (0: again every time) */
+  maxAge?: number
 }
+
+/**
+ * What verify checks besides the token itself. maxAge (s): auth_time must be
+ * within it (plus clock skew), unless the authentication happened at or after
+ * authAfter (ms: when this sign-in started), which satisfies any maxAge, 0 included.
+ */
+export interface VerifyExpect { state?: string; nonce?: string; dest?: string; maxAge?: number; authAfter?: number }
 
 export interface AppAuth {
   readonly site: string
-  loginUrl(o: { returnTo: string; state: string; nonce?: string; portal?: string }): string
-  login(request: Request, o?: { next?: string; portal?: string }): Promise<Response>
-  verify(token: string, expect?: { state?: string; nonce?: string; dest?: string }): Promise<VerifyResult>
+  loginUrl(o: { returnTo: string; state: string; nonce?: string; portal?: string; maxAge?: number }): string
+  login(request: Request, o?: { next?: string; portal?: string; maxAge?: number }): Promise<Response>
+  verify(token: string, expect?: VerifyExpect): Promise<VerifyResult>
   handleCallback(request: Request): Promise<CallbackResult>
-  handle(request: Request, onLogin: (u: AuthUser & { next: string }, request: Request) => Response | Promise<Response>): Promise<Response | null>
+  handle(request: Request, onLogin: (u: AuthUser & { next: string }, request: Request) => Response | Promise<Response>, o?: { maxAge?: number }): Promise<Response | null>
 }
 
 // "https://host" with nothing else: no path, query, fragment, port or userinfo
@@ -163,12 +181,22 @@ export const requestOrigin = (request: Request): string => {
   return `https://${host}`
 }
 
-/** The portal for a site host: *.localhost → https://portal.localhost; *.candy → https://portal.candy; else fallback. */
+/**
+ * The portal for a site host: *.localhost → https://portal.localhost; *.candy → https://portal.candy.
+ * Anything else (a bound domain, app.<zone>) → the tailnet portal: `fallback` when it is
+ * one (https://portal.candy or an alias under .candy), else https://portal.candy. Never a
+ * public host: passing through the tailnet-only portal is the tailnet check.
+ */
 export const portalForHost = (host: string, fallback: string): string => {
   const h = String(host || "").trim().toLowerCase().replace(/:\d+$/, "").replace(/\.$/, "")
   if (h === "localhost" || h.endsWith(".localhost")) return "https://portal.localhost"
   if (h === "candy" || h.endsWith(".candy")) return "https://portal.candy"
-  return fallback
+  let tailnet = false
+  try {
+    const u = new URL(fallback)
+    tailnet = u.protocol === "https:" && u.port === "" && u.pathname === "/" && /^portal(\.[a-z0-9-]+)?\.candy$/.test(u.hostname)
+  } catch {}
+  return tailnet ? fallback : "https://portal.candy"
 }
 
 /** A same-origin path (+ query) to go to after login; "/" for anything else. Own copy of portal-auth safeNext. */
@@ -203,7 +231,8 @@ const CLEAR_COOKIE = `${STATE_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=None;
 
 // What this browser started: state, nonce, where to go after, when. Not where
 // the token may arrive: that is the callback URL itself (handleCallback)
-interface StateCookie { s: string; n: string; x: string; t: number }
+// m: the maxAge this app asked for (the URL's max_age is the browser's to strip; this is ours)
+interface StateCookie { s: string; n: string; x: string; t: number; m: number | null }
 
 // https://<host>/_candy/auth/callback exactly: the only return_to the portal accepts
 const isCallbackUrl = (s: string): boolean => {
@@ -237,21 +266,60 @@ const cookieValues = (request: Request): string[] => {
   return out
 }
 
-const readStateCookie = (request: Request, nowMs: number): StateCookie | null => {
+// The state cookie is authenticated (review finding: its maxAge and start time
+// were the browser's to edit). Value: <b64url JSON>.<kid>.<b64url HMAC-SHA256>,
+// keyed by HKDF from the site's key with that kid: the current key signs, any
+// key in the ring (a retired one within the rotation overlap) verifies.
+const COOKIE_MAC_INFO = "candy-auth state cookie v1"
+const utf8 = (s: string) => new TextEncoder().encode(s)
+const macKeys = new WeakMap<Uint8Array, Map<string, Promise<CryptoKey>>>()
+const cookieMacKey = (key: JweKey, site: string): Promise<CryptoKey> => {
+  let bySite = macKeys.get(key.key)
+  if (!bySite) { bySite = new Map(); macKeys.set(key.key, bySite) }
+  let k = bySite.get(site)
+  if (!k) {
+    k = (async () => {
+      const base = await crypto.subtle.importKey("raw", key.key as Uint8Array<ArrayBuffer>, "HKDF", false, ["deriveKey"])
+      return crypto.subtle.deriveKey(
+        { name: "HKDF", hash: "SHA-256", salt: utf8(`candy-auth ${site}`), info: utf8(COOKIE_MAC_INFO) },
+        base, { name: "HMAC", hash: "SHA-256", length: 256 }, false, ["sign", "verify"],
+      )
+    })()
+    bySite.set(site, k)
+  }
+  return k
+}
+
+/** The state cookie's value for `payload`, MAC'd with the site's current key (exported for tests and tools; useless without the key). */
+export const sealStateCookie = async (payload: Record<string, unknown>, key: JweKey, site: string): Promise<string> => {
+  const body = b64urlEncode(utf8(JSON.stringify(payload)))
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", await cookieMacKey(key, site), utf8(`${body}.${key.kid}`)))
+  return `${body}.${key.kid}.${b64urlEncode(mac)}`
+}
+
+const readStateCookie = async (request: Request, nowMs: number, ring: readonly JweKey[], site: string): Promise<StateCookie | null> => {
   const values = cookieValues(request)
   if (values.length !== 1) return null              // none, or ambiguous
   const raw = values[0]
   if (raw.length === 0 || raw.length > MAX_COOKIE_LENGTH) return null
   try {
-    const obj = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(b64urlDecode(raw)))
+    const parts = raw.split(".")
+    if (parts.length !== 3) return null
+    const [body, kid, macB64] = parts
+    const key = ring.find(k => k.kid === kid)
+    if (!key) return null
+    const ok = await crypto.subtle.verify("HMAC", await cookieMacKey(key, site), b64urlDecode(macB64) as Uint8Array<ArrayBuffer>, utf8(`${body}.${kid}`))
+    if (!ok) return null
+    const obj = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(b64urlDecode(body)))
     if (!obj || typeof obj !== "object" || Array.isArray(obj) || obj.v !== 1) return null
-    const { s, n, x, t } = obj
+    const { s, n, x, t, m } = obj
     if (typeof s !== "string" || !STATE_RE.test(s)) return null
     if (typeof n !== "string" || !NONCE_RE.test(n)) return null
     if (typeof x !== "string") return null
     if (!Number.isSafeInteger(t) || t < 0) return null
     if (nowMs - t > STATE_COOKIE_MAX_AGE_S * 1000 || t > nowMs + CLOCK_SKEW_S * 1000) return null
-    return { s, n, x: safeAppPath(x), t }
+    if (m !== undefined && !isMaxAge(m)) return null
+    return { s, n, x: safeAppPath(x), t, m: m ?? null }
   } catch {
     return null
   }
@@ -330,6 +398,8 @@ export const createAppAuth = (opts: AppAuthOptions = {}): AppAuth => {
   const readFile = opts.readFile ?? defaultReadFile
   const replay = opts.replay ?? new ReplayCache(MAX_REPLAY_ENTRIES, now)
   const fetchKeys = opts.fetchKeys
+  if (opts.maxAge !== undefined && !isMaxAge(opts.maxAge)) throw new Error("candy auth: maxAge must be a whole number of seconds from 0 to 86400")
+  const defaultMaxAge = opts.maxAge
 
   const site = (opts.site ?? env[ENV.site] ?? "").trim()
   if (!site) throw new Error("candy auth: no site name")
@@ -414,11 +484,19 @@ export const createAppAuth = (opts: AppAuthOptions = {}): AppAuth => {
     if (expect.state !== undefined && !sameString(claims.state, expect.state)) return fail("state")
     if (expect.nonce !== undefined && (typeof claims.nonce !== "string" || !sameString(claims.nonce, expect.nonce))) return fail("nonce")
     if (expect.dest !== undefined && claims.dest !== expect.dest) return fail("dest")
+    if (expect.maxAge !== undefined) {
+      if (!isMaxAge(expect.maxAge)) return fail("bad_request")
+      const nowS = Math.floor(now() / 1000)
+      // maxAge 0: only an authentication at or after the (authenticated) start of this sign-in
+      const recent = expect.maxAge > 0 && nowS - claims.auth_time <= expect.maxAge + CLOCK_SKEW_S
+      const sinceStart = expect.authAfter !== undefined && claims.auth_time >= Math.floor(expect.authAfter / 1000)
+      if (!recent && !sinceStart) return fail("stale_auth")
+    }
     // Last, so a token that fails another check doesn't burn its jti
     let first = false
     try { first = await replay.checkAndRecord(claims.jti, (claims.exp + CLOCK_SKEW_S) * 1000) } catch { first = false }
     if (!first) return fail("replay")
-    return { ok: true, user: claims.sub, amr: [...claims.amr], authTime: claims.auth_time * 1000, claims }
+    return { ok: true, user: claims.sub, amr: [...claims.amr], authTime: claims.auth_time * 1000, superuser: claims.superuser, claims }
   }
 
   const loginUrl: AppAuth["loginUrl"] = (o) => {
@@ -426,8 +504,10 @@ export const createAppAuth = (opts: AppAuthOptions = {}): AppAuth => {
     if (!isHttpsUrl(o.returnTo) || !isCallbackUrl(o.returnTo)) throw new Error(`candy auth: returnTo must be https://<this site's host>${CALLBACK_PATH}`)
     if (typeof o.state !== "string" || !STATE_RE.test(o.state)) throw new Error("candy auth: invalid state")
     if (o.nonce !== undefined && (typeof o.nonce !== "string" || !NONCE_RE.test(o.nonce))) throw new Error("candy auth: invalid nonce")
+    if (o.maxAge !== undefined && !isMaxAge(o.maxAge)) throw new Error("candy auth: maxAge must be a whole number of seconds from 0 to 86400")
     const q = new URLSearchParams({ return_to: o.returnTo, state: o.state })
     if (o.nonce !== undefined) q.set("nonce", o.nonce)
+    if (o.maxAge !== undefined) q.set("max_age", String(o.maxAge))
     return `${portal}/app-auth/authorize?${q}`
   }
 
@@ -439,10 +519,17 @@ export const createAppAuth = (opts: AppAuthOptions = {}): AppAuth => {
     const state = randomB64url(24)
     const nonce = randomB64url(24)
     let next = safeAppPath(o.next ?? new URL(request.url).searchParams.get("next"))
-    const encode = (x: string) => b64urlEncode(new TextEncoder().encode(JSON.stringify({ v: 1, s: state, n: nonce, x, t: now() })))
-    let value = encode(next)
-    if (value.length > MAX_COOKIE_LENGTH) { next = "/"; value = encode(next) }
-    const location = loginUrl({ returnTo, state, nonce, portal: o.portal ?? portalForHost(host, fallbackPortal) })
+    const maxAge = o.maxAge ?? defaultMaxAge
+    if (maxAge !== undefined && !isMaxAge(maxAge)) throw new Error("candy auth: maxAge must be a whole number of seconds from 0 to 86400")
+    // The cookie keeps maxAge and the start time, MAC'd with the site's key: the
+    // callback holds the token to them whatever happened to the URL or the cookie
+    const keys = await getRing()
+    if (!keys) return plain(503, MESSAGES.no_keys)
+    const startedAt = now()
+    const encode = (x: string) => sealStateCookie({ v: 1, s: state, n: nonce, x, t: startedAt, ...(maxAge !== undefined ? { m: maxAge } : {}) }, keys[0], site)
+    let value = await encode(next)
+    if (value.length > MAX_COOKIE_LENGTH) { next = "/"; value = await encode(next) }
+    const location = loginUrl({ returnTo, state, nonce, portal: o.portal ?? portalForHost(host, fallbackPortal), ...(maxAge !== undefined ? { maxAge } : {}) })
     return new Response(null, {
       status: 302,
       headers: { Location: location, "Set-Cookie": stateCookie(value), "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" },
@@ -459,7 +546,9 @@ export const createAppAuth = (opts: AppAuthOptions = {}): AppAuth => {
     const token = one(form, "candy_token")
     const error = one(form, "error")
     if (formState === undefined || token === undefined || error === undefined) return no(400, "bad_request")
-    const cookie = readStateCookie(request, now())
+    const keys = await getRing()
+    if (!keys) return no(401, "no_keys")
+    const cookie = await readStateCookie(request, now(), keys, site)
     if (!cookie) return no(400, "state")
     if (formState === null || !sameString(formState, cookie.s)) return no(403, "state")
     if (error !== null) return no(403, "denied", error === "access_denied" ? "You cancelled signing in." : MESSAGES.denied)
@@ -472,17 +561,21 @@ export const createAppAuth = (opts: AppAuthOptions = {}): AppAuth => {
     } catch {
       return no(400, "bad_request")
     }
-    const r = await verify(token ?? "", { state: cookie.s, nonce: cookie.n, dest: arrivedAt })
+    // maxAge: at least the app's own default, whatever the cookie says; a stricter
+    // per-call value from the (authenticated) cookie. Never from the URL.
+    const asked = [defaultMaxAge, cookie.m ?? undefined].filter((v): v is number => v !== undefined)
+    const fresh = asked.length ? { maxAge: Math.min(...asked), authAfter: cookie.t } : {}
+    const r = await verify(token ?? "", { state: cookie.s, nonce: cookie.n, dest: arrivedAt, ...fresh })
     if (!r.ok) return no(401, r.error, r.message)
-    return { ok: true, user: r.user, amr: r.amr, authTime: r.authTime, claims: r.claims, next: cookie.x, clearCookie: CLEAR_COOKIE }
+    return { ok: true, user: r.user, amr: r.amr, authTime: r.authTime, superuser: r.superuser, claims: r.claims, next: cookie.x, clearCookie: CLEAR_COOKIE }
   }
 
-  const handle: AppAuth["handle"] = async (request, onLogin) => {
+  const handle: AppAuth["handle"] = async (request, onLogin, o = {}) => {
     let path: string
     try { path = new URL(request.url).pathname } catch { return null }
     if (path === LOGIN_PATH) {
       if (request.method !== "GET" && request.method !== "HEAD") return plain(405, "Method not allowed.", { Allow: "GET" })
-      return login(request)
+      return login(request, o.maxAge !== undefined ? { maxAge: o.maxAge } : {})
     }
     if (path !== CALLBACK_PATH) return null
     const r = await handleCallback(request)

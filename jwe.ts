@@ -52,7 +52,8 @@ export interface AppClaims {
   amr: [Amr]           // exactly one entry
   iat: number          // unix seconds, integer
   exp: number          // unix seconds, integer, iat < exp <= iat + MAX_TTL_S
-  auth_time: number    // unix seconds the portal session was created (integer)
+  auth_time: number    // unix seconds of the user's latest authentication (a fresh one when the app asked for max_age)
+  superuser: boolean   // whether the account is a sudoer, checked when the token was made
   jti: string          // JTI_RE
   state: string        // STATE_RE, echoed from the authorize request
   nonce?: string       // NONCE_RE, echoed when the request had one
@@ -327,7 +328,7 @@ export const decryptCompact = async (token: string, ring: readonly JweKey[]): Pr
 // ---------------------------------------------------------------------------
 // claims
 
-const CLAIM_KEYS = ["iss", "aud", "sub", "amr", "iat", "exp", "auth_time", "jti", "state", "nonce", "dest"] as const
+const CLAIM_KEYS = ["iss", "aud", "sub", "amr", "iat", "exp", "auth_time", "superuser", "jti", "state", "nonce", "dest"] as const
 const REQUIRED_CLAIMS = CLAIM_KEYS.filter(k => k !== "nonce")
 
 const bad = (what: string): never => { throw new JweError("claims", `bad claim: ${what}`) }
@@ -358,7 +359,7 @@ export const validateClaims = (c: unknown): AppClaims => {
     if (!(CLAIM_KEYS as readonly string[]).includes(k)) bad("unknown claim")
   }
   for (const k of REQUIRED_CLAIMS) if (!Object.hasOwn(o, k)) bad(`missing ${k}`)
-  const { iss, aud, sub, amr, iat, exp, auth_time, jti, state, nonce, dest } = o
+  const { iss, aud, sub, amr, iat, exp, auth_time, superuser, jti, state, nonce, dest } = o
   if (!str(iss, MAX_ISS_LENGTH)) bad("iss")
   const issUrl = httpsUrl(iss as string)
   if (!issUrl || issUrl.origin !== iss) bad("iss")
@@ -370,13 +371,14 @@ export const validateClaims = (c: unknown): AppClaims => {
   if (!isTime(auth_time)) bad("auth_time")
   if ((exp as number) <= (iat as number) || (exp as number) - (iat as number) > MAX_TTL_S) bad("exp")
   if ((auth_time as number) > (iat as number) + CLOCK_SKEW_S) bad("auth_time")
+  if (typeof superuser !== "boolean") bad("superuser")
   if (typeof jti !== "string" || !JTI_RE.test(jti)) bad("jti")
   if (typeof state !== "string" || !STATE_RE.test(state)) bad("state")
   if (nonce !== undefined && (typeof nonce !== "string" || !NONCE_RE.test(nonce))) bad("nonce")
   if (!str(dest, MAX_DEST_LENGTH) || !httpsUrl(dest as string)) bad("dest")
   const out: AppClaims = {
     iss: iss as string, aud: aud as string, sub: sub as string, amr: [(amr as Amr[])[0]],
-    iat: iat as number, exp: exp as number, auth_time: auth_time as number,
+    iat: iat as number, exp: exp as number, auth_time: auth_time as number, superuser: superuser as boolean,
     jti: jti as string, state: state as string, dest: dest as string,
   }
   if (nonce !== undefined) out.nonce = nonce as string

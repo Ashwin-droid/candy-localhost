@@ -3,7 +3,8 @@
 Contracts for two features. Builds on "Portal Login (PAM) — Design" in `AUTH_DESIGN.md`; everything there still holds.
 
 1. **Delegated app login.** An app on candy sends the browser to the portal. The user logs in there (PAM or passkey), approves the app once, and the browser comes back to the app carrying a one-shot JWE. The app's backend decrypts it with its site key and learns the unix user (`ashwin`, `claude`, ...).
-2. **Passkeys.** After a PAM login, a user can register a WebAuthn passkey on the portal. From then on they can log in to the portal with it instead of the password.
+2. **Passkeys.** After a PAM login, a user can register a WebAuthn passkey. From then on they can log in to the portal with it instead of the password. **Every passkey ceremony runs on candy's own host, `candy.<zone>`, never on a portal host** (section G supersedes everything below that says the rpId is the portal host).
+3. **Freshness and the superuser claim** (section H): an app can ask for a recent authentication (`max_age`), and every token says whether the account is a sudoer.
 
 Six work items. **A–E have no dependencies on each other at runtime or in tests.** Where a file needs another one's types it uses `import type`, which is erased; anything needed at runtime is injected. **F wires everything in** after A–E land.
 
@@ -104,7 +105,8 @@ export interface AppClaims {
   amr: [Amr]           // exactly one entry
   iat: number          // unix seconds, integer
   exp: number          // unix seconds, integer, iat < exp <= iat + MAX_TTL_S
-  auth_time: number    // unix seconds the portal session was created (integer)
+  auth_time: number    // unix seconds of the latest authentication (H: the fresh one when the app asked for max_age)
+  superuser: boolean   // required: whether the account is a sudoer, isSuperuser at mint time (H)
   jti: string          // JTI_RE
   state: string        // STATE_RE, echoed from the authorize request
   nonce?: string       // NONCE_RE, echoed when the request had one
@@ -307,8 +309,7 @@ Imports: `SoftLockout`, `logSafe` from `./portal-auth.ts`, `SealedIds` from `./s
 
 ### Constants
 ```ts
-export const MAX_PER_USER_RP = 10          // passkeys per user per rpId
-export const MAX_PER_USER = 25             // per user across rpIds
+export const MAX_PER_USER = 25             // per user (G: one rpId now, so no per-rpId cap)
 export const MAX_PASSKEYS = 1000           // whole store
 export const MAX_NAME_LENGTH = 64
 export const CHALLENGE_TTL_MS = 5 * 60_000
@@ -330,7 +331,7 @@ export interface PasskeyRecord {
   id: string            // credential id, b64url (unique across the store)
   user: string          // USER_RE
   uid: number           // the account's uid at registration: a new account reusing the name never matches
-  rpId: string          // portal host it was registered on, e.g. "portal.localhost"
+  rpId: string          // G: always the candy host, e.g. "candy.example.com"
   publicKey: string     // b64url COSE bytes; public keys only, never private material
   alg: CoseAlg
   signCount: number
@@ -690,7 +691,7 @@ Tests (real `jwe.ts`, keys from `generateKey`): login sets the cookie with the e
 - `error` mode: the message only, and no buttons.
 - `<meta name="referrer" content="no-referrer">`.
 
-### `public/portal-login.html`: passkey section (edit only this file's markup and script)
+### `public/portal-login.html`: passkey section (superseded by G: the page only navigates to `/auth/passkey/start`)
 - Under the password form: a "Log in with a passkey" button. It is shown only when `window.PublicKeyCredential` exists and `CANDY_VARS.passkeys !== false`.
 - Flow:
   1. `POST /auth/passkey/options` `{}` → `{challengeId, publicKey}`.
@@ -702,7 +703,7 @@ Tests (real `jwe.ts`, keys from `generateKey`): login sets the cookie with the e
 - A 429 shows a countdown from `retryAfter`, like the password path. 401 shows the error string. `NotAllowedError` (the user cancelled) shows nothing.
 - Optional: when `PublicKeyCredential.isConditionalMediationAvailable()` resolves true, start a `mediation:'conditional'` request with `autocomplete="username webauthn"` on the user field. One AbortController; abort it before a button-initiated request.
 
-### `public/portal-passkeys.html` (served at `GET /passkeys` through the shell)
+### `public/portal-passkeys.html` (served at `GET /passkeys` through the shell; G: "Add" opens a popup on the candy host, the notice below is gone)
 - `CANDY_VARS = { user, superuser, rpId, pamUntil: number | null }`.
 - It lists `GET /passkeys/list` as a table: name (inline rename → `POST /passkeys/rename {id,name}`), "this portal" marker when `here`, created, last used, synced badge (`backedUp`), and Delete (`POST /passkeys/delete {id}`).
 - "Add a passkey" → `POST /passkeys/register/options` → `navigator.credentials.create` (`parseCreationOptionsFromJSON`, or a manual conversion of `challenge`, `user.id` and `excludeCredentials[].id`) → serialize (`toJSON()`, or manually: clientDataJSON, attestationObject, transports via `getTransports()`) → `POST /passkeys/register {challengeId, credential, name}`. The name comes from a text field (default "Passkey on <platform>").
@@ -763,20 +764,20 @@ Tests (real `jwe.ts`, keys from `generateKey`): login sets the cookie with the e
 | GET | `/app-auth/consents` | user | any | | `{consents: [{site, owner, at}]}` (own) |
 | POST | `/app-auth/consents/revoke` | user | any | `{site}` (lower-cased) | `{revoked: boolean}` |
 | POST | `/sdk/auth/keys` | user | **API key only** (the existing `/sdk/` check) | `{name?: string, configId?: string}` | `{site, keys, issuers, portal}`; `mayFetchSiteKey(auth, owner)` else 403 "<name> belongs to <owner>. Only they can read its auth key."; unknown → 404; audit `APP_AUTH_KEY_FETCH`; `Cache-Control: no-store` |
-| POST | `/auth/passkey/options` | public | portal only, TOKENLESS | `{}` | `{challengeId, publicKey}` or 429. `rpId = host`, `origin = "https://" + host` |
-| POST | `/auth/passkey` | public | portal only, TOKENLESS | `{challengeId, credential}` | exactly like `/auth/login`: destroy any old session, `portalSessions.create(user, meta, {amr:"passkey"})`, `Set-Cookie`, `{user, superuser, session}`; else 401/429 |
+| GET | `/auth/passkey/start` | public | portal only (G) | `?next=` | 302 to `https://<candy host>/passkey/login?candy_stamp=…`; sets `__Host-candy_passkey`; 429 page when locked out; 404 without a bound domain |
+| POST | `/auth/passkey/finish` | public | portal only, TOKENLESS, Origin = the candy host (G) | form `candy_code` | redeems the login code; a page that stores the session secret and goes to `next` (or, for a fresh auth, re-authenticates the session and goes back to the consent page); 400 page / 403 |
 | POST | `/auth/reauth` | user | portal only, page token | `{password}` | `attemptLogin(loginDeps, {user: auth.user, password, ip})` (the body's user is ignored); ok → `markPam` → `{pamUntil: pamAt + RECENT_PAM_MS}`; else its status and body; audit `AUTH_REAUTH` |
 | GET | `/passkeys` | user | portal only, PORTAL_PAGES | | `portal-passkeys.html` + vars |
 | GET | `/passkeys/list` | user | portal or API key | `?user=` (portal superuser only) | `{passkeys: PasskeyView[]}` |
-| POST | `/passkeys/register/options` | user | portal only, page token | `{}` | `startRegistration` |
-| POST | `/passkeys/register` | user | portal only, page token | `{challengeId, credential, name?}` | `{passkey: PasskeyView}` |
+| POST | `/passkeys/enroll/start` | user | portal only, page token, recent password (G) | `{name?}` | `{url, origin}`: the candy-host popup URL with an enroll stamp; 403 reauth / 409 limit / 404 without a bound domain |
+| POST | `/app-auth/fresh` | user | portal only, page token (H) | `{request}` | `{url}`: a passkey stamp that re-authenticates this login for that parked request |
 | POST | `/passkeys/rename` | user | portal only, page token | `{id, name}` | `{passkey}` / 404 |
 | POST | `/passkeys/delete` | user | portal only, page token | `{id, user?}` | `{deleted: true}` / 403 (reauth) / 404 |
 
    - Add every line to `ROUTE_TABLE` (exact paths, no `/*`).
    - `PORTAL_PAGES += "/app-auth/consent", "/passkeys"`.
-   - `TOKENLESS_ROUTES += "/auth/passkey/options", "/auth/passkey"` (still `sameOrigin`-checked).
-   - `/auth/users`' JSON and the login page's `CANDY_VARS` gain `passkeys: true`.
+   - `TOKENLESS_ROUTES += "/auth/passkey/finish"` (G: held to Origin = the candy host instead of `sameOrigin`).
+   - `/auth/users`' JSON and the login page's `CANDY_VARS` gain `passkeys: candyHost() !== null` (G).
    - Passkey **login works without PAM installed**. Registration does not, since it needs a PAM session.
 7. **User removal**: wherever sessions are destroyed because a user left `loginUsers`, also run `appConsents.dropUser` (a temporarily locked account keeps its passkeys; login refuses them while it can't log in). A user who leaves the candy group (`forgetUser`) also loses their passkeys and handle (`passkeys.dropAccount`, audited `PASSKEY_DROP`), and `prunePasskeyAccounts` runs every 10 minutes (and 30s after start) to drop the passkeys of deleted accounts and of an earlier account whose name was reused (another uid). `uidOf` is `getent passwd`: exit 2 = no such account, any other failure throws, so an NSS hiccup prunes nothing.
 8. **Superuser with a passkey (owner's decision)**: `requestAuth` sets `superuser` to `isSuperuser(user)` for every portal session, however it was made. A sudoer who logs in with a passkey is a superuser straight away, exactly like a password login: no step-up, no time window, no `/auth/reauth` needed. A review suggested a password step-up for superuser; the owner decided against it and accepts a passkey with user verification as equal to the password. Managing passkeys still needs a recent password (D7, `mayManagePasskeys`).
@@ -818,7 +819,7 @@ Tests (real `jwe.ts`, keys from `generateKey`): login sets the cookie with the e
 | **CSRF on the portal decision** | Minting only happens on `POST /app-auth/decision`: `sameOrigin` + a page token tied to the session + the session secret header. Remembered consent still goes through that POST. `frame-ancestors 'none'` stops clickjacking the Continue button. |
 | **Silent identification by a site the user approved before** | By design (remembered consent), limited to sites the user approved, with the same owner (`ConsentStore.has` checks owner), within 30 days. Users can revoke (`/app-auth/consents/revoke`). |
 | **Phishing a lookalike host** | The SDK only ever sends users to configured portal origins (`portalForHost`, `CANDY_AUTH_URL`). `portal`, `p`, `k` and `kill` are reserved names. `isPortalHost` refuses ports. Passkeys are origin-bound (a lookalike gets nothing). The consent page shows the exact return host. |
-| **Passkey rpId/origin confusion across portal hosts** | `rpId = host` the request arrived on (only `isPortalRequest` hosts). The challenge records rpId + origin and must match at finish. The record's `rpId` must equal the current host. `rpIdHash` and `origin` are checked exactly. `crossOrigin`/`topOrigin` are refused. |
+| **Passkey rpId/origin confusion** | G: the rpId is always the candy host and the origin exactly `https://<candy host>`. The challenge records rpId, origin and the stamp it was issued under (`bind`) and must match at finish. The record's `rpId` must equal the candy host (others are pruned). `rpIdHash` and `origin` are checked exactly, so an assertion made for a portal host is refused. `crossOrigin`/`topOrigin` are refused. |
 | **Cross-user passkey registration** | Register challenges are bound to `sessionId` + `user`. The record is always saved under the session's user. Credential ids are unique store-wide (`PASSKEY_EXISTS`). Login requires `userHandle === store.userHandle(record.user)`. Registering needs a recent **PAM** (`pamAt` ≤ 10 min), so a stolen passkey session can't add a persistent credential. |
 | **Counter rollback (cloned authenticator)** | `new > stored`, except 0/0. Failing it denies the login and is audited as `PASSKEY_COUNTER`. The store's `touch` is monotonic. |
 | **CBOR bombs / malformed input** | Lengths are checked against the bytes left before allocating. Depth ≤ 8, items ≤ 512, input ≤ 16 KB. No indefinite lengths, tags or floats. Exact-length authData. Bounded clientDataJSON, signature, ids and userHandle. JWE size is checked before decoding. |
@@ -835,9 +836,17 @@ Tests (real `jwe.ts`, keys from `generateKey`): login sets the cookie with the e
 | **Account policy bypass by passkey** | Passkey login runs `pam_acct_mgmt` (pam.ts `checkAccount`), as the password login does. |
 | **Root by a synced passkey alone** | Accepted by the owner's decision: a passkey with user verification counts as equal to the password, so a sudoer's passkey login is a superuser straight away. A passkey is still bound to its account's uid and portal host, passkey login runs PAM's account stage and the address lockout, and adding or removing passkeys needs a recent password (D7), so a passkey session can't mint more passkeys. |
 | **Body size on public routes** | `readJsonBody` counts bytes as they stream and cancels past 64 KB, chunked bodies included (Content-Length alone was trusted before). |
+| **Public host exposure** (G) | `candy.<zone>` is on the internet. It answers only `CANDY_HOST_ROUTES`, and each of those only with a valid stamp, which only a portal host (tailnet/loopback) mints: an unstamped caller gets 404 and never a challenge. It is dispatched by Host before the guard and never falls through; it never reads the portal cookie, an API key or `X-Candy-Session`; it never serves the control API, pages, sites, lazy start or shortcut hosts. Strict headers: `no-store`, `frame-ancestors 'none'` + `X-Frame-Options: DENY`, `nosniff`, a nonce'd CSP (`connect-src 'self'`, `form-action` = the stamp's portal only), CORP same-origin, HSTS. POSTs need `Origin: https://<candy host>`. Its own address lockout (the password login's) and the passkey soft lockout apply there too. |
+| **Stamp theft** (G) | Sealed (AES-GCM, per-process key), 5 minutes, single use at verify, bound to purpose and candy host, and claimed by the first browser that opens its page (`__Host-candy_ceremony`): a copy from a log, history or screen is a 404 in any other browser, and its tries don't burn it. No flood can push a claim or a use out (fail-closed `LiveSet`s with per-address shares), and a finished enrollment voids the session's other enroll stamps (`enrollSeq`). The page strips it from the address bar; Caddy's access log drops `candy_stamp`; the audit log never holds one. A login stamp names no one (discoverable credentials): stolen, it only lets the thief log in as themselves. An enroll stamp is the dangerous one (it would add the thief's authenticator to the victim's account): beyond the claim, it needs the stamped portal session still live, the same user, still allowed to log in, and a password checked in the last 10 minutes. |
+| **Login code theft** (G) | Sealed, 60 s, single use, only ever in a POST body (never a URL, history, log or Referer). Bound to its portal host, its candy host, and the browser that started (`__Host-candy_passkey`, SameSite=None so the cross-site form POST carries it): a stolen code redeemed anywhere else is refused. `/auth/passkey/finish` takes it only from `Origin: https://<candy host>` (login CSRF from any other page fails). |
+| **Popup opener spoofing** (G) | The candy-host page posts to `window.opener` with the exact portal origin from the stamp as `targetOrigin`; the passkeys page accepts only `event.origin === https://<candy host>` from the popup it opened (`event.source`), and the message carries no data it trusts: it only reloads the list from the daemon. Without an opener the page says "Done, you can close this window". |
+| **Phishing via a lookalike of the candy host** (G) | WebAuthn binds the assertion to the rpId and origin: a lookalike (`candy-example.com`, `candy.example.co`) gets nothing usable at the real host. The real host only accepts its own origin, and only with a stamp the tailnet portal minted. The login code goes only to a portal host named in the stamp (re-checked with `isPortalHost`). |
+| **App wants fresh auth but the browser strips `max_age`** (H) | The SDK records `maxAge` and the start time in its own `__Host-` state cookie, MAC'd with a key derived from the site key (the browser can't drop or back-date them), always applies the app's configured default too, and refuses a token whose `auth_time` is older (plus skew) unless it is at or after the signed start: `stale_auth`. `verify(token, { maxAge })` takes it explicitly too. |
+| **Lockout address forged on the public hosts** (G) | Tunnel-only hosts listen only on a root-only unix socket that cloudflared uses; `Cf-Connecting-Ip` counts only with the tunnel tag those blocks add; anything else is loopback. |
+| **Replaying an older fresh auth** (H) | A fresh authentication is recorded in the session as `freshFor` = SHA-256 of the parked request id, only counts if made after that request was parked, is used up by that request's mint, and only re-authenticates the session whose id the stamp names, for the same user (another user's passkey is refused). `max_age=0` is never met by the session's age, only by a fresh authentication for that very request. |
 
 ## Open questions (do not block the build)
-- Some WebAuthn clients may not accept `.candy` (not on the PSL) as an RP ID. `.localhost` works in Chrome and Firefox. Check Safari by hand.
+- (Resolved by G: the rpId is a real public domain, so neither `.candy` nor `.localhost` is ever an RP ID.)
 - A shared replay store for function pools (KV) is left to apps through `ReplayStore`.
 
 ---
@@ -856,3 +865,74 @@ Where the wiring differs from, or pins down, section F:
 - **fn-host** refuses a var, secret, KV/D1 or assets binding named `CANDY_AUTH`, reads the ring before the function's module is imported, and removes `CANDY_AUTH_KEYS` from `process.env`.
 - **Request bodies** on these routes are read with a 64 KB cap, counted while streaming (a chunked body is cancelled past it, never buffered). `/app-auth/rotate` and `/app-auth/consents/revoke` lower-case the name themselves (`lowerName`), since `readJsonBody` bypasses the `req.json` patch of `lowerRequestNames`. `/passkeys/list?user=` is for a portal superuser only. `/auth/me` reports `amr`. `/app-auth/rotate` needs the name to be in use (`mayUse`); it creates a ring if there was none.
 - **CLI**: also `candy app-auth consents` and `candy app-auth revoke <site>`. The portal header links to `/passkeys`.
+
+---
+
+## G. Passkeys on the candy host (supersedes the per-portal-host model)
+
+**Why.** `portal.candy` and `portal.localhost` are served with Caddy's local CA. Browsers refuse WebAuthn on any page with a certificate error, and the owner can't install that CA on every device, so the earlier model (rpId = the portal host) never worked; no passkey was ever registered, and nothing is migrated. The owner's decision: `candy.<bound zone>` (a real public domain with a real certificate through the Cloudflare tunnel) is always candy's own host; it is the only rpId; no bound domain means no passkeys.
+
+**The host.** `candyHost()` (daemon.ts) = `candy.<domainConfig.zone.domain>` when the zone is a domain and the tunnel id is set (`candyHostFor`, caddy-config.ts), else null. The daemon routes it like the public MCP host: a Caddy system block `http://candy.<zone> { reverse_proxy localhost:9999 }`, a cloudflared ingress rule, and a DNS CNAME made once per host with `cloudflared tunnel route dns` (`ensureCandyHostDns`, remembered in `domainConfig.candyHostDns`), at start and after `POST /domains/config`. The subdomain is reserved: `checkBindings` drops a `candy` binding at load (`DOMAIN_BINDING_DROPPED`), `/domains/bind` refuses it, and turning the public MCP endpoint off never deletes this host's DNS. When `domainConfig.mcp.subdomain` is `candy` the two share the host: `isPublicMcpPath` paths (`/mcp`, `/register`, `/authorize`, `/authorize/complete`, `/token`, the `.well-known` metadata) go to `handlePublicMcp` exactly as before, everything else to the candy host's routes. Passkeys made for any other rpId (the zone changed) are dropped with `PASSKEY_DROP` at start, after a domain change and every 10 minutes; without a candy host nothing is dropped.
+
+**The candy host's routes** (candy-host.ts, `CANDY_HOST_ROUTES`; outside `ROUTE_TABLE`, dispatched by Host before the guard; anything else is 404):
+
+| Method | Path | Needs | Answer |
+|---|---|---|---|
+| GET | `/passkey/enroll?candy_stamp=` | an enroll stamp | the ceremony page (`public/passkey-host.html`); claims the stamp for this browser |
+| POST | `/passkey/enroll/options` | `{stamp}`, claimed by this browser, the stamped portal session live and allowed, password within 10 min | creation options (rpId = candy host), challenge bound to the stamp |
+| POST | `/passkey/enroll/verify` | `{stamp, challengeId, credential}`, the same checks; uses the stamp up | `{added, name}`; stored for the stamped user (`PASSKEY_ADD`) |
+| GET | `/passkey/login?candy_stamp=` | a login stamp | the ceremony page |
+| POST | `/passkey/login/options` | `{stamp}`, claimed; address lockout | request options (discoverable, UV required) |
+| POST | `/passkey/login/verify` | `{stamp, challengeId, credential}`; uses the stamp up; every passkey-login check (address lockout, soft lockout, uid, PAM account stage, allowed users, counter) | `{action: "https://<portal>/auth/passkey/finish", fields: {candy_code}}` |
+
+An authentic but expired, used or elsewhere-claimed stamp gets the page in its "expired" state with a link back to its portal (status 404); anything else is a plain 404. POSTs need `Origin: https://<candy host>`.
+
+**Bounded state never evicts a live entry (review finding).** The used-id sets (`SealedIds`, also behind challenges, parked app requests and login codes), the stamp claims and the count of live stamps are `LiveSet`s: when full of live entries they refuse, and the caller fails closed (a use or claim that can't be recorded makes the id unusable; a stamp that couldn't be used up is never minted: `TicketsBusy`, 429 for this address / 503 for everyone, with `Retry-After`). Each entry has an owner and one owner holds at most a share: 64 live stamps and 64 claims per address (all of loopback is one address, `addressKey`), 5% of a used set per challenge key or deciding user. Before, a flood of 10,000 cheap login stamps pushed a victim's used or claimed enroll stamp out of the maps, and it became usable in the attacker's browser. On top of that an enroll stamp names its session's enroll sequence (`PortalSessions.enrollSeq`): adding a passkey moves it on (`bumpEnroll`), so every other enroll stamp of that login is void, whatever any in-memory set holds. The address lockout is checked before verify uses a stamp up, for both ceremonies.
+
+**Stamps** (`PasskeyTickets.mintStamp(payload, by)`, sealed ids): `purpose` (`enroll` | `login`), `host` (the candy host), `portal` (the portal host it was minted on; re-checked with `isPortalHost` at use), `next` (a `safeNext` path), and for enroll `user`, `sessionId`, `pamAt`, `name`; for login only `bind` (SHA-256 of the browser's `__Host-candy_passkey`) and, for H, an optional `fresh` binding. 5 minutes; options don't use it up (a cancelled prompt retries with the same stamp), verify does.
+
+**Login codes** (`mintCode`/`takeCode`): user, host, portal, next, bind, credential id, fresh binding, minting address. 60 s, single use.
+
+**Tunnel-only hosts (review finding).** candy's own host and the public MCP host have Caddy site blocks bound only to a 0600 unix socket (`tunnelSiteBlock`, `<admin socket dir>/tunnel.sock`), and cloudflared's ingress for them is `unix:<socket>`; Caddy and cloudflared run as root, so nobody else can open it. Those blocks add a second per-boot tag (`X-Candy-Tunnel`); the daemon believes `Cf-Connecting-Ip` on these hosts only with that tag (`publicClientIp`), and a local caller (127.0.0.1:80 has no block for them; :9999 directly has no tags) is loopback, one address for lockouts and rate limits. Before, a local user could send `Host: candy.<zone>` with any `Cf-Connecting-Ip` to 127.0.0.1:80 and pick the address the lockouts used. Bound domains keep their `:80` blocks (they may be served on the LAN or tailnet by design).
+
+**Portal routes** (in `ROUTE_TABLE`): `GET /auth/passkey/start` public, `POST /auth/passkey/finish` public (TOKENLESS; Origin must be the candy host, `fromCandyHost`, instead of `sameOrigin`), `POST /passkeys/enroll/start` user, `POST /app-auth/fresh` user (H). Removed: `/auth/passkey/options`, `/auth/passkey`, `/passkeys/register/options`, `/passkeys/register`.
+
+**Flows, URL by URL.**
+
+Enroll (portal passkeys page, password within 10 min):
+1. Click "Add a passkey": the page opens a blank popup in the click (popup blockers), then `POST https://portal.candy/passkeys/enroll/start {name}` (page token) → `{url: "https://candy.<zone>/passkey/enroll?candy_stamp=S", origin}`.
+2. The popup goes to that URL; the page claims S (cookie), strips it from the address bar, and runs `navigator.credentials.create` (on load; a cancelled or gesture-less prompt shows "Try again").
+3. `POST https://candy.<zone>/passkey/enroll/options {stamp}` → creation options; `POST …/passkey/enroll/verify {stamp, challengeId, credential}` → `{added}`.
+4. The popup posts `{type: "candy-passkey", purpose: "enroll", ok: true}` to `window.opener` with targetOrigin = the portal origin, and closes; the portal checks origin and source and reloads its list. No opener (the popup was blocked and the page went there in the tab): "Done, you can close this window" and a link back. Rename and delete stay on the portal.
+
+Login (portal login page):
+1. "Use a passkey" → `GET https://portal.candy/auth/passkey/start?next=/x` → 302 `https://candy.<zone>/passkey/login?candy_stamp=S` (+ `__Host-candy_passkey` on the portal).
+2. The page claims S, strips it, runs `navigator.credentials.get` (UV required): options, then verify → `{action, fields: {candy_code: C}}`.
+3. The page form-POSTs C to `https://portal.candy/auth/passkey/finish` (Origin = the candy host; the bind cookie rides along).
+4. The portal redeems C, creates the session (`amr: "passkey"`, the same cookie as `/auth/login`) and answers a tiny no-store page whose nonce'd script stores the session secret in this origin's `localStorage` (`candy_session`) and `location.replace(next)`. The secret is in that page's body only, never a URL.
+
+Sign in with candy (no change to the token, keys, consent or SDK contract):
+`app.<zone>/_candy/auth/login` → 302 `https://portal.candy/app-auth/authorize?…` (parked) → 302 `/app-auth/consent?request=R` → (no session) shell → `/login?next=/app-auth/consent%3Frequest%3DR` → with passkeys available the login page goes straight on (`autoPasskey`, once per tab) → `/auth/passkey/start` → `candy.<zone>/passkey/login` → form POST back to `portal.candy/auth/passkey/finish` → `/app-auth/consent?request=R` (auto-continues when remembered) → form POST to `https://app.<zone>/_candy/auth/callback`. "Use your password instead" on the candy host's page goes to `/login?next=…&with=password`.
+
+**Deviation, on purpose:** the owner's sketch has the candy host return straight to the app. The return still comes from the portal: an extra, invisible hop. The candy host stays a pure WebAuthn surface: it never mints app tokens, holds consent or makes sessions, so being on the internet exposes as little as possible. The portal step is as close to a rubber stamp as it safely is: it parks, and (with passkeys) the login page forwards without a click.
+
+**`portalForHost`** (sdk-auth.ts): an app on any host that isn't `.localhost` or `.candy` (a bound domain) is sent to `https://portal.candy` (or the configured fallback only when that is a `.candy` portal), never to a public host: passing through the tailnet-only portal is the tailnet check.
+
+**Other deviations.** (1) The ceremony page's `Referrer-Policy` is `strict-origin`, not `no-referrer`: under `no-referrer` a form POST carries `Origin: null`, and `/auth/passkey/finish` needs the candy host's origin. The stamp is out of the URL before anything is sent, and only the bare origin is ever sent. (2) Stamps are claimed by the first browser that opens them, and the login code is bound to the browser that started: not in the brief; they make a stolen stamp or code useless. (3) The finish route is a POST form, not a GET: the code never reaches history, logs or a Referer. (4) `Cross-Origin-Opener-Policy` is left unset on the candy host's page: `same-origin` would cut the popup's `window.opener`.
+
+---
+
+## H. Freshness (`max_age`) and the superuser claim
+
+**Claims.** `superuser: boolean` is required (`validateClaims` refuses a token without it), computed at mint time with `isSuperuser(user)` (sudoers, 60 s cache, never stored in the session). `auth_time` and `amr` describe the session's latest authentication (`authAt`, `authMethod`: the login, `/auth/reauth`, or a fresh passkey for an app), no longer the session's creation. The consent page says the site learns the user name and whether the account is an administrator.
+
+**Authorize.** `max_age=<n>`, digits only, 0..86400, at most once (`AUTHZ_BAD_MAX_AGE`, 400 page), parked with the request (`AuthorizeRequest.maxAge`).
+
+**Portal.** `freshnessOk(r, session, now)`: no `max_age`; or `max_age > 0` and `now - authAt <= max_age`; or the session's `freshFor` equals `freshKey(r.id)` (SHA-256 of the parked id) and `authAt >= r.created`. The consent page gets `fresh: {needed, passkeys, maxAge}`; `POST /app-auth/decision` with `approve` answers 401 `{fresh: true}` until it holds (the request stays parked; a denial needs nothing). To meet it:
+- passkey: `POST /app-auth/fresh {request}` (page token, address lockout) → a login stamp with `fresh: {sessionId, request: freshKey}` → the candy host's login ceremony (same checks as a login) → `/auth/passkey/finish` sees the fresh binding: the named session must be live and its user the passkey's user, then `markAuth(session, "passkey", freshKey)`; no new session, no secret; back to the consent page. With passkeys the consent page goes there without a click (once per tab and request).
+- password: `POST /auth/reauth {password, request}` (the request must be parked on this portal host; `attemptLogin` and its limits) → `markPam(session, freshKey)`.
+The mint clears `freshFor`, so one fresh authentication serves one request.
+
+**SDK.** `loginUrl({…, maxAge})`, `login(req, {maxAge})`, `handle(req, onLogin, {maxAge})`, `createAppAuth({maxAge})` (default). The state cookie stores `m` (maxAge) and `t` (start) and is **authenticated** (review finding: it was plain base64, so the browser could drop `m` or back-date `t`): `<b64url JSON>.<kid>.<HMAC-SHA256>`, keyed by HKDF-SHA256 from the site key with that kid (salt `candy-auth <site>`, info `candy-auth state cookie v1`); the current key signs, any key in the ring verifies (rotation overlap); a bad or missing MAC is `state`, and `login` without any key is a 503. `handleCallback` enforces the stricter of the app's own default `maxAge` (always, whatever the cookie says) and the cookie's `m`, with `authAfter: t`. `verify(token, {maxAge, authAfter?})`: stale (`stale_auth`) unless `maxAge > 0` and `now - auth_time <= maxAge + skew`, or `auth_time >= authAfter` (the signed start of this sign-in), so `maxAge: 0` means "authenticated during this sign-in" and without `authAfter` is always stale. The result has `superuser`.
+
+**Upgrading.** `validateClaims` requires `superuser` and the cookie must carry a MAC, so an older SDK copy refuses new tokens. Functions' copies in `/usr/lib/candy` are brought up to date by the daemon at start in root mode (`syncFnShim`, `FN_SHIM_SYNC`; the same closure the installer installs and `test/install-shim-files.test.ts` checks); apps that vendor the SDK must update it (README).

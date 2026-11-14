@@ -123,8 +123,8 @@ describe("ROUTE_TABLE", () => {
   it("leaves only the login, discovery and secret exchange public", () => {
     const pub = table.filter(([, , c]) => c === "public").map(([m, p]) => `${m} ${p}`).sort()
     expect(pub).toEqual([
-      "* /candy-auth/check", "GET /app-auth/authorize", "GET /auth/users", "GET /candy/registry", "GET /favicon.svg", "GET /login",
-      "POST /auth/login", "POST /auth/logout", "POST /auth/passkey", "POST /auth/passkey/options",
+      "* /candy-auth/check", "GET /app-auth/authorize", "GET /auth/passkey/start", "GET /auth/users", "GET /candy/registry", "GET /favicon.svg", "GET /login",
+      "POST /auth/login", "POST /auth/logout", "POST /auth/passkey/finish",
       "POST /candy-auth/login", "POST /candy/advertise", "POST /mcp/auth",
     ])
   })

@@ -7,7 +7,7 @@ export type { CronJob } from "./cron.ts"
 // Sign in with candy (SDK_AUTH_DESIGN.md): the app side
 export {
   createAppAuth, redirectAfterLogin, safeAppPath, portalForHost, ReplayCache, LOGIN_PATH, CALLBACK_PATH,
-  type AppAuth, type AppAuthOptions, type AuthUser, type CallbackResult, type VerifyResult, type ReplayStore, type AuthErrorCode,
+  MAX_MAX_AGE_S, type AppAuth, type AppAuthOptions, type AuthUser, type CallbackResult, type VerifyResult, type VerifyExpect, type ReplayStore, type AuthErrorCode,
 } from "./sdk-auth.ts"
 
 export const CANDY_RUNTIME_MAGIC_ENV = "X_CANDY_RUNTIME_MAGIC_STRING"

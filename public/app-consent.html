@@ -137,6 +137,11 @@
     .busy { color: var(--ink-2); font-size: 14px; }
     .busy a { color: var(--cherry); margin-left: 6px; }
     .foot { margin-top: 14px; color: var(--ink-3); font-size: 12px; text-align: center; }
+    .fresh { margin-bottom: 4px; }
+    .fresh p { color: var(--ink-2); font-size: 13px; margin-bottom: 12px; }
+    .fresh input[type=password] { width: 100%; height: 38px; padding: 0 11px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--sheet-2); color: var(--ink); font: 14px var(--font-ui); margin-bottom: 10px; }
+    .fresh .btn { width: 100%; margin-bottom: 8px; }
+    [hidden] { display: none !important; }
   </style>
 </head>
 <body>
@@ -148,6 +153,7 @@
         <ul class="facts">
           <li id="back"></li>
           <li id="who"></li>
+          <li id="learns"></li>
         </ul>
         <p class="warn" id="owner" hidden></p>
         <label class="remember"><input type="checkbox" id="remember" checked> Remember for this site</label>
@@ -156,10 +162,20 @@
           <button type="button" class="btn" id="go">Continue</button>
         </div>
       </div>
+      <!-- The app asked for a recent authentication (max_age): authenticate again, for this request only -->
+      <div class="fresh" id="fresh" hidden>
+        <p id="freshWhy"></p>
+        <button type="button" class="btn" id="freshPasskey" hidden>Confirm with a passkey</button>
+        <form id="freshForm" autocomplete="on" hidden>
+          <input type="text" name="username" id="freshUser" autocomplete="username" hidden>
+          <input type="password" id="freshPassword" autocomplete="current-password" placeholder="Your password" required>
+          <button type="submit" class="btn secondary" id="freshGo">Confirm with your password</button>
+        </form>
+      </div>
       <p class="busy" id="busy" hidden></p>
       <div class="msg" id="msg" role="alert"></div>
     </div>
-    <p class="foot" id="foot" hidden>The site learns only your user name on this machine. It never sees your password or passkey.</p>
+    <p class="foot" id="foot" hidden>The site learns your user name on this machine and whether the account is an administrator (a sudoer). It never sees your password or passkey.</p>
   </main>
 
   <script>
@@ -251,6 +267,74 @@
       }
     }
 
+    // ---- max_age: authenticate again for this request before anything is sent ----
+    function askFresh(fresh) {
+      const box = document.getElementById('fresh');
+      const why = document.getElementById('freshWhy');
+      const pkBtn = document.getElementById('freshPasskey');
+      const form = document.getElementById('freshForm');
+      const go = document.getElementById('freshGo');
+      document.getElementById('freshUser').value = text(vars.user);
+      why.textContent = fresh.maxAge === 0
+        ? `${site} asks you to confirm it’s you every time you sign in.`
+        : `${site} asks for a sign-in from the last ${Math.max(1, Math.round(fresh.maxAge / 60))} minute(s). Confirm it’s you.`;
+      box.hidden = false;
+      askEl.hidden = true;
+      document.getElementById('foot').hidden = false;
+      let used = false;
+      const startPasskey = async () => {
+        if (used) { location.reload(); return; }
+        used = true;
+        pkBtn.disabled = true;
+        showMsg('');
+        try {
+          const res = await fetch('/app-auth/fresh', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Candy-Token': window.CANDY_TOKEN || '' },
+            body: JSON.stringify({ request: text(vars.request) }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.retryAfter ? `Too many failed logins. Try again in ${data.retryAfter}s.` : (data.error || `Failed (HTTP ${res.status})`));
+          const url = new URL(text(data.url));
+          if (url.protocol !== 'https:') throw new Error('candy sent back an invalid address.');
+          location.replace(url.href);
+        } catch (e) {
+          showMsg((e instanceof TypeError ? 'Can’t reach the candy daemon.' : e.message) + ' Reload to try again.');
+        }
+      };
+      const passwordOnly = /[?&]with=password(&|$)/.test(location.search);
+      if (fresh.passkeys === true) {
+        pkBtn.hidden = false;
+        pkBtn.addEventListener('click', startPasskey);
+      }
+      form.hidden = false;
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        if (used) { location.reload(); return; }
+        used = true;
+        go.disabled = true;
+        showMsg('');
+        try {
+          const res = await fetch('/auth/reauth', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Candy-Token': window.CANDY_TOKEN || '' },
+            body: JSON.stringify({ password: document.getElementById('freshPassword').value, request: text(vars.request) }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (res.ok) { location.replace(location.pathname + location.search.replace(/[?&]with=password(?=&|$)/, '')); return; }
+          throw new Error(data.retryAfter ? `Too many failed logins. Try again in ${data.retryAfter}s.` : (data.error || 'That didn’t work.'));
+        } catch (err) {
+          showMsg((err instanceof TypeError ? 'Can’t reach the candy daemon.' : err.message) + ' Reload to try again.');
+        }
+      });
+      // With passkeys, go straight to the passkey (once per tab and request, so Back never loops)
+      if (fresh.passkeys === true && !passwordOnly) {
+        let seen = null;
+        try { seen = sessionStorage.getItem('candy_fresh_auto'); sessionStorage.setItem('candy_fresh_auto', text(vars.request)); } catch {}
+        if (seen !== text(vars.request)) startPasskey();
+      }
+    }
+
     function render() {
       if (vars.error) {
         document.title = 'Sign in · candy';
@@ -271,6 +355,8 @@
       const who = document.getElementById('who');
       who.append('Signed in as ', el('b', '', text(vars.user)), vars.amr === 'passkey' ? ' (with a passkey)' : ' (with your password)');
 
+      document.getElementById('learns').append('It learns your user name and whether ', el('b', '', 'your account is an administrator'), ' (a sudoer)');
+
       if (!vars.ownerIsYou) {
         const owner = document.getElementById('owner');
         owner.append('This site is run by ', el('b', '', text(vars.owner)), ', not you. They will see your user name.');
@@ -279,6 +365,12 @@
       document.getElementById('foot').hidden = false;
       goBtn.addEventListener('click', () => decide(true, rememberEl.checked));
       cancelBtn.addEventListener('click', () => decide(false, false));
+
+      const fresh = vars.fresh || {};
+      if (fresh.needed === true) {
+        askFresh(fresh);
+        return;
+      }
 
       if (vars.remembered === true) {
         // Approved before: answer at once, with a way out

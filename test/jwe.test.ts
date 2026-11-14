@@ -32,6 +32,7 @@ const claims = (over: Partial<Record<keyof AppClaims, unknown>> = {}): AppClaims
   iat: NOW,
   exp: NOW + DEFAULT_TTL_S,
   auth_time: NOW - 3600,
+  superuser: false,
   jti: "jti-aaaaaaaaaaaaaaaa",
   state: "state-aaaaaaaaaaaaaaaa",
   nonce: "nonce-aaaaaaaaaaaaaaaa",
@@ -399,7 +400,7 @@ describe("validateClaims", () => {
     const v = validateClaims(c)
     expect(v).toEqual(c)
     expect(v).not.toBe(c)
-    expect(Object.keys(v)).toEqual(["iss", "aud", "sub", "amr", "iat", "exp", "auth_time", "jti", "state", "nonce", "dest"])
+    expect(Object.keys(v)).toEqual(["iss", "aud", "sub", "amr", "iat", "exp", "auth_time", "superuser", "jti", "state", "nonce", "dest"])
     expect(v.amr).not.toBe(c.amr)
   })
   it("nonce is optional; an undefined nonce counts as absent", () => {
@@ -454,6 +455,11 @@ describe("validateClaims", () => {
     ["auth_time after iat + skew", claims({ auth_time: NOW + CLOCK_SKEW_S + 1 })],
     ["auth_time missing", (() => { const c: Record<string, unknown> = { ...claims() }; delete c.auth_time; return c })()],
     ["auth_time float", claims({ auth_time: 1.5 })],
+    // superuser is required and a boolean: a token without it is malformed
+    ["superuser missing", (() => { const c: Record<string, unknown> = { ...claims() }; delete c.superuser; return c })()],
+    ["superuser string", claims({ superuser: "true" })],
+    ["superuser number", claims({ superuser: 1 })],
+    ["superuser null", claims({ superuser: null })],
     ["jti short", claims({ jti: "a".repeat(15) })],
     ["jti bad chars", claims({ jti: "a".repeat(16) + "!" })],
     ["state short", claims({ state: "a".repeat(15) })],
@@ -474,7 +480,7 @@ describe("validateClaims", () => {
       expect(await code(() => validateClaims(c))).toBe("claims")
     })
   }
-  for (const k of ["iss", "aud", "sub", "amr", "iat", "exp", "auth_time", "jti", "state", "dest"] as const) {
+  for (const k of ["iss", "aud", "sub", "amr", "iat", "exp", "auth_time", "superuser", "jti", "state", "dest"] as const) {
     it(`refuses a missing ${k}`, async () => {
       const c: Record<string, unknown> = { ...claims() }
       delete c[k]
@@ -539,7 +545,7 @@ describe("sealClaims / openClaims", () => {
   it("sealClaims serializes only known claims in canonical order", async () => {
     const t = await sealClaims({ dest: claims().dest, ...claims() }, key)
     const { plaintext } = await decryptCompact(t, [key])
-    expect(Object.keys(JSON.parse(dec.decode(plaintext)))).toEqual(["iss", "aud", "sub", "amr", "iat", "exp", "auth_time", "jti", "state", "nonce", "dest"])
+    expect(Object.keys(JSON.parse(dec.decode(plaintext)))).toEqual(["iss", "aud", "sub", "amr", "iat", "exp", "auth_time", "superuser", "jti", "state", "nonce", "dest"])
   })
 
   it("exp/skew boundaries", async () => {

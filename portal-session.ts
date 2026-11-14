@@ -31,7 +31,16 @@ export type SessionAmr = "pam" | "passkey"
  * this session (the login itself, or POST /auth/reauth), null for a passkey
  * login that never re-entered it. Passkey management needs a recent one.
  */
-export interface PortalSession { id: string; user: string; created: number; lastSeen: number; amr: SessionAmr; pamAt: number | null }
+export interface PortalSession {
+  id: string; user: string; created: number; lastSeen: number; amr: SessionAmr; pamAt: number | null
+  /** When and how the user last authenticated in this session (the login, /auth/reauth, or a fresh passkey for an app) */
+  authAt: number; authMethod: SessionAmr
+  /** The parked "Sign in with candy" request (app-auth.ts freshKey) the latest authentication was made for, or null */
+  freshFor: string | null
+  /** Moves on each time a passkey is added in this session: an enroll stamp names the value it was made at */
+  enrollSeq: number
+}
+const FRESH_KEY_RE = /^[A-Za-z0-9_-]{43}$/
 export interface SessionOptions { idleMs?: number; maxMs?: number; now?: () => number }
 
 // hash: sha256 of the cookie. secretHash: sha256 of the session secret the
@@ -42,6 +51,10 @@ const randomB64 = (bytes: number) => Buffer.from(crypto.getRandomValues(new Uint
 const sha256Hex = (s: string) => new Bun.CryptoHasher("sha256").update(s).digest("hex")
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v)
 const sameHash = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b))
+const view = (s: PortalSession): PortalSession => ({
+  id: s.id, user: s.user, created: s.created, lastSeen: s.lastSeen, amr: s.amr, pamAt: s.pamAt,
+  authAt: s.authAt, authMethod: s.authMethod, freshFor: s.freshFor, enrollSeq: s.enrollSeq,
+})
 const clip = (v: unknown) => typeof v === "string" ? v.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, MAX_META_LENGTH) : ""
 
 export class PortalSessions {
@@ -70,7 +83,7 @@ export class PortalSessions {
     const now = this.now()
     const cookie = randomB64(32)
     const secret = randomB64(32)
-    const s: Stored = { id: randomB64(18), user, created: now, lastSeen: now, amr, pamAt: amr === "pam" ? now : null, hash: sha256Hex(cookie), secretHash: sha256Hex(secret), ip: clip(meta.ip), ua: clip(meta.ua), savedLastSeen: now }
+    const s: Stored = { id: randomB64(18), user, created: now, lastSeen: now, amr, pamAt: amr === "pam" ? now : null, authAt: now, authMethod: amr, freshFor: null, enrollSeq: 0, hash: sha256Hex(cookie), secretHash: sha256Hex(secret), ip: clip(meta.ip), ua: clip(meta.ua), savedLastSeen: now }
     this.byHash.set(s.hash, s)
     // Oldest first: Maps keep insertion order. Per user, so one account can't push everyone else out.
     let mine = 0
@@ -102,21 +115,74 @@ export class PortalSessions {
     }
     s.lastSeen = Math.max(s.lastSeen, now)
     if (s.lastSeen - s.savedLastSeen >= SLIDE_PERSIST_MS) this.save()
-    return { id: s.id, user: s.user, created: s.created, lastSeen: s.lastSeen, amr: s.amr, pamAt: s.pamAt }
+    return view(s)
   }
 
   /**
    * The password was just checked again for this session (POST /auth/reauth):
    * pamAt = now, saved. Returns it, or null when there is no such live session.
    */
-  markPam(id: string): number | null {
+  markPam(id: string, freshFor: string | null = null): number | null {
+    return this.markAuth(id, "pam", freshFor)
+  }
+
+  /**
+   * The user just authenticated again in this session (password or passkey):
+   * authAt = now, authMethod, and the parked request it was for (freshFor, a
+   * freshKey) or null. A password also sets pamAt. Returns now, or null when
+   * there is no such live session.
+   */
+  markAuth(id: string, method: SessionAmr, freshFor: string | null = null): number | null {
+    if (method !== "pam" && method !== "passkey") throw new Error("invalid amr")
+    if (freshFor !== null && !FRESH_KEY_RE.test(freshFor)) throw new Error("invalid fresh key")
     const now = this.now()
     for (const s of this.byHash.values()) {
       if (s.id !== id) continue
       if (this.expired(s, now)) return null
-      s.pamAt = now
+      if (method === "pam") s.pamAt = now
+      s.authAt = now
+      s.authMethod = method
+      s.freshFor = freshFor
       this.save()
       return now
+    }
+    return null
+  }
+
+  /** A passkey was added in this session: every enroll stamp made before is void. Returns the new value, or null. */
+  bumpEnroll(id: string): number | null {
+    const now = this.now()
+    for (const s of this.byHash.values()) {
+      if (s.id !== id) continue
+      if (this.expired(s, now)) return null
+      s.enrollSeq += 1
+      this.save()
+      return s.enrollSeq
+    }
+    return null
+  }
+
+  /** A fresh authentication is used up by the sign-in it was for. */
+  clearFresh(id: string): void {
+    for (const s of this.byHash.values()) {
+      if (s.id !== id || s.freshFor === null) continue
+      s.freshFor = null
+      this.save()
+      return
+    }
+  }
+
+  /**
+   * A live session by its id, without sliding it (the candy host re-checks the
+   * portal login a passkey enrollment came from). null when gone or expired.
+   */
+  byId(id: string): PortalSession | null {
+    if (typeof id !== "string" || !id) return null
+    const now = this.now()
+    for (const s of this.byHash.values()) {
+      if (s.id !== id) continue
+      if (this.expired(s, now)) return null
+      return view(s)
     }
     return null
   }
@@ -156,7 +222,7 @@ export class PortalSessions {
   }
 
   list(): (PortalSession & { ip: string; ua: string })[] {
-    return [...this.byHash.values()].map(({ id, user, created, lastSeen, amr, pamAt, ip, ua }) => ({ id, user, created, lastSeen, amr, pamAt, ip, ua }))
+    return [...this.byHash.values()].map(s => ({ ...view(s), ip: s.ip, ua: s.ua }))
   }
 
   get size(): number { return this.byHash.size }
@@ -199,7 +265,15 @@ export class PortalSessions {
         else if (finite(r.pamAt) && r.pamAt >= r.created && r.pamAt <= now + CLOCK_SKEW_MS) pamAt = r.pamAt
         else continue
       } else continue
-      const s: Stored = { id: r.id, user: r.user, created: r.created, lastSeen: r.lastSeen, amr, pamAt, hash: r.hash, secretHash: r.secretHash, ip: clip(r.ip), ua: clip(r.ua), savedLastSeen: r.lastSeen }
+      // Sessions from before authAt existed: their latest authentication is the password check, else the login
+      let authAt: number, authMethod: SessionAmr, freshFor: string | null = null
+      if (r.authAt === undefined) { authAt = pamAt ?? r.created; authMethod = pamAt !== null ? "pam" : amr }
+      else if (finite(r.authAt) && r.authAt >= r.created && r.authAt <= now + CLOCK_SKEW_MS && (r.authMethod === "pam" || r.authMethod === "passkey")) {
+        authAt = r.authAt; authMethod = r.authMethod
+        if (typeof r.freshFor === "string" && FRESH_KEY_RE.test(r.freshFor)) freshFor = r.freshFor
+      } else continue
+      const enrollSeq = Number.isSafeInteger(r.enrollSeq) && (r.enrollSeq as number) >= 0 ? r.enrollSeq as number : 0
+      const s: Stored = { id: r.id, user: r.user, created: r.created, lastSeen: r.lastSeen, amr, pamAt, authAt, authMethod, freshFor, enrollSeq, hash: r.hash, secretHash: r.secretHash, ip: clip(r.ip), ua: clip(r.ua), savedLastSeen: r.lastSeen }
       if (this.expired(s, now)) continue
       ids.add(s.id)
       this.byHash.set(s.hash, s)
@@ -211,7 +285,7 @@ export class PortalSessions {
     if (!this.file) return
     const sessions = [...this.byHash.values()].map(s => {
       s.savedLastSeen = s.lastSeen
-      return { id: s.id, hash: s.hash, secretHash: s.secretHash, user: s.user, created: s.created, lastSeen: s.lastSeen, amr: s.amr, pamAt: s.pamAt, ip: s.ip, ua: s.ua }
+      return { id: s.id, hash: s.hash, secretHash: s.secretHash, user: s.user, created: s.created, lastSeen: s.lastSeen, amr: s.amr, pamAt: s.pamAt, authAt: s.authAt, authMethod: s.authMethod, freshFor: s.freshFor, enrollSeq: s.enrollSeq, ip: s.ip, ua: s.ua }
     })
     const tmp = `${this.file}.${process.pid}.${randomB64(6)}.tmp`
     try {

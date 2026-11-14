@@ -1,5 +1,6 @@
 // End to end: "Sign in with candy" and passkeys, through the real route
-// handlers (app-auth-routes.ts) with real stores, real keys, the real SDK
+// handlers (app-auth-routes.ts, and candy-host.ts for candy's own host, where
+// every passkey ceremony runs) with real stores, real keys, the real SDK
 // (sdk-auth.ts) and a software authenticator doing real ES256.
 //
 // daemon.ts can't be imported (it starts the daemon), so its part is played by
@@ -13,7 +14,11 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AppKeyStore, ConsentStore, PendingRequests, AUTHZ_BAD_RETURN, AUTHZ_CHANGED, AUTHZ_EXPIRED, AUTHZ_NOT_SITE, type SiteLookup } from "../app-auth.ts"
-import { APP_AUTH_ROUTES, createAuthRoutes, MAX_AUTH_BODY_BYTES, readJsonBody, type AuthRouteContext } from "../app-auth-routes.ts"
+import { APP_AUTH_ROUTES, createAuthRoutes, MAX_AUTH_BODY_BYTES, PASSKEY_FINISH_PATH, readJsonBody, type AuthRouteContext } from "../app-auth-routes.ts"
+import {
+  createCandyHost, fromCandyHost, PasskeyTickets, CANDY_HOST_ROUTES, CEREMONY_COOKIE, CODE_FIELD, ENROLL_SESSION_GONE,
+  PASSKEY_BIND_COOKIE, PASSKEYS_NEED_DOMAIN, STAMP_EXPIRED, STAMP_PARAM,
+} from "../candy-host.ts"
 import { openClaims, parseKeyRing } from "../jwe.ts"
 import { ChallengeStore, PasskeyStore, PASSKEY_FAILED, PASSKEY_NEEDS_PASSWORD, type PasskeyDeps } from "../passkey-store.ts"
 import {
@@ -138,6 +143,11 @@ let uids: Map<string, number>
 let accountDenied: Set<string>
 const PORTALS = new Set(["portal.localhost", "portal.candy"])
 const isPortal = (h: string) => PORTALS.has(h)
+// candy.<zone>: the passkey rpId and ceremony host (candyHost() in daemon.ts)
+const CANDY = "candy.example.com"
+const CANDY_ORIGIN = `https://${CANDY}`
+let candyOn = true
+const candyHost = () => candyOn ? CANDY : null
 
 let dir: string
 let loginUsers: string[]
@@ -154,6 +164,8 @@ let sessions: PortalSessions
 let pageTokens: PageTokens
 let passkeyDeps: PasskeyDeps
 let routes: ReturnType<typeof createAuthRoutes>
+let tickets: PasskeyTickets
+let candyRoutes: ReturnType<typeof createCandyHost>
 let clock: { now: number }
 
 const siteLookup: SiteLookup = {
@@ -210,9 +222,21 @@ beforeEach(() => {
     now,
     sleep: async () => {},
   }
+  candyOn = true
+  SUPERUSERS.clear(); SUPERUSERS.add("ashwin")
+  tickets = new PasskeyTickets({ now })
+  candyRoutes = createCandyHost({
+    host: candyHost, tickets, passkeys: passkeyDeps, isPortalHost: isPortal,
+    session: id => sessions.byId(id),
+    enrolled: id => { sessions.bumpEnroll(id) },
+    addressWait: async ip => lockedIps.get(ip) ?? 0,
+    page: () => Bun.file(join(root, "public", "passkey-host.html")).text(),
+    audit: (a, d) => { audits.push([a, d]) },
+    now,
+  })
   const deps = loginDeps()
   routes = createAuthRoutes({
-    appKeys, consents, pending, passkeys: passkeyDeps, sessions, pageTokens, site: siteLookup,
+    appKeys, consents, pending, passkeys: passkeyDeps, candyHost, tickets, sessions, pageTokens, site: siteLookup,
     mayUse: (auth, name) => !!auth && (auth.superuser || owners.get(name) === auth.user),
     passwordLogin: input => attemptLogin(deps, input),
     addressWait: async ip => lockedIps.get(ip) ?? 0,
@@ -244,12 +268,17 @@ const requestAuthOf = (req: Request, portalHost: boolean): RequestAuth | null =>
   const s = sessions.get(readSessionCookie(req.headers.get("cookie")), req.headers.get(SESSION_HEADER))
   if (!s || !loginUsers.includes(s.user)) return null
   // As daemon.ts requestAuth: a sudoer is a superuser however the login was made
-  return { user: s.user, superuser: SUPERUSERS.has(s.user), via: "portal", sessionId: s.id, amr: s.amr, pamAt: s.pamAt, sessionCreated: s.created }
+  return {
+    user: s.user, superuser: SUPERUSERS.has(s.user), via: "portal", sessionId: s.id, amr: s.amr, pamAt: s.pamAt, sessionCreated: s.created,
+    authAt: s.authAt, authMethod: s.authMethod, freshFor: s.freshFor,
+  }
 }
 
 const daemon = async (req: Request, ip = "127.0.0.1"): Promise<Response> => {
   const url = new URL(req.url)
   const host = (req.headers.get("host") || "").toLowerCase().replace(/:443$/, "")
+  // candy's own host: before anything else, by Host, never falling through (as controlFetch does)
+  if (host === CANDY) return candyOn ? candyRoutes.handle(req, url, { ip }) : new Response("Not found", { status: 404 })
   const portalHost = isPortal(host)
   if (portalHost && PORTAL_PAGES.has(url.pathname) && !req.headers.get(SESSION_HEADER) && wantsHtml(req.method, req.headers.get("accept"))) {
     return new Response("<!doctype html><title>shell</title>", { headers: { "Content-Type": "text/html", "X-Test": "shell" } })
@@ -264,7 +293,8 @@ const daemon = async (req: Request, ip = "127.0.0.1"): Promise<Response> => {
     return Response.json({ error: verdict.error }, { status: verdict.status, headers: verdict.status === 401 ? { "X-Candy-Login": "required" } : {} })
   }
   if (portalHost && req.method !== "GET" && req.method !== "HEAD") {
-    if (!sameOrigin(req.headers, isPortal)) return Response.json({ error: "Cross-site request refused." }, { status: 403 })
+    const fromOwnHost = url.pathname === PASSKEY_FINISH_PATH && fromCandyHost(req.headers, candyHost())
+    if (!fromOwnHost && !sameOrigin(req.headers, isPortal)) return Response.json({ error: "Cross-site request refused." }, { status: 403 })
     if (auth?.via === "portal" && !TOKENLESS_ROUTES.has(url.pathname) && !pageTokens.consume(req.headers.get("X-Candy-Token"), auth.sessionId)) {
       return Response.json({ error: "Invalid or expired token. Refresh required." }, { status: 401 })
     }
@@ -278,12 +308,13 @@ const daemon = async (req: Request, ip = "127.0.0.1"): Promise<Response> => {
 // ---------------------------------------------------------------------------
 // Apps on candy, using the real SDK
 
-const logins: { site: string; user: string; amr: string[] }[] = []
+const logins: { site: string; user: string; amr: string[]; superuser?: boolean; authTime?: number }[] = []
 const appClock = { offset: 0 }
 const makeApp = (site: string, keyOf: string): AppAuth => createAppAuth({
   site,
   env: {},
-  now: () => Date.now() + appClock.offset,
+  // The apps' clock is the machine's (the portal's test clock), plus an offset for skew tests
+  now: () => clock.now + appClock.offset,
   // The SDK's daemon fetch: the owner's API key, through the daemon's /sdk/auth/keys
   fetchKeys: async s => {
     const res = await daemon(new Request("http://localhost:9999/sdk/auth/keys", {
@@ -304,11 +335,13 @@ const appServer = async (req: Request): Promise<Response> => {
   const site = hosts.get(host)
   const auth = site ? apps.get(site) : undefined
   if (!auth) return new Response("no such app", { status: 404 })
+  // Tests ask for a freshness demand with ?want_max_age= on the app's login path
+  const wanted = new URL(req.url).searchParams.get("want_max_age")
   const r = await auth.handle(req, u => {
-    logins.push({ site: auth.site, user: u.user, amr: u.amr })
+    logins.push({ site: auth.site, user: u.user, amr: u.amr, superuser: u.superuser, authTime: u.authTime })
     // A fresh app session id on every login
     return redirectAfterLogin(u.next, `sid=${crypto.randomUUID()}; Path=/; Secure; HttpOnly; SameSite=Lax`)
-  })
+  }, wanted !== null ? { maxAge: Number(wanted) } : {})
   return r ?? new Response(`${site} home`)
 }
 
@@ -333,7 +366,7 @@ class Browser {
     if (init.json !== undefined) { headers["content-type"] = "application/json"; body = JSON.stringify(init.json) }
     if (init.form) { headers["content-type"] = "application/x-www-form-urlencoded"; body = new URLSearchParams(init.form).toString() }
     const req = new Request(url, { method: init.method ?? (body ? "POST" : "GET"), headers, body })
-    const res = isPortal(host) ? await daemon(req, this.ip) : await appServer(req)
+    const res = isPortal(host) || host === CANDY ? await daemon(req, this.ip) : await appServer(req)
     for (const sc of res.headers.getSetCookie()) {
       const [pair, ...attrs] = sc.split(";")
       const i = pair.indexOf("=")
@@ -378,8 +411,8 @@ class Browser {
 }
 
 /** The whole delegated flow up to the consent page. Returns the parked request id. */
-const startAppLogin = async (b: Browser, appHost = "notes.localhost", next = "/x"): Promise<{ authorize: string; request: string }> => {
-  const start = await b.fetch(`https://${appHost}${LOGIN_PATH}?next=${encodeURIComponent(next)}`)
+const startAppLogin = async (b: Browser, appHost = "notes.localhost", next = "/x", maxAge?: number): Promise<{ authorize: string; request: string }> => {
+  const start = await b.fetch(`https://${appHost}${LOGIN_PATH}?next=${encodeURIComponent(next)}${maxAge !== undefined ? `&want_max_age=${maxAge}` : ""}`)
   expect(start.status).toBe(302)
   const authorize = start.headers.get("location")!
   const az = await b.fetch(authorize)
@@ -417,16 +450,18 @@ describe("the daemon dispatches every route in this module", () => {
   it("classes: authorize and passkey login public, the rest need a login", () => {
     const cls = (m: string, p: string) => classifyRoute(ROUTE_TABLE, m, p)
     expect(cls("GET", "/app-auth/authorize")).toBe("public")
-    expect(cls("POST", "/auth/passkey/options")).toBe("public")
-    expect(cls("POST", "/auth/passkey")).toBe("public")
-    for (const [m, p] of [["GET", "/app-auth/consent"], ["POST", "/app-auth/decision"], ["POST", "/app-auth/rotate"], ["POST", "/sdk/auth/keys"],
-      ["POST", "/auth/reauth"], ["GET", "/passkeys"], ["POST", "/passkeys/register/options"], ["POST", "/passkeys/register"], ["POST", "/passkeys/delete"]]) {
+    expect(cls("GET", "/auth/passkey/start")).toBe("public")
+    expect(cls("POST", "/auth/passkey/finish")).toBe("public")
+    // The old per-portal-host ceremony routes are gone
+    for (const [m, p] of [["POST", "/auth/passkey/options"], ["POST", "/auth/passkey"], ["POST", "/passkeys/register/options"], ["POST", "/passkeys/register"]]) expect(cls(m, p)).toBeNull()
+    for (const [m, p] of [["GET", "/app-auth/consent"], ["POST", "/app-auth/decision"], ["POST", "/app-auth/fresh"], ["POST", "/app-auth/rotate"], ["POST", "/sdk/auth/keys"],
+      ["POST", "/auth/reauth"], ["GET", "/passkeys"], ["POST", "/passkeys/enroll/start"], ["POST", "/passkeys/delete"]]) {
       expect(cls(m, p)).toBe("user")
     }
     // A GET never mints a token
     expect(cls("GET", "/app-auth/decision")).toBeNull()
     expect(PORTAL_PAGES.has("/app-auth/consent") && PORTAL_PAGES.has("/passkeys")).toBe(true)
-    expect([...TOKENLESS_ROUTES].filter(p => p.includes("passkey") || p.includes("app-auth")).sort()).toEqual(["/auth/passkey", "/auth/passkey/options"])
+    expect([...TOKENLESS_ROUTES].filter(p => p.includes("passkey") || p.includes("app-auth")).sort()).toEqual(["/auth/passkey/finish"])
   })
 })
 
@@ -457,14 +492,14 @@ describe("delegated login (PAM session)", () => {
     const back = await b.submitForm(body)
     expect(back.status).toBe(303)
     expect(back.headers.get("location")).toBe("/x")
-    expect(logins).toEqual([{ site: "notes", user: "ashwin", amr: ["pam"] }])
+    expect(logins).toMatchObject([{ site: "notes", user: "ashwin", amr: ["pam"], superuser: true }])
     // The state cookie is gone, the app's own session is set
     expect(b.jar.get("notes.localhost")?.has(STATE_COOKIE)).toBe(false)
     expect(b.jar.get("notes.localhost")?.has("sid")).toBe(true)
 
     // Audited without the token, the key or the state
     const grant = audits.find(([a]) => a === "APP_AUTH_GRANT")!
-    expect(grant[1]).toContain("ashwin -> notes at notes.localhost (pam)")
+    expect(grant[1]).toContain("ashwin -> notes at notes.localhost (pam, superuser)")
     const all = JSON.stringify(audits)
     expect(all).not.toContain(body.fields.candy_token)
     expect(all).not.toContain(body.fields.state)
@@ -741,171 +776,566 @@ describe("site keys: fetch and rotation", () => {
   })
 })
 
-describe("passkeys", () => {
-  const passkeyLogin = async (b: Browser, auth: SoftAuthenticator, portal = "portal.localhost", opt: Parameters<SoftAuthenticator["get"]>[2] = {}) => {
-    const o = await b.fetch(`https://${portal}/auth/passkey/options`, { method: "POST", json: {}, origin: `https://${portal}` })
-    if (o.status !== 200) return o
-    const { challengeId, publicKey } = await o.json() as any
-    const credential = await auth.get(publicKey, `https://${portal}`, opt)
-    const res = await b.fetch(`https://${portal}/auth/passkey`, { method: "POST", json: { challengeId, credential }, origin: `https://${portal}` })
-    if (res.ok) {
-      const body = await res.clone().json() as any
-      b.secret.set(portal, body.session)   // what the login page does
-    }
-    return res
-  }
+// ---------------------------------------------------------------------------
+// Passkey ceremonies, the way the pages drive them: the portal sends the
+// browser to candy's own host with a stamp, the ceremony runs there, and a
+// login comes back to the portal as a form POST with a one-time code
 
-  const register = async (b: Browser, auth: SoftAuthenticator, portal = "portal.localhost", name = "Laptop") => {
-    const page = await b.page(`https://${portal}/passkeys`)
-    const opts = await b.post(portal, "/passkeys/register/options", page.token, {})
-    if (opts.status !== 200) return { opts, res: null as Response | null, token: page.token }
-    const { challengeId, publicKey } = await opts.json() as any
-    const token = pageTokens.refresh(page.token, sessions.get(b.jar.get(portal)!.get("candy_portal"), b.secret.get(portal))!.id)
-    const credential = await auth.create(publicKey, `https://${portal}`)
-    const res = await b.post(portal, "/passkeys/register", token, { challengeId, credential, name })
-    return { opts, res, token }
-  }
+interface Step { status: number; res: Response; stage: "start" | "page" | "options" | "verify" | "finish"; stamp?: string; post?: { action: string; fields: Record<string, string> } }
+interface PkOpts { portal?: string; next?: string; use?: SoftCredential; step?: number; asOrigin?: string; asRpId?: string; stopAt?: "verify" }
 
-  it("register after a password login, then log in with it and sign in to an app (amr passkey)", async () => {
+const candyPost = (b: Browser, path: string, json: unknown) => b.fetch(`${CANDY_ORIGIN}${path}`, { method: "POST", json, origin: CANDY_ORIGIN })
+
+/** The login page's "Use a passkey", the candy host's page, and the form POST back. */
+const passkeyLogin = async (b: Browser, auth: SoftAuthenticator, o: PkOpts = {}): Promise<Step> => {
+  const portal = o.portal ?? "portal.localhost"
+  const start = await b.fetch(`https://${portal}/auth/passkey/start?next=${encodeURIComponent(o.next ?? "/")}`)
+  if (start.status !== 302) return { status: start.status, res: start, stage: "start" }
+  return passkeyCeremony(b, auth, start.headers.get("location")!, { ...o, portal })
+}
+
+/** From the candy-host URL on: page, options, the authenticator, verify, the form POST to the portal. */
+const passkeyCeremony = async (b: Browser, auth: SoftAuthenticator, href: string, o: PkOpts & { portal: string }): Promise<Step> => {
+  const loc = new URL(href)
+  expect(loc.origin).toBe(CANDY_ORIGIN)
+  const stamp = loc.searchParams.get(STAMP_PARAM)!
+  const page = await b.fetch(loc.href, { html: true })
+  if (page.status !== 200) return { status: page.status, res: page, stage: "page", stamp }
+  const opts = await candyPost(b, "/passkey/login/options", { stamp })
+  if (opts.status !== 200) return { status: opts.status, res: opts, stage: "options", stamp }
+  const { challengeId, publicKey } = await opts.json() as any
+  const credential = await auth.get(publicKey, o.asOrigin ?? CANDY_ORIGIN, { use: o.use, step: o.step, asRpId: o.asRpId })
+  const verify = await candyPost(b, "/passkey/login/verify", { stamp, challengeId, credential })
+  if (verify.status !== 200 || o.stopAt === "verify") return { status: verify.status, res: verify, stage: "verify", stamp }
+  const post = await verify.json() as { action: string; fields: Record<string, string> }
+  const finish = await b.fetch(post.action, { method: "POST", form: post.fields, origin: CANDY_ORIGIN })
+  if (finish.status === 200) {
+    // What the finish page's script does: the secret into this origin's storage
+    const m = (await finish.clone().text()).match(/var s=("[^"]*")/)
+    if (m) b.secret.set(o.portal, JSON.parse(m[1]))
+  }
+  return { status: finish.status, res: finish, stage: "finish", stamp, post }
+}
+
+/** The passkeys page's "Add a passkey": enroll/start, then the popup on the candy host. */
+const enroll = async (b: Browser, auth: SoftAuthenticator, o: { portal?: string; name?: string; origin?: string; rpId?: string } = {}): Promise<Step> => {
+  const portal = o.portal ?? "portal.localhost"
+  const page = await b.page(`https://${portal}/passkeys`)
+  const start = await b.post(portal, "/passkeys/enroll/start", page.token, { name: o.name ?? "Laptop" })
+  if (start.status !== 200) return { status: start.status, res: start, stage: "start" }
+  const { url, origin } = await start.json() as any
+  expect(origin).toBe(CANDY_ORIGIN)
+  const stamp = new URL(url).searchParams.get(STAMP_PARAM)!
+  const pg = await b.fetch(url, { html: true })
+  if (pg.status !== 200) return { status: pg.status, res: pg, stage: "page", stamp }
+  const opts = await candyPost(b, "/passkey/enroll/options", { stamp })
+  if (opts.status !== 200) return { status: opts.status, res: opts, stage: "options", stamp }
+  const { challengeId, publicKey } = await opts.json() as any
+  const pk = o.rpId ? { ...publicKey, rp: { ...publicKey.rp, id: o.rpId } } : publicKey
+  const credential = await auth.create(pk, o.origin ?? CANDY_ORIGIN)
+  const verify = await candyPost(b, "/passkey/enroll/verify", { stamp, challengeId, credential })
+  return { status: verify.status, res: verify, stage: "verify", stamp }
+}
+
+/** A browser logged in with the password that has enrolled one passkey (rpId: the candy host). */
+const enrolled = async (user = "claude"): Promise<{ b: Browser; auth: SoftAuthenticator }> => {
+  const b = new Browser()
+  b.pamLogin(user)
+  const auth = new SoftAuthenticator()
+  const e = await enroll(b, auth)
+  expect(e.status).toBe(200)
+  return { b, auth }
+}
+
+describe("passkeys on the candy host", () => {
+  it("enroll in a popup on the candy host after a password login, log in with it in a new browser, sign in to an app (amr passkey)", async () => {
     const auth = new SoftAuthenticator()
     const b = new Browser()
     b.pamLogin("claude")
     const page = await b.page("https://portal.localhost/passkeys")
-    expect(page.vars).toMatchObject({ user: "claude", rpId: "portal.localhost" })
+    expect(page.vars).toMatchObject({ user: "claude", candyHost: CANDY })
     expect(page.vars.pamUntil).toBeGreaterThan(Date.now())
-    const { res } = await register(b, auth)
-    expect(res!.status).toBe(200)
-    const added = (await res!.json() as any).passkey
-    expect(added).toMatchObject({ name: "Laptop", rpId: "portal.localhost", here: true, alg: "ES256" })
-    expect(audits.some(([a, x]) => a === "PASSKEY_ADD" && x.includes("claude"))).toBe(true)
+    const e = await enroll(b, auth, { name: "Laptop" })
+    expect(e.status).toBe(200)
+    expect(await e.res.json()).toEqual({ added: true, name: "Laptop" })
+    const [rec] = passkeyDeps.store.list("claude")
+    expect(rec).toMatchObject({ rpId: CANDY, name: "Laptop" })
+    expect(audits.some(([a, x]) => a === "PASSKEY_ADD" && x.includes("claude") && x.includes(CANDY))).toBe(true)
+    // The candy host got its own claim cookie, and nothing of the portal's
+    expect(b.jar.get(CANDY)?.has(CEREMONY_COOKIE)).toBe(true)
+    expect(b.jar.get(CANDY)?.has("candy_portal")).toBe(false)
 
     // A new browser logs in with the passkey alone
     const fresh = new Browser()
-    const login = await passkeyLogin(fresh, auth)
+    const login = await passkeyLogin(fresh, auth, { next: "/passkeys" })
+    expect(login.stage).toBe("finish")
     expect(login.status).toBe(200)
-    const body = await login.json() as any
-    expect(body).toMatchObject({ user: "claude", superuser: false })
-    expect(login.headers.get("set-cookie")).toContain("candy_portal=")
-    expect(fresh.jar.get("portal.localhost")?.has("candy_portal")).toBe(true)
-    const s = sessions.get(fresh.jar.get("portal.localhost")!.get("candy_portal"), body.session)!
-    expect(s).toMatchObject({ user: "claude", amr: "passkey", pamAt: null })
+    expect(login.post!.action).toBe(`https://portal.localhost${PASSKEY_FINISH_PATH}`)
+    expect(Object.keys(login.post!.fields)).toEqual([CODE_FIELD])
+    const html = await login.res.text()
+    // The secret reaches the portal origin's storage through the page, never a URL; then on to next
+    expect(html).toContain("localStorage.setItem('candy_session'")
+    expect(html).toContain(`n="/passkeys"`)
+    expect(login.res.headers.get("cache-control")).toBe("no-store")
+    expect(login.res.headers.get("content-security-policy")).toContain("script-src 'nonce-")
+    const s = sessions.get(fresh.jar.get("portal.localhost")!.get("candy_portal"), fresh.secret.get("portal.localhost"))!
+    expect(s).toMatchObject({ user: "claude", amr: "passkey", pamAt: null, authMethod: "passkey" })
     expect(audits.some(([a, x]) => a === "AUTH_LOGIN" && x.includes("(passkey Laptop)"))).toBe(true)
+    // The binding cookie is used up
+    expect(fresh.jar.get("portal.localhost")?.has(PASSKEY_BIND_COOKIE)).toBe(false)
 
     // ...and signs in to an app: the token says passkey
     const { request } = await startAppLogin(fresh)
     const d = await decide(fresh, request)
     expect(d.page.vars.amr).toBe("passkey")
     expect((await fresh.submitForm(d.body)).status).toBe(303)
-    expect(logins.at(-1)).toEqual({ site: "notes", user: "claude", amr: ["passkey"] })
+    expect(logins.at(-1)).toMatchObject({ site: "notes", user: "claude", amr: ["passkey"], superuser: false })
 
-    // The list, from the portal and from the CLI's API key
+    // The list, from the portal and from the CLI's API key, never with key material
     const listed = await fresh.fetch("https://portal.localhost/passkeys/list", { withSecret: true })
-    expect((await listed.json() as any).passkeys.map((p: any) => p.name)).toEqual(["Laptop"])
+    expect((await listed.json() as any).passkeys).toMatchObject([{ name: "Laptop", rpId: CANDY, here: true }])
     const cli = await daemon(new Request("http://localhost:9999/passkeys/list", { headers: { host: "localhost:9999", "X-Candy-API-Key": "key-claude" } }))
-    expect((await cli.json() as any).passkeys[0]).toMatchObject({ name: "Laptop", here: false })
-    // Never key material in the list
-    expect(JSON.stringify(await (await daemon(new Request("http://localhost:9999/passkeys/list", { headers: { host: "localhost:9999", "X-Candy-API-Key": "key-claude" } }))).json())).not.toContain("publicKey")
+    const body = await cli.json() as any
+    expect(body.passkeys[0]).toMatchObject({ name: "Laptop", here: true })
+    expect(JSON.stringify(body)).not.toContain("publicKey")
+  })
+
+  it("the same passkey works from every portal host: the rpId is always the candy host", async () => {
+    const { auth } = await enrolled()
+    const viaCandy = new Browser()
+    const r = await passkeyLogin(viaCandy, auth, { portal: "portal.candy" })
+    expect(r.status).toBe(200)
+    expect(r.post!.action).toBe(`https://portal.candy${PASSKEY_FINISH_PATH}`)
+    expect(viaCandy.jar.get("portal.candy")?.has("candy_portal")).toBe(true)
   })
 
   it("a passkey session can't add or delete passkeys until the password is entered again", async () => {
-    const auth = new SoftAuthenticator()
-    const b = new Browser()
-    b.pamLogin("claude")
-    expect((await register(b, auth)).res!.status).toBe(200)
+    const { auth } = await enrolled()
     const viaKey = new Browser()
     expect((await passkeyLogin(viaKey, auth)).status).toBe(200)
-
     expect((await viaKey.page("https://portal.localhost/passkeys")).vars.pamUntil).toBeNull()
-    const refused = await register(viaKey, new SoftAuthenticator())
-    expect(refused.opts.status).toBe(403)
-    expect(await refused.opts.json()).toEqual({ error: PASSKEY_NEEDS_PASSWORD, reauth: true })
+    const refused = await enroll(viaKey, new SoftAuthenticator())
+    expect(refused.stage).toBe("start")
+    expect(refused.status).toBe(403)
+    expect(await refused.res.json()).toEqual({ error: PASSKEY_NEEDS_PASSWORD, reauth: true })
     const id = passkeyDeps.store.list("claude")[0].id
-    const del = await viaKey.post("portal.localhost", "/passkeys/delete", (await viaKey.page("https://portal.localhost/passkeys")).token, { id })
-    expect(del.status).toBe(403)
+    expect((await viaKey.post("portal.localhost", "/passkeys/delete", (await viaKey.page("https://portal.localhost/passkeys")).token, { id })).status).toBe(403)
 
-    // Reauth: a wrong password is refused like a login; the right one opens the window
-    const wrong = await viaKey.post("portal.localhost", "/auth/reauth", (await viaKey.page("https://portal.localhost/passkeys")).token, { password: "nope", user: "ashwin" })
-    expect(wrong.status).toBe(401)
-    // The body's user is ignored: ashwin's password doesn't work for claude's session
-    const other = await viaKey.post("portal.localhost", "/auth/reauth", (await viaKey.page("https://portal.localhost/passkeys")).token, { password: PASSWORDS.ashwin, user: "ashwin" })
-    expect(other.status).toBe(401)
+    // Reauth: a wrong password is refused like a login; the body's user is ignored; the right one opens the window
+    expect((await viaKey.post("portal.localhost", "/auth/reauth", (await viaKey.page("https://portal.localhost/passkeys")).token, { password: "nope", user: "ashwin" })).status).toBe(401)
+    expect((await viaKey.post("portal.localhost", "/auth/reauth", (await viaKey.page("https://portal.localhost/passkeys")).token, { password: PASSWORDS.ashwin, user: "ashwin" })).status).toBe(401)
     const ok = await viaKey.post("portal.localhost", "/auth/reauth", (await viaKey.page("https://portal.localhost/passkeys")).token, { password: PASSWORDS.claude })
     expect(ok.status).toBe(200)
     expect((await ok.json() as any).pamUntil).toBeGreaterThan(Date.now())
     expect(audits.some(([a]) => a === "AUTH_REAUTH")).toBe(true)
-    expect((await register(viaKey, new SoftAuthenticator(), "portal.localhost", "Phone")).res!.status).toBe(200)
+    expect((await enroll(viaKey, new SoftAuthenticator(), { name: "Phone" })).status).toBe(200)
 
     // Delete: theirs only (another user's is a 404, not a 403)
     const mallory = new Browser()
     mallory.pamLogin("mallory")
-    const notTheirs = await mallory.post("portal.localhost", "/passkeys/delete", (await mallory.page("https://portal.localhost/passkeys")).token, { id })
-    expect(notTheirs.status).toBe(404)
+    expect((await mallory.post("portal.localhost", "/passkeys/delete", (await mallory.page("https://portal.localhost/passkeys")).token, { id })).status).toBe(404)
     const gone = await viaKey.post("portal.localhost", "/passkeys/delete", (await viaKey.page("https://portal.localhost/passkeys")).token, { id })
     expect(await gone.json()).toEqual({ deleted: true })
-    expect(audits.some(([a]) => a === "PASSKEY_DELETE")).toBe(true)
-    // A deleted passkey logs in no one
-    expect((await passkeyLogin(new Browser(), auth, "portal.localhost", { use: auth.creds[0] })).status).toBe(401)
+    expect((await passkeyLogin(new Browser(), auth, { use: auth.creds[0] })).status).toBe(401)
   })
 
-  it("refusals: another portal host, a replayed counter, an account that may not log in, a locked-out address", async () => {
-    const auth = new SoftAuthenticator()
-    const b = new Browser()
-    b.pamLogin("claude")
-    expect((await register(b, auth)).res!.status).toBe(200)
-
-    // Registered on portal.localhost, presented on portal.candy
-    const elsewhere = await passkeyLogin(new Browser(), auth, "portal.candy", { asRpId: "portal.localhost" })
-    expect(elsewhere.status).toBe(401)
-    expect(await elsewhere.json()).toEqual({ error: PASSKEY_FAILED })
-
-    // A cloned authenticator: the counter goes backwards
+  it("refusals: a replayed counter, an account that may not log in, a locked-out address", async () => {
+    const { auth } = await enrolled()
     expect((await passkeyLogin(new Browser(), auth)).status).toBe(200)
-    const clone = await passkeyLogin(new Browser(), auth, "portal.localhost", { step: -1 })
-    expect(clone.status).toBe(401)
+    // A cloned authenticator: the counter goes backwards
+    const clone = await passkeyLogin(new Browser(), auth, { step: -1 })
+    expect(clone).toMatchObject({ stage: "verify", status: 401 })
+    expect(await clone.res.json()).toEqual({ error: PASSKEY_FAILED })
     expect(audits.some(([a]) => a === "PASSKEY_COUNTER")).toBe(true)
-
     // The account left the login list
     loginUsers = loginUsers.filter(u => u !== "claude")
     expect((await passkeyLogin(new Browser(), auth)).status).toBe(401)
     loginUsers = [...USERS]
-
-    // An address locked out of password logins is locked out of passkeys too
+    // An address locked out of password logins: no stamp at all, and the candy host refuses too
+    const b = new Browser()
+    const pending = await b.fetch("https://portal.localhost/auth/passkey/start?next=/")
     lockedIps.set("127.0.0.1", 42)
-    const locked = await new Browser().fetch("https://portal.localhost/auth/passkey/options", { method: "POST", json: {}, origin: "https://portal.localhost" })
+    const locked = await b.fetch("https://portal.localhost/auth/passkey/start?next=/")
     expect(locked.status).toBe(429)
-    expect(await locked.json()).toMatchObject({ retryAfter: 42 })
+    expect(locked.headers.get("retry-after")).toBe("42")
+    const page = await b.fetch(pending.headers.get("location")!, { html: true })
+    expect(page.status).toBe(200)
+    const stamp = new URL(pending.headers.get("location")!).searchParams.get(STAMP_PARAM)
+    const opts = await candyPost(b, "/passkey/login/options", { stamp })
+    expect(opts.status).toBe(429)
+    expect(await opts.json()).toMatchObject({ retryAfter: 42 })
     lockedIps.clear()
-
-    // Cross-site: the guard's sameOrigin covers the tokenless passkey routes
-    const cross = await new Browser().fetch("https://portal.localhost/auth/passkey/options", { method: "POST", json: {}, origin: "https://evil.localhost" })
-    expect(cross.status).toBe(403)
-
-    // Passkey failures slow down this address (its own soft lockout)
-    for (let i = 0; i < 5; i++) await new Browser().fetch("https://portal.localhost/auth/passkey", { method: "POST", json: { challengeId: "x", credential: {} }, origin: "https://portal.localhost" })
-    const slowed = await new Browser().fetch("https://portal.localhost/auth/passkey/options", { method: "POST", json: {}, origin: "https://portal.localhost" })
-    expect(slowed.status).toBe(429)
+    // Passkey failures slow this address down (its own soft lockout): the start route says so
+    for (let i = 0; i < 5; i++) await passkeyLogin(new Browser(), auth, { asOrigin: "https://evil.example" })
+    expect((await new Browser().fetch("https://portal.localhost/auth/passkey/start?next=/")).status).toBe(429)
   })
 
-  it("a challenge from one session can't finish another's registration", async () => {
-    const a = new Browser(), m = new Browser()
-    a.pamLogin("claude")
-    m.pamLogin("mallory")
-    const page = await a.page("https://portal.localhost/passkeys")
-    const opts = await (await a.post("portal.localhost", "/passkeys/register/options", page.token, {})).json() as any
-    const credential = await new SoftAuthenticator().create(opts.publicKey, "https://portal.localhost")
-    const res = await m.post("portal.localhost", "/passkeys/register", (await m.page("https://portal.localhost/passkeys")).token, { challengeId: opts.challengeId, credential })
-    expect(res.status).toBe(400)
-    expect(passkeyDeps.store.list("mallory")).toEqual([])
-    expect(passkeyDeps.store.list("claude")).toEqual([])
+  it("an assertion or a registration made for the portal host (the old model) is refused", async () => {
+    const { auth } = await enrolled()
+    // origin = the portal host
+    const o = await passkeyLogin(new Browser(), auth, { asOrigin: "https://portal.localhost" })
+    expect(o).toMatchObject({ stage: "verify", status: 401 })
+    // rpId = the portal host (an authenticator holding a portal.localhost credential)
+    const old = new SoftAuthenticator()
+    const b = new Browser()
+    b.pamLogin("claude")
+    const r = await enroll(b, old, { rpId: "portal.localhost", origin: "https://portal.localhost" })
+    expect(r).toMatchObject({ stage: "verify", status: 400 })
+    expect(passkeyDeps.store.list("claude")).toHaveLength(1)
+    const p = await passkeyLogin(new Browser(), old, { asRpId: "portal.localhost" })
+    expect(p).toMatchObject({ stage: "verify", status: 401 })
   })
 
   it("passkey routes that need a portal login are 404 to an API key", async () => {
-    for (const path of ["/passkeys/register/options", "/passkeys/register", "/passkeys/rename", "/passkeys/delete", "/auth/reauth"]) {
+    for (const path of ["/passkeys/enroll/start", "/passkeys/rename", "/passkeys/delete", "/auth/reauth", "/app-auth/fresh"]) {
       const res = await daemon(new Request(`http://localhost:9999${path}`, {
         method: "POST", headers: { host: "localhost:9999", "X-Candy-API-Key": "key-claude", "content-type": "application/json" }, body: "{}",
       }))
       expect(res.status).toBe(404)
     }
+  })
+
+  it("no bound domain: no passkeys (start, enroll, fresh and the candy host are 404s; the page says why)", async () => {
+    const { b, auth } = await enrolled()
+    candyOn = false
+    expect((await new Browser().fetch("https://portal.localhost/auth/passkey/start?next=/")).status).toBe(404)
+    const e = await enroll(b, new SoftAuthenticator())
+    expect(e).toMatchObject({ stage: "start", status: 404 })
+    expect(await e.res.json()).toEqual({ error: PASSKEYS_NEED_DOMAIN })
+    expect((await b.page("https://portal.localhost/passkeys")).vars.candyHost).toBeNull()
+    expect((await new Browser().fetch(`${CANDY_ORIGIN}/passkey/login?${STAMP_PARAM}=x`, { html: true })).status).toBe(404)
+    // What /login and /auth/users say (daemon.ts): passkeys only with a candy host
+    expect(daemonSrc).toContain("passkeys: candyHost() !== null")
+    expect(daemonSrc).toContain("const passkeysOn = candyHost() !== null")
+    candyOn = true
+    expect((await passkeyLogin(new Browser(), auth)).status).toBe(200)
+  })
+})
+
+describe("the candy host: a stamp or nothing", () => {
+  const headersOfAPortalLogin = (b: Browser) => ({
+    cookie: `candy_portal=${b.jar.get("portal.localhost")!.get("candy_portal")}`,
+    [SESSION_HEADER]: b.secret.get("portal.localhost")!,
+    "X-Candy-API-Key": "key-ashwin",
+  })
+
+  it("without a stamp everything is 404, and no challenge is ever issued", async () => {
+    const b = new Browser()
+    for (const [m, p] of CANDY_HOST_ROUTES) {
+      const res = m === "GET"
+        ? await b.fetch(`${CANDY_ORIGIN}${p}`, { html: true })
+        : await candyPost(b, p, {})
+      expect(res.status).toBe(404)
+      expect(res.headers.get("set-cookie")).toBeNull()
+      expect(res.headers.get("x-frame-options")).toBe("DENY")
+      expect(res.headers.get("cache-control")).toBe("no-store")
+      expect(res.headers.get("content-security-policy")).toContain("frame-ancestors 'none'")
+      expect(JSON.stringify(await res.text())).not.toContain("challenge")
+    }
+    // garbage, empty or two stamps
+    for (const q of [`${STAMP_PARAM}=x`, `${STAMP_PARAM}=`, `${STAMP_PARAM}=a&${STAMP_PARAM}=b`]) {
+      expect((await b.fetch(`${CANDY_ORIGIN}/passkey/login?${q}`, { html: true })).status).toBe(404)
+    }
+  })
+
+  it("anything not in its route table is 404: the portal, the control API, sites, MCP; a portal cookie, API key or session header changes nothing", async () => {
+    const owner = new Browser()
+    owner.pamLogin("ashwin")
+    const paths = ["/", "/login", "/auth/me", "/auth/users", "/auth/login", "/auth/passkey/start", "/auth/passkey/finish", "/configs", "/passkeys", "/passkeys/list",
+      "/app-auth/authorize", "/app-auth/consent", "/sdk/auth/keys", "/mcp", "/.well-known/oauth-authorization-server", "/favicon.svg", "/passkey", "/passkey/login/", "/passkey/login/x", "/candy-auth/check"]
+    for (const path of paths) {
+      for (const method of ["GET", "POST", "DELETE", "OPTIONS"]) {
+        const res = await daemon(new Request(`${CANDY_ORIGIN}${path}`, { method, headers: { host: CANDY, origin: CANDY_ORIGIN, accept: "text/html", ...headersOfAPortalLogin(owner) }, body: method === "POST" ? "{}" : undefined }))
+        expect([path, method, res.status]).toEqual([path, method, 404])
+      }
+    }
+    // A route in the table with the wrong method
+    expect((await daemon(new Request(`${CANDY_ORIGIN}/passkey/login/options`, { headers: { host: CANDY } }))).status).toBe(404)
+    // A POST that isn't from the page itself
+    const { b } = await enrolled()
+    const start = await b.fetch("https://portal.localhost/auth/passkey/start?next=/")
+    const loc = new URL(start.headers.get("location")!)
+    await b.fetch(loc.href, { html: true })
+    const stamp = loc.searchParams.get(STAMP_PARAM)
+    for (const origin of ["https://portal.localhost", "https://evil.example", "null"]) {
+      expect((await b.fetch(`${CANDY_ORIGIN}/passkey/login/options`, { method: "POST", json: { stamp }, origin })).status).toBe(404)
+    }
+    expect((await candyPost(b, "/passkey/login/options", { stamp })).status).toBe(200)
+  })
+
+  it("the ceremony page: strict headers, a nonce'd CSP whose only form target is the stamp's portal, no external resources", async () => {
+    const b = new Browser()
+    const start = await b.fetch("https://portal.localhost/auth/passkey/start?next=/x")
+    expect(start.headers.get("referrer-policy")).toBe("no-referrer")
+    expect(start.headers.get("set-cookie")).toContain(`${PASSKEY_BIND_COOKIE}=`)
+    expect(start.headers.get("set-cookie")).toContain("SameSite=None")
+    const page = await b.fetch(start.headers.get("location")!, { html: true })
+    expect(page.status).toBe(200)
+    const csp = page.headers.get("content-security-policy")!
+    expect(csp).toMatch(/script-src 'nonce-[A-Za-z0-9_-]+'/)
+    expect(csp).toContain("form-action https://portal.localhost;")
+    expect(csp).toContain("connect-src 'self'")
+    expect(csp).toContain("frame-ancestors 'none'")
+    expect(page.headers.get("referrer-policy")).toBe("strict-origin")
+    expect(page.headers.get("x-frame-options")).toBe("DENY")
+    expect(page.headers.get("cache-control")).toBe("no-store")
+    expect(page.headers.get("set-cookie")).toContain(`${CEREMONY_COOKIE}=`)
+    const html = await page.text()
+    expect(html).not.toMatch(/https?:\/\/(fonts|cdn)/)
+    expect(html).not.toMatch(/<(link|script)[^>]+(src|href)="(https?:)?\/\//)
+    expect(html).not.toContain("<script>")   // every script carries the nonce
+    expect(html).toContain("history.replaceState(null, '', location.pathname)")
+    const vars = JSON.parse(html.match(/window\.CANDY_PASSKEY=(.*?);<\/script>/)![1])
+    expect(vars).toEqual({ purpose: "login", state: "ready", fresh: false, candy: CANDY_ORIGIN, portal: "https://portal.localhost", next: "/x", user: null, name: null })
+    // the stamp is never in the page body
+    expect(html).not.toContain(new URL(start.headers.get("location")!).searchParams.get(STAMP_PARAM)!)
+  })
+
+  it("a stamp is single use: after verify, it opens nothing", async () => {
+    const { auth } = await enrolled()
+    const b = new Browser()
+    const r = await passkeyLogin(b, auth, { stopAt: "verify" })
+    expect(r.status).toBe(200)
+    expect((await candyPost(b, "/passkey/login/options", { stamp: r.stamp })).status).toBe(404)
+    const again = await candyPost(b, "/passkey/login/verify", { stamp: r.stamp, challengeId: "x", credential: {} })
+    expect(again.status).toBe(404)
+    expect(await again.json()).toEqual({ error: STAMP_EXPIRED, expired: true })
+    const page = await b.fetch(`${CANDY_ORIGIN}/passkey/login?${STAMP_PARAM}=${r.stamp}`, { html: true })
+    expect(page.status).toBe(404)
+    expect(await page.text()).toContain('"state":"expired"')
+  })
+
+  it("a cancelled prompt can try again with the same stamp (options are not single use)", async () => {
+    const { auth } = await enrolled()
+    const b = new Browser()
+    const start = await b.fetch("https://portal.localhost/auth/passkey/start?next=/")
+    const loc = new URL(start.headers.get("location")!)
+    await b.fetch(loc.href, { html: true })
+    const stamp = loc.searchParams.get(STAMP_PARAM)!
+    expect((await candyPost(b, "/passkey/login/options", { stamp })).status).toBe(200)   // cancelled
+    const o = await candyPost(b, "/passkey/login/options", { stamp })
+    const { challengeId, publicKey } = await o.json() as any
+    const v = await candyPost(b, "/passkey/login/verify", { stamp, challengeId, credential: await auth.get(publicKey, CANDY_ORIGIN) })
+    expect(v.status).toBe(200)
+  })
+
+  it("an expired stamp: the page says so (with the way back), options and verify are 404", async () => {
+    const b = new Browser()
+    const start = await b.fetch("https://portal.localhost/auth/passkey/start?next=/x")
+    const href = start.headers.get("location")!
+    expect((await b.fetch(href, { html: true })).status).toBe(200)
+    clock.now += 5 * 60_000
+    const page = await b.fetch(href, { html: true })
+    expect(page.status).toBe(404)
+    expect(await page.text()).toContain('"state":"expired"')
+    expect((await candyPost(b, "/passkey/login/options", { stamp: new URL(href).searchParams.get(STAMP_PARAM) })).status).toBe(404)
+  })
+
+  it("an enroll stamp doesn't open the login ceremony, and a login stamp doesn't enroll", async () => {
+    const b = new Browser()
+    b.pamLogin("claude")
+    const page = await b.page("https://portal.localhost/passkeys")
+    const { url } = await (await b.post("portal.localhost", "/passkeys/enroll/start", page.token, {})).json() as any
+    const enrollStamp = new URL(url).searchParams.get(STAMP_PARAM)!
+    expect((await b.fetch(`${CANDY_ORIGIN}/passkey/login?${STAMP_PARAM}=${enrollStamp}`, { html: true })).status).toBe(404)
+    expect((await b.fetch(url, { html: true })).status).toBe(200)
+    expect((await candyPost(b, "/passkey/login/options", { stamp: enrollStamp })).status).toBe(404)
+    expect((await candyPost(b, "/passkey/login/verify", { stamp: enrollStamp })).status).toBe(404)
+    // ...and the wrong-purpose tries didn't burn it (checked before anything is used up)
+    expect((await candyPost(b, "/passkey/enroll/options", { stamp: enrollStamp })).status).toBe(200)
+
+    const start = await b.fetch("https://portal.localhost/auth/passkey/start?next=/")
+    const loginStamp = new URL(start.headers.get("location")!).searchParams.get(STAMP_PARAM)!
+    expect((await b.fetch(`${CANDY_ORIGIN}/passkey/enroll?${STAMP_PARAM}=${loginStamp}`, { html: true })).status).toBe(404)
+    expect((await candyPost(b, "/passkey/enroll/options", { stamp: loginStamp })).status).toBe(404)
+  })
+
+  it("a stamp belongs to the browser that opened it first; a copied one is useless elsewhere", async () => {
+    const { auth } = await enrolled()
+    const victim = new Browser()
+    const start = await victim.fetch("https://portal.localhost/auth/passkey/start?next=/")
+    const href = start.headers.get("location")!
+    expect((await victim.fetch(href, { html: true })).status).toBe(200)
+    const thief = new Browser()
+    const page = await thief.fetch(href, { html: true })
+    expect(page.status).toBe(404)
+    expect(await page.text()).toContain('"state":"elsewhere"')
+    const stamp = new URL(href).searchParams.get(STAMP_PARAM)
+    expect((await candyPost(thief, "/passkey/login/options", { stamp })).status).toBe(404)
+    expect((await candyPost(thief, "/passkey/login/verify", { stamp })).status).toBe(404)
+    // ...and the thief's tries didn't burn it
+    const done = await passkeyCeremony(victim, auth, href, { portal: "portal.localhost" })
+    expect(done.status).toBe(200)
+  })
+
+  it("a stamp goes back only to a portal host: one naming anything else opens nothing", async () => {
+    const forged = tickets.mintStamp({ purpose: "login", host: CANDY, portal: "evil.example.com", next: "/", bind: "x", user: null, sessionId: null, pamAt: null, name: null }, "ip:203.0.113.1")
+    expect((await new Browser().fetch(`${CANDY_ORIGIN}/passkey/login?${STAMP_PARAM}=${forged}`, { html: true })).status).toBe(404)
+    // minted for another candy host (the zone changed): nothing
+    const other = tickets.mintStamp({ purpose: "login", host: "candy.old.example", portal: "portal.localhost", next: "/", bind: "x", user: null, sessionId: null, pamAt: null, name: null }, "ip:203.0.113.1")
+    expect((await new Browser().fetch(`${CANDY_ORIGIN}/passkey/login?${STAMP_PARAM}=${other}`, { html: true })).status).toBe(404)
+  })
+
+  it("the login code: single use, 60 seconds, its own portal host, the browser that started, and only from the candy host", async () => {
+    const { auth } = await enrolled()
+    const code = async (b: Browser) => {
+      const r = await passkeyLogin(b, auth, { stopAt: "verify" })
+      expect(r.status).toBe(200)
+      return await r.res.json() as { action: string; fields: Record<string, string> }
+    }
+    const finish = (b: Browser, post: { action: string; fields: Record<string, string> }, origin = CANDY_ORIGIN, action = post.action) =>
+      b.fetch(action, { method: "POST", form: post.fields, origin })
+    const sessionsOf = () => sessions.list().filter(s => s.user === "claude").length
+    const before = sessionsOf()
+
+    // Reuse
+    const b1 = new Browser()
+    const p1 = await code(b1)
+    expect((await finish(b1, p1)).status).toBe(200)
+    const reuse = await finish(b1, p1)
+    expect(reuse.status).toBe(400)
+    expect(sessionsOf()).toBe(before + 1)
+
+    // Expiry
+    const b2 = new Browser()
+    const p2 = await code(b2)
+    clock.now += 61_000
+    expect((await finish(b2, p2)).status).toBe(400)
+
+    // Another portal host than the one it was minted for
+    const b3 = new Browser()
+    const p3 = await code(b3)
+    b3.jar.set("portal.candy", new Map(b3.jar.get("portal.localhost")))
+    expect((await finish(b3, p3, CANDY_ORIGIN, `https://portal.candy${PASSKEY_FINISH_PATH}`)).status).toBe(400)
+
+    // Another browser (no binding cookie: a stolen code)
+    const b4 = new Browser()
+    const p4 = await code(b4)
+    expect((await finish(new Browser(), p4)).status).toBe(400)
+
+    // Not from the candy host's page
+    const b5 = new Browser()
+    const p5 = await code(b5)
+    for (const origin of ["https://portal.localhost", "https://evil.example", "null"]) {
+      expect((await finish(b5, p5, origin)).status).toBe(403)
+    }
+    expect(sessionsOf()).toBe(before + 1)
+    expect(audits.filter(([a, x]) => a === "AUTH_FAIL" && x.includes("login code")).length).toBeGreaterThanOrEqual(4)
+    // Nothing in the audit log holds a stamp or a code
+    const logged = JSON.stringify(audits)
+    for (const p of [p1, p2, p3, p4, p5]) expect(logged).not.toContain(p.fields[CODE_FIELD])
+  })
+
+  it("enroll needs the portal login it came from, still live, still allowed, with a recent password", async () => {
+    // The portal session ended between the stamp and the ceremony
+    const b = new Browser()
+    b.pamLogin("claude")
+    const page = await b.page("https://portal.localhost/passkeys")
+    const { url } = await (await b.post("portal.localhost", "/passkeys/enroll/start", page.token, {})).json() as any
+    expect((await b.fetch(url, { html: true })).status).toBe(200)
+    const stamp = new URL(url).searchParams.get(STAMP_PARAM)
+    const sid = sessions.get(b.jar.get("portal.localhost")!.get("candy_portal"), b.secret.get("portal.localhost"))!.id
+    sessions.destroy(sid)
+    const o = await candyPost(b, "/passkey/enroll/options", { stamp })
+    expect(o.status).toBe(403)
+    expect(await o.json()).toEqual({ error: ENROLL_SESSION_GONE })
+
+    // The password is no longer recent (8 minutes when the stamp was made, 11 when used)
+    const c = new Browser()
+    c.pamLogin("claude")
+    clock.now += 8 * 60_000
+    const cp = await c.page("https://portal.localhost/passkeys")
+    const s2 = await (await c.post("portal.localhost", "/passkeys/enroll/start", cp.token, {})).json() as any
+    expect((await c.fetch(s2.url, { html: true })).status).toBe(200)
+    clock.now += 3 * 60_000
+    const o2 = await candyPost(c, "/passkey/enroll/options", { stamp: new URL(s2.url).searchParams.get(STAMP_PARAM) })
+    expect(o2.status).toBe(403)
+    expect(await o2.json()).toMatchObject({ reauth: true })
+
+    // The account left the login list after the stamp was made
+    const d = new Browser()
+    d.pamLogin("claude")
+    const dp = await d.page("https://portal.localhost/passkeys")
+    const s3 = await (await d.post("portal.localhost", "/passkeys/enroll/start", dp.token, {})).json() as any
+    expect((await d.fetch(s3.url, { html: true })).status).toBe(200)
+    const s3stamp = new URL(s3.url).searchParams.get(STAMP_PARAM)
+    const o3 = await candyPost(d, "/passkey/enroll/options", { stamp: s3stamp })
+    const { challengeId, publicKey } = await o3.json() as any
+    loginUsers = loginUsers.filter(u => u !== "claude")
+    const v3 = await candyPost(d, "/passkey/enroll/verify", { stamp: s3stamp, challengeId, credential: await new SoftAuthenticator().create(publicKey, CANDY_ORIGIN) })
+    expect(v3.status).toBe(403)
+    expect(passkeyDeps.store.list("claude")).toEqual([])
+  })
+
+  it("a finished enrollment voids every other enroll stamp of that login (its session's enroll sequence)", async () => {
+    const b = new Browser()
+    b.pamLogin("claude")
+    const stampUrl = async () => {
+      const page = await b.page("https://portal.localhost/passkeys")
+      return (await (await b.post("portal.localhost", "/passkeys/enroll/start", page.token, {})).json() as any).url as string
+    }
+    const first = await stampUrl(), second = await stampUrl()
+    expect((await b.fetch(second, { html: true })).status).toBe(200)
+    expect((await enroll(b, new SoftAuthenticator())).status).toBe(200)   // a third stamp, finished
+    void first
+    const o = await candyPost(b, "/passkey/enroll/options", { stamp: new URL(second).searchParams.get(STAMP_PARAM) })
+    expect(o.status).toBe(403)
+    expect(await o.json()).toEqual({ error: ENROLL_SESSION_GONE })
+    // A new one works
+    expect((await enroll(b, new SoftAuthenticator(), { name: "Phone" })).status).toBe(200)
+  })
+
+  it("a locked-out address can't spend stamps: the lockout comes before the stamp is used up", async () => {
+    const { auth } = await enrolled()
+    const b = new Browser()
+    const start = await b.fetch("https://portal.localhost/auth/passkey/start?next=/")
+    const href = start.headers.get("location")!
+    await b.fetch(href, { html: true })
+    const stamp = new URL(href).searchParams.get(STAMP_PARAM)
+    const { challengeId, publicKey } = await (await candyPost(b, "/passkey/login/options", { stamp })).json() as any
+    const credential = await auth.get(publicKey, CANDY_ORIGIN)
+    lockedIps.set("127.0.0.1", 30)
+    expect((await candyPost(b, "/passkey/login/verify", { stamp, challengeId, credential })).status).toBe(429)
+    lockedIps.clear()
+    // Not burned: the same stamp still works
+    expect((await candyPost(b, "/passkey/login/verify", { stamp, challengeId, credential })).status).toBe(200)
+  })
+
+  it("one address gets only a share of stamps: past it, the start route says 429 with Retry-After", async () => {
+    const b = new Browser()
+    let last: Response | null = null
+    for (let i = 0; i < 80; i++) {
+      last = await b.fetch("https://portal.localhost/auth/passkey/start?next=/")
+      if (last.status !== 302) break
+    }
+    expect(last!.status).toBe(429)
+    expect(Number(last!.headers.get("retry-after"))).toBeGreaterThan(0)
+    // Another address is unaffected
+    const other = new Browser()
+    other.ip = "100.64.0.9"
+    expect((await other.fetch("https://portal.localhost/auth/passkey/start?next=/")).status).toBe(302)
+  })
+
+  it("an enroll stamp adds the passkey to its own user only, and a challenge from one ceremony can't finish another", async () => {
+    const a = new Browser(), m = new Browser()
+    a.pamLogin("claude")
+    m.pamLogin("mallory")
+    const stampOf = async (b: Browser) => {
+      const page = await b.page("https://portal.localhost/passkeys")
+      const { url } = await (await b.post("portal.localhost", "/passkeys/enroll/start", page.token, {})).json() as any
+      expect((await b.fetch(url, { html: true })).status).toBe(200)
+      return new URL(url).searchParams.get(STAMP_PARAM)!
+    }
+    const sa = await stampOf(a), sm = await stampOf(m)
+    const oa = await (await candyPost(a, "/passkey/enroll/options", { stamp: sa })).json() as any
+    expect(oa.publicKey.user.name).toBe("claude")
+    expect(oa.publicKey.rp.id).toBe(CANDY)
+    // claude's challenge answered under mallory's stamp
+    const credential = await new SoftAuthenticator().create(oa.publicKey, CANDY_ORIGIN)
+    const v = await candyPost(m, "/passkey/enroll/verify", { stamp: sm, challengeId: oa.challengeId, credential })
+    expect(v.status).toBe(400)
+    expect(passkeyDeps.store.list("mallory")).toEqual([])
+    expect(passkeyDeps.store.list("claude")).toEqual([])
   })
 })
 
@@ -916,17 +1346,34 @@ describe("nothing logs the token", () => {
     expect(body).toContain("state=abc")
   })
 
-  it("Caddy's access log drops a candy_token query parameter", () => {
-    expect(LOG_REDACTED_QUERY_PARAMS).toContain("candy_token")
+  it("Caddy's access log drops candy_token, and the passkey stamp and login code parameters", () => {
+    for (const q of ["candy_token", STAMP_PARAM, CODE_FIELD]) expect(LOG_REDACTED_QUERY_PARAMS as readonly string[]).toContain(q)
     const block = caddyGlobalBlock({ adminSocket: "/run/candy/caddy-admin.sock", accessLog: "/var/log/caddy/access.log" })
     expect(block).toContain("request>uri query {")
     expect(block).toContain("delete candy_token")
+    expect(block).toContain(`delete ${STAMP_PARAM}`)
+    expect(block).toContain(`delete ${CODE_FIELD}`)
+  })
+
+  it("the stamp is the only secret in a URL (once); the login code only ever goes in a POST body", async () => {
+    const { auth } = await enrolled()
+    const r = await passkeyLogin(new Browser(), auth, { stopAt: "verify" })
+    const post = await r.res.json() as any
+    expect(new URL(post.action).search).toBe("")
+    const html = await Bun.file(join(root, "public", "passkey-host.html")).text()
+    expect(html).toContain("form.method = 'POST'")
   })
 
   it("oversized bodies are refused before parsing", async () => {
-    const b = new Browser()
-    const res = await b.fetch("https://portal.localhost/auth/passkey", { method: "POST", origin: "https://portal.localhost", headers: { "content-type": "application/json" }, json: { pad: "x".repeat(MAX_AUTH_BODY_BYTES) } })
-    expect(res.status).toBe(401)
+    const { b } = await enrolled()
+    const start = await b.fetch("https://portal.localhost/auth/passkey/start?next=/")
+    const href = start.headers.get("location")!
+    await b.fetch(href, { html: true })
+    const stamp = new URL(href).searchParams.get(STAMP_PARAM)
+    const big = await candyPost(b, "/passkey/login/options", { stamp, pad: "x".repeat(MAX_AUTH_BODY_BYTES) })
+    expect(big.status).toBe(404)
+    const fin = await b.fetch(`https://portal.localhost${PASSKEY_FINISH_PATH}`, { method: "POST", form: { [CODE_FIELD]: "x".repeat(9000) }, origin: CANDY_ORIGIN })
+    expect(fin.status).toBe(400)
   })
 })
 
@@ -1003,62 +1450,31 @@ describe("sdk.ts appAuth()", () => {
 // Review findings, end to end through the routes
 
 describe("review findings (routes)", () => {
-  const passkeyLogin = async (b: Browser, auth: SoftAuthenticator, portal = "portal.localhost") => {
-    const o = await b.fetch(`https://${portal}/auth/passkey/options`, { method: "POST", json: {}, origin: `https://${portal}` })
-    if (o.status !== 200) return o
-    const { challengeId, publicKey } = await o.json() as any
-    const credential = await auth.get(publicKey, `https://${portal}`)
-    const res = await b.fetch(`https://${portal}/auth/passkey`, { method: "POST", json: { challengeId, credential }, origin: `https://${portal}` })
-    if (res.ok) b.secret.set(portal, (await res.clone().json() as any).session)
-    return res
-  }
-  const register = async (b: Browser, auth: SoftAuthenticator, portal = "portal.localhost") => {
-    const page = await b.page(`https://${portal}/passkeys`)
-    const opts = await b.post(portal, "/passkeys/register/options", page.token, {})
-    expect(opts.status).toBe(200)
-    const { challengeId, publicKey } = await opts.json() as any
-    const token = pageTokens.refresh(page.token, sessions.get(b.jar.get(portal)!.get("candy_portal"), b.secret.get(portal))!.id)
-    return b.post(portal, "/passkeys/register", token, { challengeId, credential: await auth.create(publicKey, `https://${portal}`), name: "Key" })
-  }
   const authOf = (b: Browser, portal = "portal.localhost") =>
     requestAuthOf(new Request(`https://${portal}/auth/me`, { headers: { host: portal, cookie: `candy_portal=${b.jar.get(portal)!.get("candy_portal")}`, [SESSION_HEADER]: b.secret.get(portal)! } }), true)
 
   it("a passkey session of a sudoer is a superuser straight away; a non-sudoer's still isn't", async () => {
-    const auth = new SoftAuthenticator()
-    const b = new Browser()
-    b.pamLogin("ashwin")
-    expect((await register(b, auth)).status).toBe(200)
+    const { auth } = await enrolled("ashwin")
     const pk = new Browser()
-    const login = await passkeyLogin(pk, auth)
-    expect(login.status).toBe(200)
-    const body = await login.json() as any
-    expect(body).toMatchObject({ user: "ashwin", superuser: true })
-    expect(Object.keys(body).sort()).toEqual(["session", "superuser", "user"])
-    expect(authOf(pk)).toMatchObject({ superuser: true, amr: "passkey", pamAt: null })
+    expect((await passkeyLogin(pk, auth)).status).toBe(200)
+    expect(authOf(pk)).toMatchObject({ user: "ashwin", superuser: true, amr: "passkey", pamAt: null })
     // A superuser route (ROUTE_TABLE) with no password re-entered: past the guard (the harness has no handler: 404)
     const system = (br: Browser) => br.fetch("https://portal.localhost/system/stats", { withSecret: true })
     expect((await system(pk)).status).toBe(404)
     clock.now += 61 * 60_000                                // no hour-long window either
     expect((await system(pk)).status).toBe(404)
     // A non-sudoer's passkey session is refused
-    const auth2 = new SoftAuthenticator()
-    const c = new Browser()
-    c.pamLogin("claude")
-    expect((await register(c, auth2)).status).toBe(200)
+    const { auth: auth2 } = await enrolled("claude")
     const pk2 = new Browser()
-    const login2 = await passkeyLogin(pk2, auth2)
-    expect(login2.status).toBe(200)
-    expect(await login2.json()).toMatchObject({ user: "claude", superuser: false })
+    expect((await passkeyLogin(pk2, auth2)).status).toBe(200)
+    expect(authOf(pk2)).toMatchObject({ user: "claude", superuser: false })
     const refused = await system(pk2)
     expect(refused.status).toBe(403)
     expect(await refused.json()).toEqual({ error: "Only a superuser can do that." })
   })
 
   it("a passkey of an earlier account with the same name, or of an account PAM refuses, logs in no one", async () => {
-    const auth = new SoftAuthenticator()
-    const b = new Browser()
-    b.pamLogin("claude")
-    expect((await register(b, auth)).status).toBe(200)
+    const { auth } = await enrolled()
     accountDenied.add("claude")                             // passwd -e claude
     expect((await passkeyLogin(new Browser(), auth)).status).toBe(401)
     accountDenied.clear()
@@ -1068,19 +1484,22 @@ describe("review findings (routes)", () => {
     expect((await passkeyLogin(new Browser(), auth)).status).toBe(200)
   })
 
-  it("passkey login options from the same (loopback) address don't push out a pending login", async () => {
-    const auth = new SoftAuthenticator()
-    const b = new Browser()
-    b.pamLogin("claude")
-    expect((await register(b, auth)).status).toBe(200)
+  it("passkey login stamps and options from the same (loopback) address don't push out a pending login", async () => {
+    const { auth } = await enrolled()
     const victim = new Browser()
-    const o = await victim.fetch("https://portal.localhost/auth/passkey/options", { method: "POST", json: {}, origin: "https://portal.localhost" })
-    const { challengeId, publicKey } = await o.json() as any
+    const start = await victim.fetch("https://portal.localhost/auth/passkey/start?next=/")
+    const href = start.headers.get("location")!
+    await victim.fetch(href, { html: true })
+    const stamp = new URL(href).searchParams.get(STAMP_PARAM)
+    const { challengeId, publicKey } = await (await candyPost(victim, "/passkey/login/options", { stamp })).json() as any
     const attacker = new Browser()
     for (let i = 0; i < 50; i++) {
-      expect((await attacker.fetch("https://portal.localhost/auth/passkey/options", { method: "POST", json: {}, origin: "https://portal.localhost" })).status).toBe(200)
+      const s = await attacker.fetch("https://portal.localhost/auth/passkey/start?next=/")
+      expect(s.status).toBe(302)
+      await attacker.fetch(s.headers.get("location")!, { html: true })
+      expect((await candyPost(attacker, "/passkey/login/options", { stamp: new URL(s.headers.get("location")!).searchParams.get(STAMP_PARAM) })).status).toBe(200)
     }
-    const res = await victim.fetch("https://portal.localhost/auth/passkey", { method: "POST", json: { challengeId, credential: await auth.get(publicKey, "https://portal.localhost") }, origin: "https://portal.localhost" })
+    const res = await candyPost(victim, "/passkey/login/verify", { stamp, challengeId, credential: await auth.get(publicKey, CANDY_ORIGIN) })
     expect(res.status).toBe(200)
   })
 
@@ -1125,5 +1544,180 @@ describe("review findings (routes)", () => {
     const small = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new TextEncoder().encode('{"a":')); c.enqueue(new TextEncoder().encode("1}")); c.close() } })
     expect(await readJsonBody(new Request("https://x/", { method: "POST", body: small, duplex: "half" } as RequestInit))).toEqual({ a: 1 })
     expect(await readJsonBody(new Request("https://x/", { method: "POST", body: "{}", headers: { "content-length": String(MAX_AUTH_BODY_BYTES + 1) } }))).toEqual({})
+  })
+})
+
+// ===========================================================================
+// max_age (freshness) and the superuser claim
+
+describe("max_age: the app asks for a recent authentication", () => {
+  const MIN = 60_000
+  const claimsOfLast = () => logins.at(-1)!
+
+  it("is honoured with a live session and remembered consent: a fresh passkey first, bound to this request", async () => {
+    const { b, auth } = await enrolled()                     // claude, password login now, has a passkey
+    // First sign-in: approve and remember
+    expect((await b.submitForm((await decide(b, (await startAppLogin(b)).request)).body)).status).toBe(303)
+    clock.now += 10 * MIN
+    const { request } = await startAppLogin(b, "notes.localhost", "/pay", 300)
+    const page = await b.page(`https://portal.localhost/app-auth/consent?request=${request}`)
+    expect(page.vars).toMatchObject({ remembered: true, fresh: { needed: true, passkeys: true, maxAge: 300 } })
+    // Nothing is minted until the user authenticates again (the request stays parked)
+    const early = await b.post("portal.localhost", "/app-auth/decision", page.token, { request, approve: true, remember: true })
+    expect(early.status).toBe(401)
+    expect(await early.json()).toMatchObject({ fresh: true })
+    // The consent page's passkey hop: a stamp for this session and request
+    const fp = await b.page(`https://portal.localhost/app-auth/consent?request=${request}`)
+    const f = await b.post("portal.localhost", "/app-auth/fresh", fp.token, { request })
+    expect(f.status).toBe(200)
+    const { url } = await f.json() as any
+    const done = await passkeyCeremony(b, auth, url, { portal: "portal.localhost" })
+    expect(done.status).toBe(200)
+    // No new session: the same login, re-authenticated
+    const html = await done.res.text()
+    expect(html).not.toContain("localStorage")
+    expect(html).toContain(`/app-auth/consent?request=${request}`)
+    expect(done.res.headers.get("set-cookie")).toBeNull()
+    const s = sessions.get(b.jar.get("portal.localhost")!.get("candy_portal"), b.secret.get("portal.localhost"))!
+    expect(s).toMatchObject({ user: "claude", amr: "pam", authMethod: "passkey", authAt: clock.now })
+    // Now the remembered consent goes through, and the token describes the fresh authentication
+    const d = await decide(b, request)
+    expect(d.page.vars.fresh.needed).toBe(false)
+    expect(d.res.status).toBe(200)
+    expect((await b.submitForm(d.body)).status).toBe(303)
+    expect(claimsOfLast()).toMatchObject({ user: "claude", amr: ["passkey"], authTime: Math.floor(clock.now / 1000) * 1000 })
+    // ...and it was used up: another request with max_age=0 asks again
+    expect(sessions.byId(s.id)!.freshFor).toBeNull()
+  })
+
+  it("the password works too: /auth/reauth bound to the request; amr pam", async () => {
+    const b = new Browser()
+    b.pamLogin("claude")
+    clock.now += 30 * MIN
+    const { request } = await startAppLogin(b, "notes.localhost", "/x", 60)
+    const page = await b.page(`https://portal.localhost/app-auth/consent?request=${request}`)
+    expect(page.vars.fresh).toMatchObject({ needed: true })
+    // a reauth for a request that isn't parked here is refused before the password is checked
+    expect((await b.post("portal.localhost", "/auth/reauth", page.token, { password: PASSWORDS.claude, request: "nope" })).status).toBe(404)
+    const p2 = await b.page(`https://portal.localhost/app-auth/consent?request=${request}`)
+    expect((await b.post("portal.localhost", "/auth/reauth", p2.token, { password: PASSWORDS.claude, request })).status).toBe(200)
+    const d = await decide(b, request, true, false)
+    expect(d.res.status).toBe(200)
+    expect((await b.submitForm(d.body)).status).toBe(303)
+    expect(claimsOfLast()).toMatchObject({ amr: ["pam"], authTime: Math.floor(clock.now / 1000) * 1000 })
+  })
+
+  it("max_age within the session's last authentication needs nothing more", async () => {
+    const b = new Browser()
+    b.pamLogin("claude")
+    clock.now += 2 * MIN
+    const { request } = await startAppLogin(b, "notes.localhost", "/x", 300)
+    const d = await decide(b, request)
+    expect(d.page.vars.fresh.needed).toBe(false)
+    expect((await b.submitForm(d.body)).status).toBe(303)
+  })
+
+  it("max_age=0 always asks again, and a fresh authentication for request A doesn't satisfy request B", async () => {
+    const { b, auth } = await enrolled()
+    // Even right after logging in
+    const a = await startAppLogin(b, "notes.localhost", "/a", 0)
+    const bReq = await startAppLogin(b, "other.localhost", "/b", 0)
+    expect((await b.page(`https://portal.localhost/app-auth/consent?request=${a.request}`)).vars.fresh.needed).toBe(true)
+    const fp = await b.page(`https://portal.localhost/app-auth/consent?request=${a.request}`)
+    const { url } = await (await b.post("portal.localhost", "/app-auth/fresh", fp.token, { request: a.request })).json() as any
+    expect((await passkeyCeremony(b, auth, url, { portal: "portal.localhost" })).status).toBe(200)
+    // B: still needed, and its decision is refused
+    const pb = await b.page(`https://portal.localhost/app-auth/consent?request=${bReq.request}`)
+    expect(pb.vars.fresh.needed).toBe(true)
+    expect((await b.post("portal.localhost", "/app-auth/decision", pb.token, { request: bReq.request, approve: true })).status).toBe(401)
+    // A: fine, once
+    const da = await decide(b, a.request)
+    expect(da.res.status).toBe(200)
+    expect((await b.submitForm(da.body)).status).toBe(303)
+    // A third request with max_age=0 asks again
+    const c = await startAppLogin(b, "notes.localhost", "/c", 0)
+    expect((await b.page(`https://portal.localhost/app-auth/consent?request=${c.request}`)).vars.fresh.needed).toBe(true)
+  })
+
+  it("one user's passkey can't re-authenticate another user's login", async () => {
+    const { b } = await enrolled("claude")
+    const { auth: ashwinKey } = await enrolled("ashwin")
+    const { request } = await startAppLogin(b, "notes.localhost", "/x", 0)
+    const fp = await b.page(`https://portal.localhost/app-auth/consent?request=${request}`)
+    const { url } = await (await b.post("portal.localhost", "/app-auth/fresh", fp.token, { request })).json() as any
+    const r = await passkeyCeremony(b, ashwinKey, url, { portal: "portal.localhost" })
+    expect(r.status).toBe(400)
+    const s = sessions.get(b.jar.get("portal.localhost")!.get("candy_portal"), b.secret.get("portal.localhost"))!
+    expect(s.freshFor).toBeNull()
+    expect(s.authMethod).toBe("pam")
+    expect((await b.page(`https://portal.localhost/app-auth/consent?request=${request}`)).vars.fresh.needed).toBe(true)
+  })
+
+  it("a browser that strips max_age gets a token the SDK refuses (stale_auth): the app keeps max_age in its own cookie", async () => {
+    const b = new Browser()
+    b.pamLogin("claude")
+    clock.now += 30 * MIN
+    const start = await b.fetch(`https://notes.localhost${LOGIN_PATH}?next=/pay&want_max_age=60`)
+    const authorize = new URL(start.headers.get("location")!)
+    expect(authorize.searchParams.get("max_age")).toBe("60")
+    authorize.searchParams.delete("max_age")
+    const az = await b.fetch(authorize.href)
+    const request = new URL(az.headers.get("location")!, "https://x").searchParams.get("request")!
+    const d = await decide(b, request)
+    expect(d.page.vars.fresh.needed).toBe(false)              // the portal never heard of it
+    const back = await b.submitForm(d.body)
+    expect(back.status).toBe(401)
+    expect(await back.text()).toContain("recent sign-in")
+    expect(logins).toEqual([])
+  })
+
+  it("an out-of-range max_age is refused at authorize (an error page, never a redirect)", async () => {
+    const b = new Browser()
+    for (const v of ["86401", "-1", "1.5", "x", ""]) {
+      const az = `https://portal.localhost/app-auth/authorize?return_to=${encodeURIComponent(`https://notes.localhost${CALLBACK_PATH}`)}&state=${"a".repeat(20)}&max_age=${encodeURIComponent(v)}`
+      const res = await b.fetch(az)
+      expect(res.status).toBe(400)
+      expect(res.headers.get("location")).toBeNull()
+    }
+  })
+
+  it("the fresh passkey route: only for a request parked on this portal host, with the address lockout", async () => {
+    const b = new Browser()
+    b.pamLogin("claude")
+    const p = await b.page("https://portal.localhost/passkeys")
+    expect((await b.post("portal.localhost", "/app-auth/fresh", p.token, { request: "nope" })).status).toBe(404)
+    const { request } = await startAppLogin(b, "notes.localhost", "/x", 0)
+    b.pamLogin("claude", "portal.candy")
+    const pc = await b.page("https://portal.candy/passkeys")
+    expect((await b.post("portal.candy", "/app-auth/fresh", pc.token, { request })).status).toBe(404)
+    lockedIps.set("127.0.0.1", 9)
+    const pl = await b.page("https://portal.localhost/passkeys")
+    expect((await b.post("portal.localhost", "/app-auth/fresh", pl.token, { request })).status).toBe(429)
+  })
+})
+
+describe("the superuser claim", () => {
+  it("is true for a sudoer and false otherwise, checked when the token is made", async () => {
+    const a = new Browser()
+    a.pamLogin("ashwin")
+    expect((await a.submitForm((await decide(a, (await startAppLogin(a)).request)).body)).status).toBe(303)
+    expect(logins.at(-1)).toMatchObject({ user: "ashwin", superuser: true })
+    const c = new Browser()
+    c.pamLogin("claude")
+    expect((await c.submitForm((await decide(c, (await startAppLogin(c)).request)).body)).status).toBe(303)
+    expect(logins.at(-1)).toMatchObject({ user: "claude", superuser: false })
+    // Removed from sudoers between the consent page and the decision: the token says so
+    const { request } = await startAppLogin(a)
+    const page = await a.page(`https://portal.localhost/app-auth/consent?request=${request}`)
+    SUPERUSERS.delete("ashwin")
+    const res = await a.post("portal.localhost", "/app-auth/decision", page.token, { request, approve: true, remember: true })
+    expect((await a.submitForm(await res.json() as any)).status).toBe(303)
+    expect(logins.at(-1)).toMatchObject({ user: "ashwin", superuser: false })
+    expect(audits.some(([act, d]) => act === "APP_AUTH_GRANT" && d.includes("ashwin") && d.includes("superuser"))).toBe(true)
+  })
+
+  it("the consent page says the site learns whether the account is an administrator", async () => {
+    const html = await Bun.file(join(root, "public", "app-consent.html")).text()
+    expect(html).toContain("whether the account is an administrator")
   })
 })

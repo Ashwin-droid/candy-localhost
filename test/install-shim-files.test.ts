@@ -34,3 +34,17 @@ describe("install-service.sh function shim", () => {
     expect(missing).toEqual([])
   })
 })
+
+describe("the daemon keeps the installed shim current", () => {
+  it("syncs the same closure at start in root mode (a stale sdk-auth.ts/jwe.ts would refuse new tokens)", () => {
+    const daemon = readFileSync(join(root, "daemon.ts"), "utf8")
+    const fn = daemon.slice(daemon.indexOf("const fnShimModules = ():"), daemon.indexOf("const fnConfigOf = "))
+    expect(fn).toContain(`const todo = ["fn-host.ts", "fn-tool.ts"]`)
+    expect(fn).toContain("if (!RUNNING_AS_ROOT) return")
+    expect(fn).toContain("dir.uid !== 0 || (dir.mode & 0o022) !== 0")
+    expect(fn).toContain("auditLog('FN_SHIM_SYNC'")
+    expect(daemon).toContain("await syncFnShim()")
+    // and the closure includes the SDK pieces a function's env.CANDY_AUTH runs on
+    expect(closure(["fn-host.ts", "fn-tool.ts"])).toEqual(expect.arrayContaining(["sdk-auth.ts", "jwe.ts"]))
+  })
+})

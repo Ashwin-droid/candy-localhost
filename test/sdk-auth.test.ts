@@ -6,10 +6,10 @@ import {
   createAppAuth, portalForHost, requestOrigin, safeAppPath, redirectAfterLogin, ReplayCache,
   LOGIN_PATH, CALLBACK_PATH, STATE_COOKIE, STATE_COOKIE_MAX_AGE_S, CREDENTIAL_NAME, ENV, DEFAULT_ISSUERS,
   MAX_CALLBACK_BODY, MAX_COOKIE_LENGTH, REFETCH_MIN_INTERVAL_MS, MAX_REPLAY_ENTRIES, RING_REFRESH_MS,
-  type AppAuthOptions, type ReplayStore,
+  sealStateCookie, type AppAuthOptions, type ReplayStore,
 } from "../sdk-auth.ts"
 import {
-  generateKey, sealClaims, formatKeyRing, randomB64url, b64urlEncode, b64urlDecode, encryptCompact,
+  generateKey, sealClaims, CLOCK_SKEW_S, formatKeyRing, randomB64url, b64urlEncode, b64urlDecode, encryptCompact,
   type AppClaims, type JweKey,
 } from "../jwe.ts"
 
@@ -28,28 +28,30 @@ const clock = (start = T0) => {
 
 const ringOf = (...keys: JweKey[]) => formatKeyRing(keys)
 
-const makeAuth = (key: JweKey, o: Partial<AppAuthOptions> = {}, c = clock()) => ({
-  c,
-  auth: createAppAuth({ site: SITE, keys: ringOf(key), env: {}, now: c.now, ...o }),
-})
+// The key the last makeAuth used: the state cookies the tests build are MAC'd with it, as login() does
+let cookieKey: JweKey = generateKey()
+const makeAuth = (key: JweKey, o: Partial<AppAuthOptions> = {}, c = clock()) => {
+  cookieKey = key
+  return { c, auth: createAppAuth({ site: SITE, keys: ringOf(key), env: {}, now: c.now, ...o }) }
+}
 
 // Mints a token the way app-auth.ts (D) does
 const mint = async (key: JweKey, over: Partial<AppClaims> = {}, nowMs = T0): Promise<{ token: string; claims: AppClaims }> => {
   const iat = Math.floor(nowMs / 1000)
   const claims: AppClaims = {
-    iss: PORTAL, aud: SITE, sub: "claude", amr: ["pam"], iat, exp: iat + 60, auth_time: iat - 100,
+    iss: PORTAL, aud: SITE, sub: "claude", amr: ["pam"], iat, exp: iat + 60, auth_time: iat - 100, superuser: false,
     jti: randomB64url(16), state: "S".repeat(32), nonce: "N".repeat(32), dest: DEST, ...over,
   }
   for (const k of Object.keys(claims) as (keyof AppClaims)[]) if (claims[k] === undefined) delete claims[k]
   return { token: await sealClaims(claims, key), claims }
 }
 
-const cookieValue = (o: { v?: number; s?: string; n?: string; d?: string; x?: string; t?: number } = {}) =>
-  b64urlEncode(new TextEncoder().encode(JSON.stringify({ v: 1, s: "S".repeat(32), n: "N".repeat(32), d: DEST, x: "/after?x=1", t: T0, ...o })))
+const cookieValue = (o: { v?: number; s?: string; n?: string; d?: string; x?: string; t?: number; m?: unknown } = {}, key = cookieKey) =>
+  sealStateCookie({ v: 1, s: "S".repeat(32), n: "N".repeat(32), d: DEST, x: "/after?x=1", t: T0, ...o }, key, SITE)
 
-const callback = (body: string, o: { cookie?: string | null; method?: string; type?: string; host?: string; headers?: Record<string, string> } = {}) => {
+const callback = async (body: string, o: { cookie?: string | null; method?: string; type?: string; host?: string; headers?: Record<string, string> } = {}) => {
   const headers: Record<string, string> = { host: o.host ?? "notes.localhost", "content-type": o.type ?? "application/x-www-form-urlencoded", ...o.headers }
-  const cookie = o.cookie === undefined ? `${STATE_COOKIE}=${cookieValue()}` : o.cookie
+  const cookie = o.cookie === undefined ? `${STATE_COOKIE}=${await cookieValue()}` : o.cookie
   if (cookie !== null) headers.cookie = cookie
   const method = o.method ?? "POST"
   return new Request(`http://notes.localhost${CALLBACK_PATH}`, { method, headers, body: method === "GET" || method === "HEAD" ? undefined : body })
@@ -58,7 +60,7 @@ const form = (fields: Record<string, string>) => new URLSearchParams(fields).toS
 
 const decodeCookie = (setCookie: string) => {
   const value = setCookie.split(";")[0].slice(STATE_COOKIE.length + 1)
-  return JSON.parse(new TextDecoder().decode(b64urlDecode(value)))
+  return JSON.parse(new TextDecoder().decode(b64urlDecode(value.split(".")[0])))
 }
 
 describe("constants", () => {
@@ -151,7 +153,7 @@ describe("login", () => {
     expect(res.headers.get("cache-control")).toBe("no-store")
     expect(res.headers.get("referrer-policy")).toBe("no-referrer")
     const set = res.headers.get("set-cookie")!
-    expect(set).toMatch(new RegExp(`^${STATE_COOKIE}=[A-Za-z0-9_-]+; Path=/; Secure; HttpOnly; SameSite=None; Max-Age=600$`))
+    expect(set).toMatch(new RegExp(`^${STATE_COOKIE}=[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]{43}; Path=/; Secure; HttpOnly; SameSite=None; Max-Age=600$`))
     const c = decodeCookie(set)
     expect(c.v).toBe(1)
     expect(c.d).toBeUndefined()    // where the token may arrive is the callback URL itself, never the cookie
@@ -228,7 +230,7 @@ describe("full round trip", () => {
     c.advance(5_000)
     const { token } = await mint(key, { state: loc.searchParams.get("state")!, nonce: loc.searchParams.get("nonce")!, dest: loc.searchParams.get("return_to")!, amr: ["passkey"] }, c.now())
     let seen: unknown = null
-    const out = await auth.handle(callback(form({ candy_token: token, state: loc.searchParams.get("state")! }), { cookie }), (u) => {
+    const out = await auth.handle(await callback(form({ candy_token: token, state: loc.searchParams.get("state")! }), { cookie }), (u) => {
       seen = u
       return redirectAfterLogin(u.next, "sid=fresh; Path=/; Secure; HttpOnly; SameSite=Lax")
     })
@@ -249,7 +251,7 @@ describe("full round trip", () => {
     const key = generateKey()
     const { auth } = makeAuth(key)
     const { token } = await mint(key)
-    const r = await auth.handleCallback(callback(form({ candy_token: token, state: "S".repeat(32) })))
+    const r = await auth.handleCallback(await callback(form({ candy_token: token, state: "S".repeat(32) })))
     expect(r.ok).toBe(true)
     if (!r.ok) return
     expect(r.user).toBe("claude")
@@ -269,7 +271,7 @@ describe("full round trip", () => {
     const key = generateKey()
     const { auth } = makeAuth(key)
     const { token } = await mint(key)
-    const out = await auth.handle(callback(form({ candy_token: token, state: "S".repeat(32) })), () => Response.redirect("https://notes.localhost/home", 302))
+    const out = await auth.handle(await callback(form({ candy_token: token, state: "S".repeat(32) })), () => Response.redirect("https://notes.localhost/home", 302))
     expect(out!.status).toBe(302)
     expect(out!.headers.getSetCookie()).toEqual([CLEAR])
   })
@@ -292,84 +294,84 @@ describe("callback failures", () => {
   it("replay: the same token twice → replay", async () => {
     const { auth } = makeAuth(key)
     const { token } = await mint(key)
-    expect((await auth.handleCallback(callback(form({ candy_token: token, state: S })))).ok).toBe(true)
-    await expectFail(callback(form({ candy_token: token, state: S })), 401, "replay", auth)
+    expect((await auth.handleCallback(await callback(form({ candy_token: token, state: S })))).ok).toBe(true)
+    await expectFail(await callback(form({ candy_token: token, state: S })), 401, "replay", auth)
   })
 
   it("another site's ring → unknown_kid", async () => {
     const other = generateKey()
     const { token } = await mint(other)
-    await expectFail(callback(form({ candy_token: token, state: S })), 401, "unknown_kid")
+    await expectFail(await callback(form({ candy_token: token, state: S })), 401, "unknown_kid")
   })
 
   it("same kid, wrong aud → audience", async () => {
     const { token } = await mint(key, { aud: "blog" })
-    await expectFail(callback(form({ candy_token: token, state: S })), 401, "audience")
+    await expectFail(await callback(form({ candy_token: token, state: S })), 401, "audience")
   })
 
   it("an issuer not in the list → issuer", async () => {
     const { token } = await mint(key, { iss: "https://portal.evil.com" })
-    await expectFail(callback(form({ candy_token: token, state: S })), 401, "issuer")
+    await expectFail(await callback(form({ candy_token: token, state: S })), 401, "issuer")
   })
 
   it("expired → expired; issued in the future → not_yet_valid", async () => {
     const old = await mint(key, {}, T0 - 91_000)          // exp = T0-31s, + 30s skew → past
-    await expectFail(callback(form({ candy_token: old.token, state: S })), 401, "expired")
+    await expectFail(await callback(form({ candy_token: old.token, state: S })), 401, "expired")
     const edge = await mint(key, {}, T0 - 89_000)         // exp + skew = T0 + 1s → still ok
-    expect((await makeAuth(key).auth.handleCallback(callback(form({ candy_token: edge.token, state: S })))).ok).toBe(true)
+    expect((await makeAuth(key).auth.handleCallback(await callback(form({ candy_token: edge.token, state: S })))).ok).toBe(true)
     const future = await mint(key, {}, T0 + 60_000)
-    await expectFail(callback(form({ candy_token: future.token, state: S })), 401, "not_yet_valid")
+    await expectFail(await callback(form({ candy_token: future.token, state: S })), 401, "not_yet_valid")
   })
 
   it("missing state cookie → 400 state", async () => {
     const { token } = await mint(key)
-    await expectFail(callback(form({ candy_token: token, state: S }), { cookie: null }), 400, "state")
-    await expectFail(callback(form({ candy_token: token, state: S }), { cookie: "other=1" }), 400, "state")
+    await expectFail(await callback(form({ candy_token: token, state: S }), { cookie: null }), 400, "state")
+    await expectFail(await callback(form({ candy_token: token, state: S }), { cookie: "other=1" }), 400, "state")
   })
 
   it("mismatched or missing form state → 403 state", async () => {
     const { token } = await mint(key)
-    await expectFail(callback(form({ candy_token: token, state: "X".repeat(32) })), 403, "state")
-    await expectFail(callback(form({ candy_token: token })), 403, "state")
+    await expectFail(await callback(form({ candy_token: token, state: "X".repeat(32) })), 403, "state")
+    await expectFail(await callback(form({ candy_token: token })), 403, "state")
   })
 
   it("two state cookies are ambiguous → 400 state", async () => {
     const { token } = await mint(key)
-    const v = cookieValue()
-    await expectFail(callback(form({ candy_token: token, state: S }), { cookie: `${STATE_COOKIE}=${v}; ${STATE_COOKIE}=${v}` }), 400, "state")
+    const v = await cookieValue()
+    await expectFail(await callback(form({ candy_token: token, state: S }), { cookie: `${STATE_COOKIE}=${v}; ${STATE_COOKIE}=${v}` }), 400, "state")
   })
 
   it("a stale, future, tampered, oversized or wrong-version cookie → 400 state", async () => {
     const { token } = await mint(key)
     const body = form({ candy_token: token, state: S })
     const bad = [
-      cookieValue({ t: T0 - 600_001 }),
-      cookieValue({ t: T0 + 60_000 }),
-      cookieValue({ v: 2 }),
-      cookieValue({ s: "short" }),
-      cookieValue({ n: "bad nonce!!!!!!!!!!!" }),
-      cookieValue({ t: 1.5 }),
-      cookieValue().slice(0, -3) + "!!!",
-      cookieValue() + "A",                              // not canonical b64url
+      await cookieValue({ t: T0 - 600_001 }),
+      await cookieValue({ t: T0 + 60_000 }),
+      await cookieValue({ v: 2 }),
+      await cookieValue({ s: "short" }),
+      await cookieValue({ n: "bad nonce!!!!!!!!!!!" }),
+      await cookieValue({ t: 1.5 }),
+      (await cookieValue()).slice(0, -3) + "!!!",
+      (await cookieValue()) + "A",                            // not canonical b64url
       "A".repeat(MAX_COOKIE_LENGTH + 1),
       b64urlEncode(new TextEncoder().encode("[1,2]")),
       b64urlEncode(new Uint8Array([0xff, 0xfe, 0x00])),
       "",
     ]
-    for (const v of bad) await expectFail(callback(body, { cookie: `${STATE_COOKIE}=${v}` }), 400, "state")
+    for (const v of bad) await expectFail(await callback(body, { cookie: `${STATE_COOKIE}=${v}` }), 400, "state")
     // A cookie exactly 600s old is still fine
-    expect((await makeAuth(key).auth.handleCallback(callback(body, { cookie: `${STATE_COOKIE}=${cookieValue({ t: T0 - 600_000 })}` }))).ok).toBe(true)
+    expect((await makeAuth(key).auth.handleCallback(await callback(body, { cookie: `${STATE_COOKIE}=${await cookieValue({ t: T0 - 600_000 })}` }))).ok).toBe(true)
   })
 
   it("a cookie whose next is unsafe is sanitized, not trusted", async () => {
     const { token } = await mint(key)
-    const r = await makeAuth(key).auth.handleCallback(callback(form({ candy_token: token, state: S }), { cookie: `${STATE_COOKIE}=${cookieValue({ x: "//evil.com" })}` }))
+    const r = await makeAuth(key).auth.handleCallback(await callback(form({ candy_token: token, state: S }), { cookie: `${STATE_COOKIE}=${await cookieValue({ x: "//evil.com" })}` }))
     expect(r.ok && r.next).toBe("/")
   })
 
   it("dest mismatch → dest", async () => {
     const { token } = await mint(key, { dest: "https://notes.localhost/other" })
-    await expectFail(callback(form({ candy_token: token, state: S })), 401, "dest")
+    await expectFail(await callback(form({ candy_token: token, state: S })), 401, "dest")
   })
 
   // Review finding: dest was compared with the cookie's `d`, which whoever
@@ -378,53 +380,53 @@ describe("callback failures", () => {
   it("a forged state cookie naming the token's dest doesn't help: dest is where the token arrived", async () => {
     const leakedAt = "https://notes.localhost/some/redirect?to=https://evil.example"
     const { token } = await mint(key, { dest: leakedAt })
-    const forged = cookieValue({ d: leakedAt, x: "/" })
-    const r = await expectFail(callback(form({ candy_token: token, state: S }), { cookie: `${STATE_COOKIE}=${forged}` }), 401, "dest")
+    const forged = await cookieValue({ d: leakedAt, x: "/" })
+    const r = await expectFail(await callback(form({ candy_token: token, state: S }), { cookie: `${STATE_COOKIE}=${forged}` }), 401, "dest")
     expect(r.message).not.toContain(token)
   })
 
   it("dest is compared with the host the callback was reached on", async () => {
     // Minted for notes.localhost, POSTed to the same app reached as notes.candy
     const { token } = await mint(key)
-    await expectFail(callback(form({ candy_token: token, state: S }), { host: "notes.candy" }), 401, "dest")
+    await expectFail(await callback(form({ candy_token: token, state: S }), { host: "notes.candy" }), 401, "dest")
     // handleCallback called from another path than the callback
     const other = new Request("http://notes.localhost/elsewhere", {
       method: "POST", body: form({ candy_token: token, state: S }),
-      headers: { host: "notes.localhost", "content-type": "application/x-www-form-urlencoded", cookie: `${STATE_COOKIE}=${cookieValue()}` },
+      headers: { host: "notes.localhost", "content-type": "application/x-www-form-urlencoded", cookie: `${STATE_COOKIE}=${await cookieValue()}` },
     })
     await expectFail(other, 401, "dest")
   })
 
   it("nonce mismatch or missing → nonce", async () => {
     const a = await mint(key, { nonce: "M".repeat(32) })
-    await expectFail(callback(form({ candy_token: a.token, state: S })), 401, "nonce")
+    await expectFail(await callback(form({ candy_token: a.token, state: S })), 401, "nonce")
     const b = await mint(key, { nonce: undefined })
-    await expectFail(callback(form({ candy_token: b.token, state: S })), 401, "nonce")
+    await expectFail(await callback(form({ candy_token: b.token, state: S })), 401, "nonce")
   })
 
   it("a token whose state differs from the cookie → state", async () => {
     const { token } = await mint(key, { state: "Z".repeat(32) })
-    await expectFail(callback(form({ candy_token: token, state: S })), 401, "state")
+    await expectFail(await callback(form({ candy_token: token, state: S })), 401, "state")
   })
 
   it("error=access_denied → 403 denied, and other errors aren't echoed", async () => {
-    const r = await expectFail(callback(form({ error: "access_denied", state: S })), 403, "denied")
+    const r = await expectFail(await callback(form({ error: "access_denied", state: S })), 403, "denied")
     expect(r.message).toBe("You cancelled signing in.")
-    const r2 = await expectFail(callback(form({ error: "<script>x</script>", state: S })), 403, "denied")
+    const r2 = await expectFail(await callback(form({ error: "<script>x</script>", state: S })), 403, "denied")
     expect(r2.message).not.toContain("script")
     // An error with the wrong state is a state failure first
-    await expectFail(callback(form({ error: "access_denied", state: "X".repeat(32) })), 403, "state")
+    await expectFail(await callback(form({ error: "access_denied", state: "X".repeat(32) })), 403, "state")
   })
 
   it("GET or another method → 400 bad_request", async () => {
-    await expectFail(callback("", { method: "GET" }), 400, "bad_request")
-    await expectFail(callback(form({ candy_token: "x", state: S }), { method: "PUT" }), 400, "bad_request")
+    await expectFail(await callback("", { method: "GET" }), 400, "bad_request")
+    await expectFail(await callback(form({ candy_token: "x", state: S }), { method: "PUT" }), 400, "bad_request")
   })
 
   it("a token in the query string is never read", async () => {
     const { token } = await mint(key)
     const req = new Request(`http://notes.localhost${CALLBACK_PATH}?candy_token=${token}&state=${S}`, {
-      method: "POST", headers: { host: "notes.localhost", "content-type": "application/x-www-form-urlencoded", cookie: `${STATE_COOKIE}=${cookieValue()}` }, body: "",
+      method: "POST", headers: { host: "notes.localhost", "content-type": "application/x-www-form-urlencoded", cookie: `${STATE_COOKIE}=${await cookieValue()}` }, body: "",
     })
     await expectFail(req, 403, "state")
   })
@@ -432,44 +434,44 @@ describe("callback failures", () => {
   it("wrong content type → 400 bad_request", async () => {
     const { token } = await mint(key)
     for (const type of ["application/json", "text/plain", "multipart/form-data; boundary=x", ""]) {
-      await expectFail(callback(form({ candy_token: token, state: S }), { type }), 400, "bad_request")
+      await expectFail(await callback(form({ candy_token: token, state: S }), { type }), 400, "bad_request")
     }
     // Parameters on the right type are fine
-    expect((await makeAuth(key).auth.handleCallback(callback(form({ candy_token: token, state: S }), { type: "Application/X-WWW-Form-Urlencoded; charset=UTF-8" }))).ok).toBe(true)
+    expect((await makeAuth(key).auth.handleCallback(await callback(form({ candy_token: token, state: S }), { type: "Application/X-WWW-Form-Urlencoded; charset=UTF-8" }))).ok).toBe(true)
   })
 
   it("a 9000-byte body → 400 bad_request (declared or streamed)", async () => {
     const big = form({ candy_token: "a".repeat(9000), state: S })
-    await expectFail(callback(big), 400, "bad_request")
+    await expectFail(await callback(big), 400, "bad_request")
     // No Content-Length: counted while reading
     const stream = new ReadableStream<Uint8Array>({
       start(ctl) { for (let i = 0; i < 10; i++) ctl.enqueue(new Uint8Array(1000).fill(0x61)); ctl.close() },
     })
     const req = new Request(`http://notes.localhost${CALLBACK_PATH}`, {
-      method: "POST", headers: { host: "notes.localhost", "content-type": "application/x-www-form-urlencoded", cookie: `${STATE_COOKIE}=${cookieValue()}` }, body: stream,
+      method: "POST", headers: { host: "notes.localhost", "content-type": "application/x-www-form-urlencoded", cookie: `${STATE_COOKIE}=${await cookieValue()}` }, body: stream,
     })
     expect(req.headers.get("content-length")).toBeNull()
     await expectFail(req, 400, "bad_request")
     // A lying Content-Length
-    await expectFail(callback(form({ candy_token: "x", state: S }), { headers: { "content-length": "99999999999999" } }), 400, "bad_request")
+    await expectFail(await callback(form({ candy_token: "x", state: S }), { headers: { "content-length": "99999999999999" } }), 400, "bad_request")
   })
 
   it("duplicated fields → 400 bad_request", async () => {
     const { token } = await mint(key)
-    await expectFail(callback(`candy_token=${token}&state=${S}&state=${S}`), 400, "bad_request")
-    await expectFail(callback(`candy_token=${token}&candy_token=${token}&state=${S}`), 400, "bad_request")
+    await expectFail(await callback(`candy_token=${token}&state=${S}&state=${S}`), 400, "bad_request")
+    await expectFail(await callback(`candy_token=${token}&candy_token=${token}&state=${S}`), 400, "bad_request")
   })
 
   it("invalid UTF-8 in the body → 400 bad_request", async () => {
     const req = new Request(`http://notes.localhost${CALLBACK_PATH}`, {
-      method: "POST", headers: { host: "notes.localhost", "content-type": "application/x-www-form-urlencoded", cookie: `${STATE_COOKIE}=${cookieValue()}` },
+      method: "POST", headers: { host: "notes.localhost", "content-type": "application/x-www-form-urlencoded", cookie: `${STATE_COOKIE}=${await cookieValue()}` },
       body: new Uint8Array([0x73, 0x3d, 0xff, 0xfe]),
     })
     await expectFail(req, 400, "bad_request")
   })
 
   it("missing candy_token → malformed", async () => {
-    await expectFail(callback(form({ state: S })), 401, "malformed")
+    await expectFail(await callback(form({ state: S })), 401, "malformed")
   })
 
   it("never echoes the token or key in messages or responses", async () => {
@@ -478,13 +480,13 @@ describe("callback failures", () => {
     const tampered = token.slice(0, -2) + (token.endsWith("A") ? "BA" : "AA")
     const keyText = b64urlEncode(key.key)
     for (const t of [token, tampered, token + "x", "a.b.c.d.e"]) {
-      const r = await auth.handleCallback(callback(form({ candy_token: t, state: S })))
+      const r = await auth.handleCallback(await callback(form({ candy_token: t, state: S })))
       expect(r.ok).toBe(false)
       if (!r.ok) {
         expect(r.message).not.toContain(t)
         expect(r.message).not.toContain(keyText)
       }
-      const res = (await auth.handle(callback(form({ candy_token: t, state: S })), () => new Response("no")))!
+      const res = (await auth.handle(await callback(form({ candy_token: t, state: S })), () => new Response("no")))!
       const text = await res.text()
       expect(text).not.toContain(t)
       expect(text).not.toContain(keyText)
@@ -783,7 +785,7 @@ describe("handle", () => {
     expect(login.status).toBe(302)
     const post = (await auth.handle(new Request(`http://notes.localhost${LOGIN_PATH}`, { method: "POST", headers: { host: "notes.localhost" } }), never))!
     expect(post.status).toBe(405)
-    const get = (await auth.handle(callback("", { method: "GET" }), never))!
+    const get = (await auth.handle(await callback("", { method: "GET" }), never))!
     expect(get.status).toBe(400)
     expect(get.headers.getSetCookie()).toEqual([CLEAR])
   })
@@ -799,7 +801,7 @@ describe("handle", () => {
     }
     expect(await (await worker.fetch(new Request("http://notes.localhost/x", { headers: { host: "notes.localhost" } }), env)).text()).toBe("app")
     const { token } = await mint(key)
-    const res = await worker.fetch(callback(form({ candy_token: token, state: "S".repeat(32) })), env)
+    const res = await worker.fetch(await callback(form({ candy_token: token, state: "S".repeat(32) })), env)
     expect(res.status).toBe(303)
     expect(res.headers.getSetCookie()).toEqual(["sid=claude", CLEAR])
   })
@@ -812,10 +814,17 @@ describe("helpers", () => {
     expect(portalForHost("a.b.localhost", "https://f")).toBe("https://portal.localhost")
     expect(portalForHost("notes.candy", "https://f")).toBe("https://portal.candy")
     expect(portalForHost("notes.box.candy", "https://f")).toBe("https://portal.candy")
-    expect(portalForHost("notes.example.com", "https://f")).toBe("https://f")
-    expect(portalForHost("localhost.evil.com", "https://f")).toBe("https://f")
-    expect(portalForHost("evilcandy", "https://f")).toBe("https://f")
-    expect(portalForHost("", "https://f")).toBe("https://f")
+    // A bound domain (or anything else) goes to the tailnet portal, never a public host
+    expect(portalForHost("notes.example.com", "https://f")).toBe("https://portal.candy")
+    expect(portalForHost("notes.example.com", "https://portal.localhost")).toBe("https://portal.candy")
+    expect(portalForHost("notes.example.com", "https://portal.candy")).toBe("https://portal.candy")
+    expect(portalForHost("notes.example.com", "https://portal.box.candy")).toBe("https://portal.box.candy")
+    expect(portalForHost("notes.example.com", "https://candy.example.com")).toBe("https://portal.candy")
+    expect(portalForHost("notes.example.com", "https://portal.evil.com")).toBe("https://portal.candy")
+    expect(portalForHost("notes.example.com", "https://portal.candy:8443")).toBe("https://portal.candy")
+    expect(portalForHost("localhost.evil.com", "https://f")).toBe("https://portal.candy")
+    expect(portalForHost("evilcandy", "https://f")).toBe("https://portal.candy")
+    expect(portalForHost("", "https://f")).toBe("https://portal.candy")
   })
 
   it("safeAppPath", () => {
@@ -853,5 +862,173 @@ describe("helpers", () => {
     expect(redirectAfterLogin("//evil.com").headers.get("location")).toBe("/")
     expect(redirectAfterLogin("/x", "c=3").headers.getSetCookie()).toEqual(["c=3"])
     expect(redirectAfterLogin("/x").headers.getSetCookie()).toEqual([])
+  })
+})
+
+// max_age: the app's freshness demand, kept in its own cookie; superuser in the result
+describe("maxAge and superuser", () => {
+  const start = async (auth: ReturnType<typeof createAppAuth>, o: { maxAge?: number } = {}) => {
+    const res = await auth.login(new Request(`http://notes.localhost${LOGIN_PATH}?next=/pay`, { headers: { host: "notes.localhost" } }), o)
+    return { res, cookie: res.headers.get("set-cookie")!.split(";")[0], loc: new URL(res.headers.get("location")!) }
+  }
+  const back = async (auth: ReturnType<typeof createAppAuth>, key: JweKey, s: Awaited<ReturnType<typeof start>>, over: Partial<AppClaims>, nowMs: number) => {
+    const { token } = await mint(key, { state: s.loc.searchParams.get("state")!, nonce: s.loc.searchParams.get("nonce")!, dest: s.loc.searchParams.get("return_to")!, ...over }, nowMs)
+    return auth.handleCallback(await callback(form({ candy_token: token, state: s.loc.searchParams.get("state")! }), { cookie: s.cookie }))
+  }
+
+  it("puts max_age in the authorize URL and the state cookie; refuses out-of-range values", async () => {
+    const key = generateKey()
+    const { auth } = makeAuth(key)
+    const s = await start(auth, { maxAge: 300 })
+    expect(s.loc.searchParams.get("max_age")).toBe("300")
+    expect(decodeCookie(s.res.headers.get("set-cookie")!).m).toBe(300)
+    expect((await start(auth)).loc.searchParams.has("max_age")).toBe(false)
+    expect(auth.loginUrl({ returnTo: DEST, state: "S".repeat(16), maxAge: 0 })).toContain("max_age=0")
+    for (const bad of [-1, 86401, 1.5, NaN]) {
+      expect(() => auth.loginUrl({ returnTo: DEST, state: "S".repeat(16), maxAge: bad })).toThrow()
+      expect(() => createAppAuth({ site: SITE, keys: ringOf(key), env: {}, maxAge: bad })).toThrow()
+    }
+    // A default on createAppAuth, used by handle()
+    const d = createAppAuth({ site: SITE, keys: ringOf(key), env: {}, now: () => T0, maxAge: 60 })
+    const r = await d.handle(new Request(`http://notes.localhost${LOGIN_PATH}`, { headers: { host: "notes.localhost" } }), () => new Response("x"))
+    expect(new URL(r!.headers.get("location")!).searchParams.get("max_age")).toBe("60")
+    const per = await d.handle(new Request(`http://notes.localhost${LOGIN_PATH}`, { headers: { host: "notes.localhost" } }), () => new Response("x"), { maxAge: 0 })
+    expect(new URL(per!.headers.get("location")!).searchParams.get("max_age")).toBe("0")
+  })
+
+  it("a token whose auth_time is older than the cookie's maxAge is stale_auth, even if the browser stripped max_age", async () => {
+    const key = generateKey()
+    const { auth, c } = makeAuth(key)
+    const s = await start(auth, { maxAge: 60 })
+    c.advance(5_000)
+    // auth_time 10 minutes ago: the portal never saw max_age (stripped), so it didn't force a fresh login
+    const nowS = Math.floor(c.now() / 1000)
+    const stale = await back(auth, key, s, { auth_time: nowS - 600 }, c.now())
+    expect(stale).toMatchObject({ ok: false, status: 401, error: "stale_auth" })
+    // within maxAge + skew: fine
+    const s2 = await start(auth, { maxAge: 60 })
+    expect((await back(auth, key, s2, { auth_time: nowS - 60 - CLOCK_SKEW_S }, c.now())).ok).toBe(true)
+  })
+
+  it("maxAge 0: only an authentication made after this sign-in started", async () => {
+    const key = generateKey()
+    const { auth, c } = makeAuth(key)
+    const s = await start(auth, { maxAge: 0 })
+    const startedS = Math.floor(c.now() / 1000)
+    c.advance(120_000)
+    expect((await back(auth, key, s, { auth_time: startedS - CLOCK_SKEW_S - 1 }, c.now()))).toMatchObject({ ok: false, error: "stale_auth" })
+    const s2 = await start(auth, { maxAge: 0 })
+    c.advance(120_000)
+    expect((await back(auth, key, s2, { auth_time: Math.floor(c.now() / 1000) - 60 }, c.now())).ok).toBe(true)
+  })
+
+  it("verify(token, { maxAge }) checks it explicitly; a stale token doesn't burn its jti", async () => {
+    const key = generateKey()
+    const { auth } = makeAuth(key)
+    const { token } = await mint(key, { auth_time: Math.floor(T0 / 1000) - 3600 })
+    expect(await auth.verify(token, { maxAge: 60 })).toMatchObject({ ok: false, error: "stale_auth" })
+    expect(await auth.verify(token, { maxAge: 3600 })).toMatchObject({ ok: true })
+  })
+
+  it("returns superuser from the token", async () => {
+    const key = generateKey()
+    const { auth } = makeAuth(key)
+    expect(await auth.verify((await mint(key, { superuser: true })).token)).toMatchObject({ ok: true, user: "claude", superuser: true })
+    expect(await auth.verify((await mint(key, { superuser: false })).token)).toMatchObject({ ok: true, superuser: false })
+  })
+
+  it("a cookie with a bad m is not ours", async () => {
+    const key = generateKey()
+    const { auth } = makeAuth(key)
+    const { token } = await mint(key)
+    const r = await auth.handleCallback(await callback(form({ candy_token: token, state: "S".repeat(32) }), { cookie: `${STATE_COOKIE}=${await cookieValue({ m: -5 } as any)}` }))
+    expect(r).toMatchObject({ ok: false, error: "state" })
+  })
+})
+
+// Review finding (sdk-maxage.ts): the state cookie was plain base64, so the browser
+// could drop m (maxAge) or back-date t and pass a stale login through handleCallback.
+describe("the state cookie is authenticated", () => {
+  const startLogin = async (auth: ReturnType<typeof createAppAuth>, o: { maxAge?: number } = {}) => {
+    const res = await auth.login(new Request(`http://notes.localhost${LOGIN_PATH}`, { headers: { host: "notes.localhost" } }), o)
+    const raw = res.headers.get("set-cookie")!.split(";")[0].slice(STATE_COOKIE.length + 1)
+    return { loc: new URL(res.headers.get("location")!), raw }
+  }
+  const staleToken = async (key: JweKey, loc: URL, nowMs: number) =>
+    (await mint(key, { state: loc.searchParams.get("state")!, nonce: loc.searchParams.get("nonce")!, dest: loc.searchParams.get("return_to")!, auth_time: Math.floor(nowMs / 1000) - 6 * 86400 }, nowMs)).token
+  const post = (token: string, state: string, cookie: string) => new Request(`https://notes.localhost${CALLBACK_PATH}`, {
+    method: "POST", headers: { host: "notes.localhost", "content-type": "application/x-www-form-urlencoded", cookie: `${STATE_COOKIE}=${cookie}` },
+    body: form({ candy_token: token, state }),
+  })
+  const edit = (raw: string, f: (o: any) => void) => {
+    const [body] = raw.split(".")
+    const o = JSON.parse(new TextDecoder().decode(b64urlDecode(body)))
+    f(o)
+    return [b64urlEncode(new TextEncoder().encode(JSON.stringify(o))), ...raw.split(".").slice(1)].join(".")
+  }
+
+  it("the PoC: dropping m from the cookie is refused (state), and the app's default maxAge holds anyway", async () => {
+    const key = generateKey()
+    const { auth, c } = makeAuth(key, { maxAge: 60 })
+    const { loc, raw } = await startLogin(auth)
+    const token = await staleToken(key, loc, c.now())
+    const forged = edit(raw, o => { delete o.m })
+    expect(await auth.handleCallback(post(token, loc.searchParams.get("state")!, forged))).toMatchObject({ ok: false, status: 400, error: "state" })
+    // An unsigned cookie of the old format is refused too
+    const unsigned = raw.split(".")[0]
+    expect(await auth.handleCallback(post(token, loc.searchParams.get("state")!, unsigned))).toMatchObject({ ok: false, error: "state" })
+    // The genuine cookie with the stale token: stale_auth
+    expect(await auth.handleCallback(post(token, loc.searchParams.get("state")!, raw))).toMatchObject({ ok: false, error: "stale_auth" })
+  })
+
+  it("the default maxAge is enforced even when the cookie (genuinely) has no m", async () => {
+    const key = generateKey()
+    const { c } = makeAuth(key)
+    const plain = createAppAuth({ site: SITE, keys: ringOf(key), env: {}, now: c.now })
+    const { loc, raw } = await startLogin(plain)                      // made without maxAge
+    const strict = createAppAuth({ site: SITE, keys: ringOf(key), env: {}, now: c.now, maxAge: 60 })
+    expect(await strict.handleCallback(post(await staleToken(key, loc, c.now()), loc.searchParams.get("state")!, raw))).toMatchObject({ ok: false, error: "stale_auth" })
+  })
+
+  it("back-dating t is refused, and maxAge 0 needs auth_time at or after the signed start", async () => {
+    const key = generateKey()
+    const { auth, c } = makeAuth(key)
+    const { loc, raw } = await startLogin(auth, { maxAge: 0 })
+    const backdated = edit(raw, o => { o.t -= 7 * 86400_000 })
+    const state = loc.searchParams.get("state")!
+    const old = (await mint(key, { state, nonce: loc.searchParams.get("nonce")!, dest: loc.searchParams.get("return_to")!, auth_time: Math.floor(c.now() / 1000) - 1 }, c.now())).token
+    expect(await auth.handleCallback(post(old, state, backdated))).toMatchObject({ ok: false, error: "state" })
+    expect(await auth.handleCallback(post(old, state, raw))).toMatchObject({ ok: false, error: "stale_auth" })
+    const fresh = (await mint(key, { state, nonce: loc.searchParams.get("nonce")!, dest: loc.searchParams.get("return_to")!, auth_time: Math.floor(c.now() / 1000) }, c.now())).token
+    expect((await auth.handleCallback(post(fresh, state, raw))).ok).toBe(true)
+  })
+
+  it("a cookie MAC'd with another site's key, or another key, is refused; one made before a rotation still works", async () => {
+    const key = generateKey()
+    const { auth, c } = makeAuth(key)
+    const { loc, raw } = await startLogin(auth)
+    const state = loc.searchParams.get("state")!
+    const tok = async () => (await mint(key, { state, nonce: loc.searchParams.get("nonce")!, dest: loc.searchParams.get("return_to")! }, c.now())).token
+    const other = generateKey()
+    const foreign = await sealStateCookie(JSON.parse(new TextDecoder().decode(b64urlDecode(raw.split(".")[0]))), { ...other, kid: key.kid }, SITE)
+    expect(await auth.handleCallback(post(await tok(), state, foreign))).toMatchObject({ ok: false, error: "state" })
+    const otherSite = await sealStateCookie(JSON.parse(new TextDecoder().decode(b64urlDecode(raw.split(".")[0]))), key, "other")
+    expect(await auth.handleCallback(post(await tok(), state, otherSite))).toMatchObject({ ok: false, error: "state" })
+    // Rotated: ring [new, old] still opens a cookie made with old
+    const rotated = createAppAuth({ site: SITE, keys: ringOf(generateKey(), key), env: {}, now: c.now })
+    expect((await rotated.handleCallback(post(await tok(), state, raw))).ok).toBe(true)
+  })
+
+  it("verify(token, { maxAge: 0 }) without a start is always stale (it can't know when the sign-in began)", async () => {
+    const key = generateKey()
+    const { auth } = makeAuth(key)
+    expect(await auth.verify((await mint(key, { auth_time: Math.floor(T0 / 1000) })).token, { maxAge: 0 })).toMatchObject({ ok: false, error: "stale_auth" })
+  })
+
+  it("login without any key answers 503 and sets no cookie", async () => {
+    const auth = createAppAuth({ site: SITE, env: {} })
+    const res = await auth.login(new Request(`http://notes.localhost${LOGIN_PATH}`, { headers: { host: "notes.localhost" } }))
+    expect(res.status).toBe(503)
+    expect(res.headers.get("set-cookie")).toBeNull()
   })
 })

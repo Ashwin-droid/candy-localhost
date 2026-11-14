@@ -23,6 +23,11 @@ export interface RequestAuth {
   amr?: "pam" | "passkey"
   pamAt?: number | null
   sessionCreated?: number
+  // Portal only: when and how the user last authenticated (login, /auth/reauth,
+  // a fresh passkey for an app), and the parked app request it was for
+  authAt?: number
+  authMethod?: "pam" | "passkey"
+  freshFor?: string | null
 }
 
 export const classifyRoute = (table: readonly RouteRule[], method: string, path: string): RouteClass | null => {

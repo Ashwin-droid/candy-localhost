@@ -7,7 +7,7 @@ import {
   validateAuthorize, recheckRequest, mintAppToken, successReturn, errorReturn, consentView, hostKind,
   mayFetchSiteKey, issuersFor,
   ROTATION_OVERLAP_MS, MAX_SITES, CONSENT_TTL_MS, MAX_CONSENTS, PENDING_TTL_MS, MAX_PENDING_USED, MAX_RETURN_TO,
-  AUTHZ_BAD_RETURN, AUTHZ_NOT_SITE, AUTHZ_SITE_MISMATCH, AUTHZ_BAD_STATE, AUTHZ_BAD_NONCE, AUTHZ_DUPLICATE, AUTHZ_EXPIRED, AUTHZ_CHANGED,
+  AUTHZ_BAD_RETURN, AUTHZ_NOT_SITE, AUTHZ_SITE_MISMATCH, AUTHZ_BAD_STATE, AUTHZ_BAD_NONCE, AUTHZ_DUPLICATE, AUTHZ_EXPIRED, AUTHZ_CHANGED, AUTHZ_BAD_MAX_AGE, freshnessOk, freshKey,
   type AuthorizeRequest, type SiteLookup,
 } from "../app-auth.ts"
 import { openClaims, generateKey, b64urlEncode, JweError, CLOCK_SKEW_S, DEFAULT_TTL_S, MAX_RING_KEYS, KID_RE, type JweKey } from "../jwe.ts"
@@ -55,7 +55,7 @@ const expectJweError = async (p: Promise<unknown>, code: string) => {
 const request = (over: Partial<AuthorizeRequest> = {}): AuthorizeRequest => ({
   id: "R".repeat(32), site: "notes", owner: "claude",
   returnTo: "https://notes.localhost/_candy/auth/callback", returnHost: "notes.localhost",
-  state: STATE, nonce: NONCE, issuer: ISS, ip: "203.0.113.5", created: T0, ...over,
+  state: STATE, nonce: NONCE, issuer: ISS, ip: "203.0.113.5", created: T0, maxAge: null, ...over,
 })
 
 // ---------------------------------------------------------------------------
@@ -66,9 +66,22 @@ describe("validateAuthorize", () => {
     expect(validateAuthorize(good({ nonce: NONCE }), look)).toEqual({
       ok: true, site: "notes", owner: "claude",
       returnTo: "https://notes.localhost/_candy/auth/callback", returnHost: "notes.localhost",
-      state: STATE, nonce: NONCE,
+      state: STATE, nonce: NONCE, maxAge: null,
     })
     expect(look.asked).toEqual(["notes.localhost"])
+  })
+
+  it("max_age: a whole number of seconds 0..86400, once; anything else is refused before parking", () => {
+    for (const [raw, want] of [["0", 0], ["300", 300], ["86400", 86400]] as const) {
+      expect(validateAuthorize(good({ max_age: raw }), lookup())).toMatchObject({ ok: true, maxAge: want })
+    }
+    for (const bad of ["86401", "-1", "+5", " 5", "5 ", "1e3", "1.5", "", "abc", "0x10", "999999"]) {
+      expect(validateAuthorize(good({ max_age: bad }), lookup())).toEqual({ ok: false, status: 400, error: AUTHZ_BAD_MAX_AGE })
+    }
+    const twice = new URLSearchParams(good({}))
+    twice.append("max_age", "1")
+    twice.append("max_age", "2")
+    expect(validateAuthorize(twice, lookup())).toMatchObject({ ok: false, status: 400 })
   })
 
   it("nonce is optional", () => {
@@ -703,11 +716,25 @@ describe("PendingRequests", () => {
     expect(p.get(r.id)).not.toBeNull()
   })
 
-  it(`remembers at most ${MAX_PENDING_USED} used ids; the one expiring soonest goes`, () => {
+  it(`remembers at most ${MAX_PENDING_USED} used ids and fails closed when full: a used id never comes back`, () => {
     const { p, clock } = make({ maxUsed: 3 })
     const ids = [1, 2, 3, 4].map(() => { const id = p.park(base()).id; clock.t++; return id })
-    for (const id of ids) p.take(id)
+    expect(p.take(ids[0], "u1")).not.toBeNull()
+    expect(p.take(ids[1], "u2")).not.toBeNull()
+    expect(p.take(ids[2], "u3")).not.toBeNull()
     expect(p.size).toBe(3)
+    // Full of live used ids: the fourth can't be recorded, so it is refused (and nothing was evicted)
+    expect(p.take(ids[3], "u4")).toBeNull()
+    expect(p.take(ids[0], "u1")).toBeNull()
+    expect(p.size).toBe(3)
+  })
+
+  it("one user may use up only a share of the used set (review finding: no cheap flood for everyone)", () => {
+    const { p } = make({ maxUsed: 100 })   // share: 5
+    const mine = Array.from({ length: 6 }, () => p.park(base()).id)
+    expect(mine.slice(0, 5).every(id => p.take(id, "mallory") !== null)).toBe(true)
+    expect(p.take(mine[5], "mallory")).toBeNull()
+    expect(p.take(p.park(base()).id, "ashwin")).not.toBeNull()
   })
 
   it("hostile ids get null and change nothing", () => {
@@ -734,10 +761,10 @@ describe("mintAppToken", () => {
 
   it("opens with openClaims for aud = site and carries exactly the documented claims", async () => {
     const key = generateKey()
-    const { token, claims } = await mintAppToken({ req: request(), user: "ashwin", amr: "pam", sessionCreated: T0 - 3 * MIN + 999, key, now: T0 + 500 })
+    const { token, claims } = await mintAppToken({ req: request(), user: "ashwin", amr: "pam", authAt: T0 - 3 * MIN + 999, superuser: false, key, now: T0 + 500 })
     expect(claims).toEqual({
       iss: ISS, aud: "notes", sub: "ashwin", amr: ["pam"],
-      iat: nowS, exp: nowS + DEFAULT_TTL_S, auth_time: nowS - 180,
+      iat: nowS, exp: nowS + DEFAULT_TTL_S, auth_time: nowS - 180, superuser: false,
       jti: claims.jti, state: STATE, nonce: NONCE, dest: "https://notes.localhost/_candy/auth/callback",
     })
     expect(claims.jti).toMatch(/^[A-Za-z0-9_-]{22}$/)
@@ -745,9 +772,16 @@ describe("mintAppToken", () => {
     expect(opened).toEqual(claims)
   })
 
+  it("carries superuser as given (the route asks isSuperuser at mint time) and refuses a non-boolean", async () => {
+    const key = generateKey()
+    const su = await mintAppToken({ req: request(), user: "ashwin", amr: "pam", authAt: T0, superuser: true, key, now: T0 })
+    expect((await openClaims(su.token, [key], { aud: "notes", issuers: [ISS], now: nowS })).superuser).toBe(true)
+    await expect(mintAppToken({ req: request(), user: "ashwin", amr: "pam", authAt: T0, superuser: "yes" as any, key, now: T0 })).rejects.toThrow()
+  })
+
   it("leaves nonce out when the request had none; passkey amr", async () => {
     const key = generateKey()
-    const { token, claims } = await mintAppToken({ req: request({ nonce: null }), user: "claude", amr: "passkey", sessionCreated: T0, key, now: T0 })
+    const { token, claims } = await mintAppToken({ req: request({ nonce: null }), user: "claude", amr: "passkey", authAt: T0, superuser: false, key, now: T0 })
     expect("nonce" in claims).toBe(false)
     const opened = await openClaims(token, [key], { aud: "notes", issuers: [ISS], now: nowS })
     expect(opened.amr).toEqual(["passkey"])
@@ -756,7 +790,7 @@ describe("mintAppToken", () => {
 
   it("a fresh jti and a fresh ciphertext each time", async () => {
     const key = generateKey()
-    const o = { req: request(), user: "ashwin", amr: "pam" as const, sessionCreated: T0, key, now: T0 }
+    const o = { req: request(), user: "ashwin", amr: "pam" as const, authAt: T0, superuser: false, key, now: T0 }
     const a = await mintAppToken(o)
     const b = await mintAppToken(o)
     expect(a.claims.jti).not.toBe(b.claims.jti)
@@ -766,7 +800,7 @@ describe("mintAppToken", () => {
   it("is useless at another site: its ring, the same kid with another key, or the wrong aud", async () => {
     const notesKey = generateKey()
     const blogKey = generateKey()
-    const { token } = await mintAppToken({ req: request(), user: "ashwin", amr: "pam", sessionCreated: T0, key: notesKey, now: T0 })
+    const { token } = await mintAppToken({ req: request(), user: "ashwin", amr: "pam", authAt: T0, superuser: false, key: notesKey, now: T0 })
     await expectJweError(openClaims(token, [blogKey], { aud: "blog", issuers: [ISS], now: nowS }), "unknown_kid")
     await expectJweError(openClaims(token, [{ kid: notesKey.kid, key: blogKey.key }], { aud: "notes", issuers: [ISS], now: nowS }), "decrypt")
     await expectJweError(openClaims(token, [notesKey], { aud: "blog", issuers: [ISS], now: nowS }), "audience")
@@ -778,7 +812,7 @@ describe("mintAppToken", () => {
     const keys = new AppKeyStore(null, { now: () => clock.t })
     const k1 = keys.ensure("notes", "claude").ring[0]
     keys.ensure("blog", "ashwin")
-    const { token } = await mintAppToken({ req: request(), user: "ashwin", amr: "pam", sessionCreated: T0, key: keys.current("notes", "claude")!, now: T0 })
+    const { token } = await mintAppToken({ req: request(), user: "ashwin", amr: "pam", authAt: T0, superuser: false, key: keys.current("notes", "claude")!, now: T0 })
     keys.rotate("notes", "claude")
     expect(keys.current("notes", "claude")!.kid).not.toBe(k1.kid)
     expect((await openClaims(token, keys.ring("notes", "claude")!, { aud: "notes", issuers: [ISS], now: nowS })).sub).toBe("ashwin")
@@ -789,14 +823,14 @@ describe("mintAppToken", () => {
 
   it("expires: ok until exp + skew - 1, expired at exp + skew", async () => {
     const key = generateKey()
-    const { token, claims } = await mintAppToken({ req: request(), user: "ashwin", amr: "pam", sessionCreated: T0, key, now: T0 })
+    const { token, claims } = await mintAppToken({ req: request(), user: "ashwin", amr: "pam", authAt: T0, superuser: false, key, now: T0 })
     expect((await openClaims(token, [key], { aud: "notes", issuers: [ISS], now: claims.exp + CLOCK_SKEW_S - 1 })).sub).toBe("ashwin")
     await expectJweError(openClaims(token, [key], { aud: "notes", issuers: [ISS], now: claims.exp + CLOCK_SKEW_S }), "expired")
   })
 
   it("tampered, truncated and oversized tokens fail", async () => {
     const key = generateKey()
-    const { token } = await mintAppToken({ req: request(), user: "ashwin", amr: "pam", sessionCreated: T0, key, now: T0 })
+    const { token } = await mintAppToken({ req: request(), user: "ashwin", amr: "pam", authAt: T0, superuser: false, key, now: T0 })
     const parts = token.split(".")
     expect(parts).toHaveLength(5)
     expect(parts[1]).toBe("")
@@ -814,7 +848,7 @@ describe("mintAppToken", () => {
 
   it("refuses to mint claims that aren't valid (bad user, too long a ttl, bad state, non-https dest)", async () => {
     const key = generateKey()
-    const base = { req: request(), user: "ashwin", amr: "pam" as const, sessionCreated: T0, key, now: T0 }
+    const base = { req: request(), user: "ashwin", amr: "pam" as const, authAt: T0, superuser: false, key, now: T0 }
     await expectJweError(mintAppToken({ ...base, user: "Not A User" }), "claims")
     await expectJweError(mintAppToken({ ...base, ttlS: 301 }), "claims")
     await expectJweError(mintAppToken({ ...base, ttlS: 0 }), "claims")
@@ -846,6 +880,7 @@ describe("consentView", () => {
     expect(v).toEqual({
       request: "R".repeat(32), site: "notes", owner: "claude", ownerIsYou: false, user: "ashwin",
       returnHost: "notes.localhost", returnOrigin: "https://notes.localhost", hostKind: "local", remembered: false, amr: "pam",
+      fresh: { needed: false, passkeys: false, maxAge: null },
     })
     const s = JSON.stringify(v)
     expect(s).not.toContain(STATE)
@@ -890,3 +925,28 @@ describe("issuersFor", () => {
   })
 })
 
+
+describe("freshnessOk (max_age)", () => {
+  const S = (authAt: number, freshFor: string | null = null) => ({ authAt, freshFor })
+  it("no max_age: anything goes", () => {
+    expect(freshnessOk(request(), S(0), T0)).toBe(true)
+  })
+  it("max_age > 0: the latest authentication within it, or one made for this request after it was parked", () => {
+    const r = request({ maxAge: 300, created: T0 })
+    expect(freshnessOk(r, S(T0 - 300_000), T0)).toBe(true)
+    expect(freshnessOk(r, S(T0 - 300_001), T0)).toBe(false)
+    expect(freshnessOk(r, S(T0 + 10, freshKey(r.id)), T0 + 400_000)).toBe(true)
+  })
+  it("max_age = 0: only a fresh authentication bound to this very request, made after it was parked", () => {
+    const r = request({ maxAge: 0, created: T0 })
+    expect(freshnessOk(r, S(T0), T0)).toBe(false)
+    expect(freshnessOk(r, S(T0 + 5, freshKey(r.id)), T0 + 5)).toBe(true)
+    // made for another request, or before this one was parked
+    expect(freshnessOk(r, S(T0 + 5, freshKey("another-request")), T0 + 5)).toBe(false)
+    expect(freshnessOk(r, S(T0 - 1, freshKey(r.id)), T0 + 5)).toBe(false)
+  })
+  it("freshKey hides the request id", () => {
+    expect(freshKey("R".repeat(32))).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(freshKey("R".repeat(32))).not.toContain("RRRR")
+  })
+})

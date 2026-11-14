@@ -169,3 +169,25 @@ describe("memory limit", () => {
     expect(formatMemory(3000)).toBe("3000M")
   })
 })
+
+// SDK_AUTH_DESIGN.md D3: a site's auth key reaches its unit through LoadCredential, never argv
+describe("sandbox credentials", () => {
+  it("passes credentials as LoadCredential and never puts CANDY_AUTH_KEYS on the command line", () => {
+    const ring = "kid12345678:" + "A".repeat(43)
+    const cmd = systemdRunCommand(spec({
+      env: { HOME: "/home/claude", CANDY_AUTH_SITE: "wa", CANDY_AUTH_KEYS: ring },
+      credentials: [{ name: "candy-auth-keys", path: "/run/candy/app-auth/wa.keys" }],
+    }))
+    expect(cmd).toContain("--property=LoadCredential=candy-auth-keys:/run/candy/app-auth/wa.keys")
+    expect(cmd).toContain("--setenv=CANDY_AUTH_SITE=wa")
+    expect(cmd.join(" ")).not.toContain("CANDY_AUTH_KEYS")
+    expect(cmd.join(" ")).not.toContain(ring)
+  })
+
+  it("refuses credential names and paths systemd would misread", () => {
+    for (const c of [
+      { name: "Bad Name", path: "/run/x" }, { name: "x", path: "relative" }, { name: "x", path: "/run/../etc/shadow" },
+      { name: "x", path: "/run/a:b" }, { name: "x", path: "/run/a b" }, { name: "x", path: "/run/a\nb" }, { name: "x", path: "/run/%i" },
+    ]) expect(() => sandboxProperties(spec({ credentials: [c] }))).toThrow()
+  })
+})

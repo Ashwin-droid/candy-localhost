@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="referrer" content="same-origin">
+  <title>Passkeys · candy</title>
+  <link rel="icon" href="/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,400..700&family=Schibsted+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #eceef2;
+      --sheet: #ffffff;
+      --sheet-2: #f5f6f9;
+      --ink: #1a1d33;
+      --ink-2: #555b75;
+      --ink-3: #8a90a8;
+      --line: #e1e4eb;
+      --line-2: #c9cdd9;
+      --cherry: #d42a47;
+      --cherry-hover: #bb1f3b;
+      --cherry-ink: #ffffff;
+      --cherry-soft: rgba(212, 42, 71, 0.09);
+      --lemon: #c18a06;
+      --lemon-soft: rgba(232, 177, 11, 0.2);
+      --green: #0b9468;
+      --green-soft: rgba(11, 148, 104, 0.12);
+      --blue: #3b6fd8;
+      --blue-soft: rgba(59, 111, 216, 0.1);
+      --font-ui: 'Schibsted Grotesk', system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --font-host: 'Martian Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --bg: #10121a;
+        --sheet: #171a25;
+        --sheet-2: #1d2130;
+        --ink: #e7e9f2;
+        --ink-2: #a3a8c0;
+        --ink-3: #6c7290;
+        --line: #252938;
+        --line-2: #353a4c;
+        --cherry: #ff5d78;
+        --cherry-hover: #ff7a90;
+        --cherry-ink: #2a0710;
+        --cherry-soft: rgba(255, 93, 120, 0.12);
+        --lemon: #f2c14e;
+        --lemon-soft: rgba(242, 193, 78, 0.2);
+        --green: #3fd3a1;
+        --green-soft: rgba(63, 211, 161, 0.14);
+        --blue: #74a0ff;
+        --blue-soft: rgba(116, 160, 255, 0.12);
+      }
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      font: 14px/1.45 var(--font-ui);
+      background: var(--bg);
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
+      padding: 40px 16px;
+    }
+    :focus-visible { outline: 2px solid var(--cherry); outline-offset: 2px; border-radius: 6px; }
+    [hidden] { display: none !important; }
+
+    main { width: 100%; max-width: 720px; margin: 0 auto; }
+    .top { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 18px; gap: 12px; }
+    .wordmark {
+      font-family: var(--font-host);
+      font-weight: 700;
+      font-size: 22px;
+      font-stretch: 112.5%;
+      letter-spacing: -0.04em;
+      color: var(--ink);
+      text-decoration: none;
+    }
+    .wordmark span { color: var(--cherry); }
+    .back { color: var(--ink-2); font-size: 13px; text-decoration: none; }
+    .back:hover { color: var(--ink); }
+    .sheet {
+      background: var(--sheet);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 22px;
+      box-shadow: 0 1px 2px rgba(10, 12, 24, 0.04);
+      margin-bottom: 16px;
+    }
+    h1 { font-size: 17px; font-weight: 600; margin-bottom: 4px; }
+    h2 { font-size: 14px; font-weight: 600; margin-bottom: 10px; }
+    .lede { color: var(--ink-2); font-size: 13px; margin-bottom: 12px; }
+    .note {
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: var(--lemon-soft);
+      color: var(--ink);
+      font-size: 13px;
+    }
+    code, .mono { font-family: var(--font-host); font-stretch: 87.5%; font-size: 12px; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; font-size: 11px; font-weight: 600; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.04em; padding: 0 8px 8px; border-bottom: 1px solid var(--line); }
+    td { padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; color: var(--ink-2); }
+    tr:last-child td { border-bottom: none; }
+    td.name { color: var(--ink); font-weight: 500; overflow-wrap: anywhere; }
+    .name-btn { background: none; border: none; color: inherit; font: inherit; cursor: text; text-align: left; padding: 2px 4px; margin: -2px -4px; border-radius: 4px; }
+    .name-btn:hover { background: var(--sheet-2); }
+    .badge { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+    .badge.here { background: var(--green-soft); color: var(--green); }
+    .badge.synced { background: var(--blue-soft); color: var(--blue); }
+    .empty { color: var(--ink-3); font-size: 13px; padding: 6px 0; }
+
+    input[type=text], input[type=password] {
+      width: 100%;
+      height: 36px;
+      padding: 0 10px;
+      border: 1px solid var(--line-2);
+      border-radius: 8px;
+      background: var(--sheet-2);
+      color: var(--ink);
+      font: 14px var(--font-ui);
+    }
+    input:focus { outline: none; border-color: var(--cherry); }
+    .row { display: flex; gap: 10px; align-items: center; }
+    .row input { flex: 1; }
+    .btn {
+      height: 36px;
+      padding: 0 14px;
+      border: 1px solid var(--cherry);
+      border-radius: 8px;
+      background: var(--cherry);
+      color: var(--cherry-ink);
+      font: 600 13px var(--font-ui);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .btn:hover { background: var(--cherry-hover); border-color: var(--cherry-hover); }
+    .btn.secondary { background: var(--sheet-2); border-color: var(--line-2); color: var(--ink-2); }
+    .btn.secondary:hover { color: var(--ink); border-color: var(--ink-3); }
+    .btn.small { height: 28px; padding: 0 10px; font-size: 12px; }
+    .btn:disabled { opacity: 0.5; cursor: default; }
+    .msg { min-height: 20px; margin-top: 10px; font-size: 13px; color: var(--cherry); }
+    .msg.ok { color: var(--green); }
+    .msg.wait { color: var(--lemon); }
+    label { display: block; font-size: 12px; font-weight: 600; color: var(--ink-2); margin-bottom: 6px; }
+
+    @media (max-width: 560px) {
+      .hide-narrow { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="top">
+      <a class="wordmark" href="/" aria-label="candy">candy<span>.</span></a>
+      <a class="back" href="/">Back to portal</a>
+    </div>
+
+    <section class="sheet">
+      <h1>Passkeys</h1>
+      <p class="lede">Log in to the portal as <b id="me"></b> with a passkey instead of your password: Touch ID, Windows Hello, your phone or a security key.</p>
+      <p class="note" id="rpnote"></p>
+    </section>
+
+    <section class="sheet" id="reauth" hidden>
+      <h2>Enter your password again</h2>
+      <p class="lede">Adding or removing a passkey needs a recent password login.</p>
+      <form id="reauthForm" autocomplete="on">
+        <input type="text" name="username" id="reauthUser" autocomplete="username" hidden>
+        <label for="reauthPassword">Password</label>
+        <div class="row">
+          <input type="password" id="reauthPassword" autocomplete="current-password" required>
+          <button type="submit" class="btn" id="reauthGo">Confirm</button>
+          <button type="button" class="btn secondary" id="reauthCancel">Cancel</button>
+        </div>
+        <div class="msg" id="reauthMsg" role="status" aria-live="polite"></div>
+      </form>
+    </section>
+
+    <section class="sheet">
+      <h2>Your passkeys</h2>
+      <table id="table" hidden>
+        <thead>
+          <tr><th>Name</th><th class="hide-narrow">Created</th><th>Last used</th><th></th></tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <p class="empty" id="empty">Loading…</p>
+      <div class="msg" id="listMsg" role="status" aria-live="polite"></div>
+    </section>
+
+    <section class="sheet">
+      <h2>Add a passkey</h2>
+      <label for="newName">Name</label>
+      <div class="row">
+        <input type="text" id="newName" maxlength="64" autocomplete="off">
+        <button type="button" class="btn" id="add">Add a passkey</button>
+      </div>
+      <div class="msg" id="addMsg" role="status" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <script>
+    const vars = window.CANDY_VARS || {};
+    let token = window.CANDY_TOKEN || '';
+    let pamUntil = typeof vars.pamUntil === 'number' ? vars.pamUntil : null;
+    const rpId = String(vars.rpId || location.hostname);
+    const $ = (id) => document.getElementById(id);
+
+    $('me').textContent = String(vars.user || '');
+    $('reauthUser').value = String(vars.user || '');
+    $('rpnote').textContent = '';
+    $('rpnote').append('Passkeys work only on the portal address they were made on (', Object.assign(document.createElement('code'), { textContent: rpId }), '). Make one on each portal address you use.');
+
+    const platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || 'this device';
+    $('newName').value = ('Passkey on ' + platform).slice(0, 64);
+
+    // ---- base64url <-> ArrayBuffer (for browsers without the JSON helpers) ----
+    const b64urlToBuf = (s) => {
+      s = String(s).replace(/-/g, '+').replace(/_/g, '/');
+      while (s.length % 4) s += '=';
+      const bin = atob(s);
+      const out = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+      return out.buffer;
+    };
+    const bufToB64url = (buf) => {
+      const bytes = new Uint8Array(buf);
+      let bin = '';
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    };
+    const creationOptions = (json) => {
+      if (typeof PublicKeyCredential.parseCreationOptionsFromJSON === 'function') {
+        try { return PublicKeyCredential.parseCreationOptionsFromJSON(json); } catch {}
+      }
+      return Object.assign({}, json, {
+        challenge: b64urlToBuf(json.challenge),
+        user: Object.assign({}, json.user, { id: b64urlToBuf(json.user.id) }),
+        excludeCredentials: (json.excludeCredentials || []).map(c => Object.assign({}, c, { id: b64urlToBuf(c.id) })),
+      });
+    };
+    const registrationJSON = (cred) => {
+      if (typeof cred.toJSON === 'function') {
+        try { return cred.toJSON(); } catch {}
+      }
+      const r = cred.response;
+      return {
+        id: cred.id,
+        rawId: bufToB64url(cred.rawId),
+        type: cred.type,
+        response: {
+          clientDataJSON: bufToB64url(r.clientDataJSON),
+          attestationObject: bufToB64url(r.attestationObject),
+          transports: typeof r.getTransports === 'function' ? r.getTransports() : [],
+        },
+        authenticatorAttachment: cred.authenticatorAttachment || null,
+        clientExtensionResults: typeof cred.getClientExtensionResults === 'function' ? cred.getClientExtensionResults() : {},
+      };
+    };
+
+    // ---- requests ----
+    const toLogin = () => { location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search); };
+
+    // Each POST uses up the page token; get the next one afterwards (like portal.html)
+    async function refreshToken() {
+      try {
+        const res = await fetch('/token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) });
+        if (res.ok) token = (await res.json()).token || token;
+      } catch {}
+    }
+    async function post(path, body) {
+      const res = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Candy-Token': token },
+        body: JSON.stringify(body || {}),
+      });
+      await refreshToken();
+      if (res.status === 401 && res.headers.get('X-Candy-Login')) { toLogin(); throw new Error('Log in again.'); }
+      const data = await res.json().catch(() => ({}));
+      return { res, data };
+    }
+
+    // ---- recent password ----
+    let reauthWaiter = null;
+    let reauthTimer = null;
+    const needsPassword = () => pamUntil === null || pamUntil <= Date.now() + 5000;
+    function askPassword() {
+      $('reauth').hidden = false;
+      $('reauthMsg').textContent = '';
+      $('reauthPassword').value = '';
+      $('reauthPassword').focus();
+      return new Promise((resolve) => { reauthWaiter = resolve; });
+    }
+    function closeReauth(ok) {
+      $('reauth').hidden = true;
+      clearInterval(reauthTimer);
+      $('reauthGo').disabled = false;
+      const w = reauthWaiter;
+      reauthWaiter = null;
+      if (w) w(ok);
+    }
+    $('reauthCancel').addEventListener('click', () => closeReauth(false));
+    $('reauthForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const go = $('reauthGo');
+      if (go.disabled) return;
+      go.disabled = true;
+      const msg = $('reauthMsg');
+      msg.className = 'msg';
+      msg.textContent = 'Checking…';
+      try {
+        const { res, data } = await post('/auth/reauth', { password: $('reauthPassword').value });
+        $('reauthPassword').value = '';
+        if (res.ok && typeof data.pamUntil === 'number') {
+          pamUntil = data.pamUntil;
+          closeReauth(true);
+          return;
+        }
+        if (data.retryAfter) {
+          const until = Date.now() + data.retryAfter * 1000;
+          clearInterval(reauthTimer);
+          const tick = () => {
+            const left = Math.max(0, Math.ceil((until - Date.now()) / 1000));
+            if (!left) { clearInterval(reauthTimer); msg.className = 'msg'; msg.textContent = ''; go.disabled = false; return; }
+            msg.className = 'msg wait';
+            msg.textContent = `Too many failed logins. Try again in ${left}s.`;
+          };
+          tick();
+          reauthTimer = setInterval(tick, 1000);
+          return;
+        }
+        msg.textContent = data.error || 'That didn’t work.';
+        go.disabled = false;
+        $('reauthPassword').focus();
+      } catch (err) {
+        msg.textContent = err instanceof TypeError ? 'Can’t reach the candy daemon.' : err.message;
+        go.disabled = false;
+      }
+    });
+
+    // Runs a passkey change, asking for the password first when it's stale, and
+    // once more if the daemon says so ({reauth: true})
+    async function withRecentPassword(fn) {
+      if (needsPassword() && !(await askPassword())) return null;
+      let out = await fn();
+      if (out.res.status === 403 && out.data.reauth) {
+        pamUntil = null;
+        if (!(await askPassword())) return null;
+        out = await fn();
+      }
+      return out;
+    }
+
+    // ---- list ----
+    const fmt = (ms) => typeof ms === 'number' ? new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : 'never';
+
+    function row(p) {
+      const tr = document.createElement('tr');
+      const name = document.createElement('td');
+      name.className = 'name';
+      const nameBtn = document.createElement('button');
+      nameBtn.type = 'button';
+      nameBtn.className = 'name-btn';
+      nameBtn.title = 'Rename';
+      nameBtn.textContent = p.name;
+      nameBtn.addEventListener('click', () => rename(p, name, nameBtn));
+      name.append(nameBtn);
+      if (p.here) name.append(Object.assign(document.createElement('span'), { className: 'badge here', textContent: 'this portal' }));
+      else name.append(' ', Object.assign(document.createElement('span'), { className: 'mono', textContent: p.rpId }));
+      if (p.backedUp) name.append(Object.assign(document.createElement('span'), { className: 'badge synced', textContent: 'synced', title: 'Backed up by your passkey provider' }));
+
+      const created = document.createElement('td');
+      created.className = 'hide-narrow';
+      created.textContent = fmt(p.created);
+      const used = document.createElement('td');
+      used.textContent = fmt(p.lastUsed);
+      const actions = document.createElement('td');
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'btn secondary small';
+      del.textContent = 'Delete';
+      del.addEventListener('click', () => remove(p, del));
+      actions.append(del);
+      tr.append(name, created, used, actions);
+      return tr;
+    }
+
+    async function load() {
+      const msg = $('listMsg');
+      try {
+        const res = await fetch('/passkeys/list', { headers: { Accept: 'application/json' } });
+        if (res.status === 401) { toLogin(); return; }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `Failed (HTTP ${res.status})`);
+        const list = Array.isArray(data.passkeys) ? data.passkeys : [];
+        $('rows').replaceChildren(...list.map(row));
+        $('table').hidden = list.length === 0;
+        $('empty').hidden = list.length !== 0;
+        $('empty').textContent = 'No passkeys yet.';
+        msg.textContent = '';
+      } catch (e) {
+        $('empty').textContent = '';
+        msg.className = 'msg';
+        msg.textContent = e instanceof TypeError ? 'Can’t reach the candy daemon.' : e.message;
+      }
+    }
+
+    function rename(p, cell, btn) {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.maxLength = 64;
+      input.value = p.name;
+      btn.replaceWith(input);
+      input.focus();
+      input.select();
+      let done = false;
+      const finish = async (save) => {
+        if (done) return;
+        done = true;
+        const name = input.value.trim();
+        if (!save || !name || name === p.name) { input.replaceWith(btn); return; }
+        input.disabled = true;
+        try {
+          const { res, data } = await post('/passkeys/rename', { id: p.id, name });
+          if (!res.ok) throw new Error(data.error || `Failed (HTTP ${res.status})`);
+          await load();
+        } catch (e) {
+          input.replaceWith(btn);
+          $('listMsg').className = 'msg';
+          $('listMsg').textContent = e instanceof TypeError ? 'Can’t reach the candy daemon.' : e.message;
+        }
+      };
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+        if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+      });
+      input.addEventListener('blur', () => finish(true));
+    }
+
+    async function remove(p, btn) {
+      if (!confirm(`Delete the passkey “${p.name}”? You can't log in with it afterwards.`)) return;
+      const msg = $('listMsg');
+      btn.disabled = true;
+      msg.textContent = '';
+      try {
+        const out = await withRecentPassword(() => post('/passkeys/delete', { id: p.id }));
+        if (!out) { btn.disabled = false; return; }
+        if (!out.res.ok) throw new Error(out.data.error || `Failed (HTTP ${out.res.status})`);
+        msg.className = 'msg ok';
+        msg.textContent = 'Passkey deleted. Also remove it from your device or password manager.';
+        await load();
+      } catch (e) {
+        msg.className = 'msg';
+        msg.textContent = e instanceof TypeError ? 'Can’t reach the candy daemon.' : e.message;
+        btn.disabled = false;
+      }
+    }
+
+    // ---- add ----
+    const addBtn = $('add');
+    const addMsg = $('addMsg');
+    if (!window.PublicKeyCredential || !navigator.credentials) {
+      addBtn.disabled = true;
+      addMsg.textContent = 'This browser can’t make passkeys.';
+    }
+    addBtn.addEventListener('click', async () => {
+      if (addBtn.disabled) return;
+      addBtn.disabled = true;
+      addMsg.className = 'msg';
+      addMsg.textContent = '';
+      try {
+        const opts = await withRecentPassword(() => post('/passkeys/register/options', {}));
+        if (!opts) return;
+        if (!opts.res.ok) throw new Error(opts.data.error || `Failed (HTTP ${opts.res.status})`);
+        addMsg.className = 'msg wait';
+        addMsg.textContent = 'Follow your browser’s prompt…';
+        let cred;
+        try {
+          cred = await navigator.credentials.create({ publicKey: creationOptions(opts.data.publicKey) });
+        } catch (e) {
+          if (e && e.name === 'NotAllowedError') { addMsg.textContent = ''; return; }   // cancelled
+          if (e && e.name === 'InvalidStateError') throw new Error('That device already has a passkey for you here.');
+          throw new Error('Your browser couldn’t make a passkey' + (e && e.message ? ': ' + e.message : '.'));
+        }
+        if (!cred) { addMsg.textContent = ''; return; }
+        const name = $('newName').value.trim() || 'Passkey';
+        const { res, data } = await post('/passkeys/register', { challengeId: opts.data.challengeId, credential: registrationJSON(cred), name });
+        if (res.status === 403 && data.reauth) { pamUntil = null; throw new Error(data.error || 'Enter your password again, then add the passkey again.'); }
+        if (!res.ok) throw new Error(data.error || `Failed (HTTP ${res.status})`);
+        addMsg.className = 'msg ok';
+        addMsg.textContent = 'Passkey added. You can log in with it on ' + rpId + '.';
+        await load();
+      } catch (e) {
+        addMsg.className = 'msg';
+        addMsg.textContent = e instanceof TypeError ? 'Can’t reach the candy daemon.' : e.message;
+      } finally {
+        addBtn.disabled = !window.PublicKeyCredential;
+      }
+    });
+
+    load();
+  </script>
+</body>
+</html>

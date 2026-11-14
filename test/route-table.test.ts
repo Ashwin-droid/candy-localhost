@@ -117,11 +117,15 @@ describe("ROUTE_TABLE", () => {
     }
   })
 
+  // Sign in with candy's authorize step is public (an app sends the browser there
+  // before any login); it only parks the request and shows the consent page,
+  // which needs a login. Passkey login is login itself.
   it("leaves only the login, discovery and secret exchange public", () => {
     const pub = table.filter(([, , c]) => c === "public").map(([m, p]) => `${m} ${p}`).sort()
     expect(pub).toEqual([
-      "* /candy-auth/check", "GET /auth/users", "GET /candy/registry", "GET /favicon.svg", "GET /login",
-      "POST /auth/login", "POST /auth/logout", "POST /candy-auth/login", "POST /candy/advertise", "POST /mcp/auth",
+      "* /candy-auth/check", "GET /app-auth/authorize", "GET /auth/users", "GET /candy/registry", "GET /favicon.svg", "GET /login",
+      "POST /auth/login", "POST /auth/logout", "POST /auth/passkey", "POST /auth/passkey/options",
+      "POST /candy-auth/login", "POST /candy/advertise", "POST /mcp/auth",
     ])
   })
 

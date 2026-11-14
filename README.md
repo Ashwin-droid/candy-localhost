@@ -538,6 +538,10 @@ candy fn deploy|deploys|rollback|dev [name] [id]
 candy fn kv <name> get|put|list|delete ...   KV binding
 candy fn d1 <name> "<sql>"     D1 binding
 candy fn requests|request|tail|replay ...    The 24h request log
+candy app-auth [list]          Sites with a sign-in key (yours)
+candy app-auth rotate <name>   New key for a site (the old one works 10 more minutes)
+candy app-auth consents        Sites you approved; candy app-auth revoke <site> forgets one
+candy passkeys                 Your portal passkeys (add and remove them in the portal)
 candy mcp                      Start MCP server (stdio)
 candy daemon                   Run daemon in foreground
 candy help | -h                Show help
@@ -926,6 +930,49 @@ The portal (`portal.localhost`, `portal.candy`) and the public MCP consent page 
 - Because the CLI and MCP are never superusers, the commands for daemon-wide settings are refused there (`403`): `candy domain config`, `candy domain mcp …`, `candy lan publish`, `candy lan adguard`, `candy route serve`, and the matching MCP actions. LAN publishing, `tailscale serve` and the public MCP address have switches in the portal for superusers; the Cloudflare zone and AdGuard Home have no portal form yet.
 - Logins, failures and logouts are in the audit log (`AUTH_LOGIN`, `AUTH_FAIL`, `AUTH_LOGOUT`) with the account and address. Passwords never are.
 
+### Sign in with candy
+
+Apps hosted on candy don't need their own login: they send the browser to the portal, the user logs in there (password or passkey) and approves the app once, and the browser comes back with a one-shot token that only that site's key opens. The backend learns the unix user (`ashwin`, `claude`, …). Design: [SDK_AUTH_DESIGN.md](SDK_AUTH_DESIGN.md).
+
+A plain Bun server started by candy:
+
+```ts
+import { appAuth, redirectAfterLogin } from "candy-localhost"
+
+const auth = appAuth()   // site and key from what candy gave this process
+Bun.serve({
+  async fetch(req) {
+    // GET /_candy/auth/login?next=/x starts it; POST /_candy/auth/callback finishes it
+    const r = await auth.handle(req, u => {
+      // u.user is the unix user, u.amr is ["pam"] or ["passkey"]. Issue a FRESH session id here.
+      return redirectAfterLogin(u.next, `sid=${newSession(u.user)}; Path=/; Secure; HttpOnly; SameSite=Lax`)
+    })
+    if (r) return r
+    if (!sessionOf(req)) return Response.redirect("/_candy/auth/login?next=" + encodeURIComponent(new URL(req.url).pathname), 302)
+    return new Response("hello")
+  },
+})
+```
+
+A candy function gets the same object as `env.CANDY_AUTH`:
+
+```ts
+export default {
+  async fetch(request, env) {
+    const r = await env.CANDY_AUTH.handle(request, u => redirectAfterLogin(u.next, `sid=${newSession(u.user)}; Path=/; Secure; HttpOnly`))
+    if (r) return r
+    // ...
+  },
+}
+```
+
+- The token comes back as a form POST (never in a URL), lives 60 seconds, works once (the SDK keeps its `jti`), and is bound to the browser by a `__Host-candy_auth` state cookie. A token minted for one site can't be opened by another: each site has its own key, and the SDK checks the audience and the exact callback URL.
+- `return_to` must be exactly `https://<host>/_candy/auth/callback` (no port, query or fragment) on a host candy routes to that same site: `<name>.localhost`, `<name>.candy` or one of its bound domains. Anything else gets an error page, never a redirect. The SDK only accepts a token at the URL it was minted for (the callback it arrived at), never one picked by a cookie.
+- The first time, the portal asks "<site> wants to know who you are" and says who runs the site; "Remember for this site" skips the question for 30 days (per user and site; `candy app-auth revoke <site>` undoes it). Remembered or not, the token is only minted by a POST from the portal page.
+- Keys: one random 256-bit key per site, made when the site first starts (or the SDK first asks), kept by the daemon in a root-only file. Sandboxed servers and functions get it as a systemd credential (`$CREDENTIALS_DIRECTORY/candy-auth-keys`), other launches as `CANDY_AUTH_KEYS`; never on a command line. Anything else (a server you run yourself) fetches it with your API key: `appAuth({ site: "notes" })`. Only the site's owner gets it. `candy app-auth rotate <name>` makes a new key. The ring the SDK gets marks the old key as retired, so it only opens tokens made before the rotation (a token lives a minute at most): a leaked old key can't mint sign-ins afterwards, in any copy of the ring. An app using `appAuth()` refetches the ring every 5 minutes and when it meets a new key; a server holding only the old ring (started before the rotation, no API key to refetch) keeps accepting the old key until it restarts, so `candy restart` the names the command lists. Functions are restarted for you.
+- Passkeys: after a password login, open **Passkeys** in the portal (`/passkeys`) to add one; then the login page offers "Log in with a passkey". A passkey works only on the portal address it was made on (`portal.localhost` or `portal.candy`). Adding or removing one asks for the password again if it wasn't entered in the last 10 minutes, so a passkey login can't add more passkeys. A sudoer who logged in with a passkey isn't a superuser until they enter the password again (good for an hour). Passkey login is rate limited like password login and runs PAM's account checks (an expired password, `pam_access`, `pam_nologin` stop it); an account that can't log in any more can't use its passkeys either. A passkey belongs to the account (name and uid): it's removed when the account is deleted or leaves the `candy` group, and a new account that reuses the name never inherits it.
+- Audit log: `APP_AUTH_GRANT` / `APP_AUTH_DENY` (user, site, how they logged in, the token's id), `APP_AUTH_KEY_FETCH`, `APP_AUTH_KEY_ROTATE`, `APP_AUTH_RESET` (a name changed hands: new key, approvals dropped), `PASSKEY_ADD` / `PASSKEY_DELETE` / `PASSKEY_COUNTER` / `PASSKEY_DROP`, `AUTH_REAUTH`. Never a token or a key.
+
 ### Multiple Users
 
 Add people to the `candy` group to let them use the daemon:
@@ -975,6 +1022,10 @@ Runs as the installing user with `CAP_NET_BIND_SERVICE` for port 53 — not root
 | `~/.config/caddy/caddy.log` | Caddy process stdout/stderr |
 | `~/.config/caddy/candy.pid` | Daemon PID |
 | `/run/candy/users/<user>/secret` | Per-user bootstrap secret (root mode) |
+| `/var/lib/candy-daemon/app-auth-keys.json` | Sign in with candy: each site's key ring, root-only 0600 (`~/.local/state/candy/` as a normal user) |
+| `/var/lib/candy-daemon/app-auth-consent.json` | Sign in with candy: remembered approvals (user, site, owner) |
+| `/var/lib/candy-daemon/passkeys.json` | Portal passkeys: public keys and counters only |
+| `/run/candy/app-auth/<name>.keys` | A sandboxed site's key ring for `LoadCredential=` (root-only) |
 | `/var/lib/candy/<name>/` | A sandboxed server's state folder (`CANDY_STATE_DIR`). For a function: KV/D1 SQLite files and `deploys/` (`~/.local/state/candy/fn/<name>/` as a normal user) |
 | `/var/lib/candy-daemon/fn-log/<name>.sqlite` | A function's 24h request log, daemon-only (`~/.local/state/candy/fn-log/` as a normal user) |
 | `/run/candy/fn/<name>.sock` | Socket a function's instances dial in on (`$XDG_RUNTIME_DIR/candy/fn/` as a normal user) |

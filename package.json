@@ -8,6 +8,7 @@
   "exports": {
     ".": "./sdk.ts",
     "./sdk": "./sdk.ts",
+    "./auth": "./sdk-auth.ts",
     "./cli": "./cli.ts",
     "./daemon": "./daemon.ts",
     "./mcp": "./mcp.ts"

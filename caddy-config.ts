@@ -158,6 +158,12 @@ export const LOG_REDACTED_REQUEST_HEADERS = [
   "Authorization", "Proxy-Authorization", "Cookie", "X-Auth-Token",
 ] as const
 export const LOG_REDACTED_RESPONSE_HEADERS = ["Set-Cookie"] as const
+/**
+ * Query parameters dropped from the logged URI. Sign in with candy never puts
+ * its token in a URL (it is a form POST), but an app that misuses the SDK, or
+ * a hand-made link, must not get a live login token into the log either.
+ */
+export const LOG_REDACTED_QUERY_PARAMS = ["candy_token"] as const
 
 export const caddyGlobalBlock = (o: { adminSocket: string; accessLog: string }): string => {
   if (!o.adminSocket.startsWith("/") || /[\s{}"'#|]/.test(o.adminSocket)) throw new Error(`bad admin socket path: ${o.adminSocket}`)
@@ -165,6 +171,9 @@ export const caddyGlobalBlock = (o: { adminSocket: string; accessLog: string }):
   const drop = [
     ...LOG_REDACTED_REQUEST_HEADERS.map(h => `        request>headers>${h} delete`),
     ...LOG_REDACTED_RESPONSE_HEADERS.map(h => `        resp_headers>${h} delete`),
+    `        request>uri query {`,
+    ...LOG_REDACTED_QUERY_PARAMS.map(q => `          delete ${q}`),
+    `        }`,
   ].join("\n")
   return `{
   # Admin API on a 0600 unix socket: on localhost:2019 any local user could load a config into this root Caddy

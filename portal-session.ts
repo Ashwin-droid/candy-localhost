@@ -25,7 +25,13 @@ const SHA256_HEX = /^[0-9a-f]{64}$/
 const ID_RE = /^[A-Za-z0-9_-]{16,64}$/
 const USER_RE = /^[a-z_][a-z0-9_.-]{0,31}\$?$/i
 
-export interface PortalSession { id: string; user: string; created: number; lastSeen: number }
+export type SessionAmr = "pam" | "passkey"
+/**
+ * amr: how the login was made. pamAt: when the password was last checked for
+ * this session (the login itself, or POST /auth/reauth), null for a passkey
+ * login that never re-entered it. Passkey management needs a recent one.
+ */
+export interface PortalSession { id: string; user: string; created: number; lastSeen: number; amr: SessionAmr; pamAt: number | null }
 export interface SessionOptions { idleMs?: number; maxMs?: number; now?: () => number }
 
 // hash: sha256 of the cookie. secretHash: sha256 of the session secret the
@@ -57,12 +63,14 @@ export class PortalSessions {
    * request: browsers send the portal's cookie to any port on its host, but
    * localStorage stays with the exact origin.
    */
-  create(user: string, meta: { ip?: string; ua?: string } = {}): { id: string; cookie: string; secret: string } {
+  create(user: string, meta: { ip?: string; ua?: string } = {}, opts: { amr?: SessionAmr } = {}): { id: string; cookie: string; secret: string } {
     if (!USER_RE.test(user)) throw new Error("invalid user name")
+    const amr = opts.amr ?? "pam"
+    if (amr !== "pam" && amr !== "passkey") throw new Error("invalid amr")
     const now = this.now()
     const cookie = randomB64(32)
     const secret = randomB64(32)
-    const s: Stored = { id: randomB64(18), user, created: now, lastSeen: now, hash: sha256Hex(cookie), secretHash: sha256Hex(secret), ip: clip(meta.ip), ua: clip(meta.ua), savedLastSeen: now }
+    const s: Stored = { id: randomB64(18), user, created: now, lastSeen: now, amr, pamAt: amr === "pam" ? now : null, hash: sha256Hex(cookie), secretHash: sha256Hex(secret), ip: clip(meta.ip), ua: clip(meta.ua), savedLastSeen: now }
     this.byHash.set(s.hash, s)
     // Oldest first: Maps keep insertion order. Per user, so one account can't push everyone else out.
     let mine = 0
@@ -94,7 +102,23 @@ export class PortalSessions {
     }
     s.lastSeen = Math.max(s.lastSeen, now)
     if (s.lastSeen - s.savedLastSeen >= SLIDE_PERSIST_MS) this.save()
-    return { id: s.id, user: s.user, created: s.created, lastSeen: s.lastSeen }
+    return { id: s.id, user: s.user, created: s.created, lastSeen: s.lastSeen, amr: s.amr, pamAt: s.pamAt }
+  }
+
+  /**
+   * The password was just checked again for this session (POST /auth/reauth):
+   * pamAt = now, saved. Returns it, or null when there is no such live session.
+   */
+  markPam(id: string): number | null {
+    const now = this.now()
+    for (const s of this.byHash.values()) {
+      if (s.id !== id) continue
+      if (this.expired(s, now)) return null
+      s.pamAt = now
+      this.save()
+      return now
+    }
+    return null
   }
 
   /** Whether a session id is still live (no sliding). For tying page tokens to a login. */
@@ -132,7 +156,7 @@ export class PortalSessions {
   }
 
   list(): (PortalSession & { ip: string; ua: string })[] {
-    return [...this.byHash.values()].map(({ id, user, created, lastSeen, ip, ua }) => ({ id, user, created, lastSeen, ip, ua }))
+    return [...this.byHash.values()].map(({ id, user, created, lastSeen, amr, pamAt, ip, ua }) => ({ id, user, created, lastSeen, amr, pamAt, ip, ua }))
   }
 
   get size(): number { return this.byHash.size }
@@ -165,7 +189,17 @@ export class PortalSessions {
       if (typeof r.user !== "string" || !USER_RE.test(r.user)) continue
       if (!finite(r.created) || !finite(r.lastSeen)) continue
       if (r.created > now + CLOCK_SKEW_MS || r.lastSeen > now + CLOCK_SKEW_MS || r.lastSeen < r.created) continue
-      const s: Stored = { id: r.id, user: r.user, created: r.created, lastSeen: r.lastSeen, hash: r.hash, secretHash: r.secretHash, ip: clip(r.ip), ua: clip(r.ua), savedLastSeen: r.lastSeen }
+      // Sessions from before amr existed were all password logins
+      let amr: SessionAmr
+      let pamAt: number | null
+      if (r.amr === undefined) { amr = "pam"; pamAt = r.created }
+      else if (r.amr === "pam" || r.amr === "passkey") {
+        amr = r.amr
+        if (r.pamAt === null && amr === "passkey") pamAt = null
+        else if (finite(r.pamAt) && r.pamAt >= r.created && r.pamAt <= now + CLOCK_SKEW_MS) pamAt = r.pamAt
+        else continue
+      } else continue
+      const s: Stored = { id: r.id, user: r.user, created: r.created, lastSeen: r.lastSeen, amr, pamAt, hash: r.hash, secretHash: r.secretHash, ip: clip(r.ip), ua: clip(r.ua), savedLastSeen: r.lastSeen }
       if (this.expired(s, now)) continue
       ids.add(s.id)
       this.byHash.set(s.hash, s)
@@ -177,7 +211,7 @@ export class PortalSessions {
     if (!this.file) return
     const sessions = [...this.byHash.values()].map(s => {
       s.savedLastSeen = s.lastSeen
-      return { id: s.id, hash: s.hash, secretHash: s.secretHash, user: s.user, created: s.created, lastSeen: s.lastSeen, ip: s.ip, ua: s.ua }
+      return { id: s.id, hash: s.hash, secretHash: s.secretHash, user: s.user, created: s.created, lastSeen: s.lastSeen, amr: s.amr, pamAt: s.pamAt, ip: s.ip, ua: s.ua }
     })
     const tmp = `${this.file}.${process.pid}.${randomB64(6)}.tmp`
     try {

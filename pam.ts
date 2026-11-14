@@ -6,6 +6,10 @@
 // {service, user, password, confdir?} as JSON on stdin and reads one JSON line
 // {ok, code, message, stage} back. The password is never in argv or env and is
 // never logged. See "Portal Login (PAM)" in AUTH_DESIGN.md.
+//
+// {service, user, mode: "account"} (no password) runs only pam_acct_mgmt:
+// what a passkey login (passkey-store.ts) checks, so an expired password,
+// pam_access, pam_time or pam_nologin refuse it the way they refuse a password.
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { dlopen, FFIType, JSCallback, ptr, read, toArrayBuffer } from "bun:ffi"
@@ -118,7 +122,28 @@ export const verifyPasswordWith = async (
   if (opts.confdir !== undefined) input.confdir = opts.confdir
   const payload = Buffer.from(JSON.stringify(input), "utf8")
   pw.fill(0)
+  return callHelper(deps, payload, opts)
+}
 
+/**
+ * PAM's account stage alone (pam_acct_mgmt, no pam_authenticate) for `user`,
+ * with injectable spawner (tests). ok only when it says PAM_SUCCESS.
+ */
+export const checkAccountWith = async (deps: PamDeps, user: string, opts: PamVerifyOptions = {}): Promise<PamVerifyResult> => {
+  if (!validUsername(user)) return fail("denied")
+  const service = opts.service ?? DEFAULT_SERVICE
+  if (!validService(service)) return fail("unavailable")
+  const input: Record<string, unknown> = { service, user, mode: "account" }
+  if (opts.confdir !== undefined) input.confdir = opts.confdir
+  return callHelper(deps, Buffer.from(JSON.stringify(input), "utf8"), opts)
+}
+
+/** checkAccountWith with the real helper. Never throws. */
+export const checkAccount = (user: string, opts?: PamVerifyOptions): Promise<PamVerifyResult> =>
+  checkAccountWith({}, user, opts)
+
+// Runs the helper with `payload` on stdin (wiped after) and maps its answer
+const callHelper = async (deps: PamDeps, payload: Buffer, opts: PamVerifyOptions): Promise<PamVerifyResult> => {
   const cmd = deps.helperCmd ?? [process.execPath, import.meta.path, "--helper"]
   const cap = deps.outputCap ?? HELPER_OUTPUT_CAP
   const timeoutMs = opts.timeoutMs ?? HELPER_TIMEOUT_MS
@@ -260,8 +285,8 @@ export const createConversation = (libc: Libc, password: Buffer, user: Buffer): 
   }, { args: [FFIType.i32, FFIType.ptr, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 })
 
 /** Run one PAM transaction. Exported for the helper entry point only. */
-export const runPam = async (input: { service: string; user: string; password: Buffer; confdir?: string }): Promise<PamHelperResult> => {
-  const { service, user, password, confdir } = input
+export const runPam = async (input: { service: string; user: string; password: Buffer; confdir?: string; accountOnly?: boolean }): Promise<PamHelperResult> => {
+  const { service, user, password, confdir, accountOnly = false } = input
   const result = (stage: PamHelperResult["stage"], code: number, message: string): PamHelperResult =>
     ({ ok: stage === "done" && code === PAM.SUCCESS, code, message, stage })
 
@@ -327,8 +352,10 @@ export const runPam = async (input: { service: string; user: string; password: B
     const message = (code: number) => {
       try { return String(pam.symbols.pam_strerror(handle, code) ?? "") } catch { return "" }
     }
-    status = pam.symbols.pam_authenticate(handle, 0)
-    if (status !== PAM.SUCCESS) return result("auth", status, message(status))
+    if (!accountOnly) {
+      status = pam.symbols.pam_authenticate(handle, 0)
+      if (status !== PAM.SUCCESS) return result("auth", status, message(status))
+    }
     status = pam.symbols.pam_acct_mgmt(handle, 0)
     if (status !== PAM.SUCCESS) return result("acct", status, message(status))
     return result("done", PAM.SUCCESS, message(PAM.SUCCESS))
@@ -359,16 +386,18 @@ const helperMain = async () => {
   let input: any
   try { input = JSON.parse(raw.toString("utf8")) } catch { input = null }
   raw.fill(0)
-  if (!input || typeof input !== "object" || typeof input.password !== "string" ||
+  const accountOnly = !!input && typeof input === "object" && input.mode === "account"
+  if (!input || typeof input !== "object" || (input.mode !== undefined && !accountOnly) ||
+      (accountOnly ? input.password !== undefined : typeof input.password !== "string") ||
       (input.confdir !== undefined && typeof input.confdir !== "string")) {
     await write({ ok: false, code: HELPER_BAD_INPUT, message: "bad input", stage: "setup" })
     return
   }
-  const password = Buffer.from(input.password, "utf8")
+  const password = Buffer.from(accountOnly ? "" : input.password, "utf8")
   input.password = ""
   let r: PamHelperResult
   try {
-    r = await runPam({ service: input.service, user: input.user, password, confdir: input.confdir })
+    r = await runPam({ service: input.service, user: input.user, password, confdir: input.confdir, accountOnly })
   } catch (e) {
     r = { ok: false, code: PAM.SYSTEM_ERR, message: `helper error: ${(e as Error).message}`, stage: "setup" }
   } finally {

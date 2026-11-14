@@ -102,8 +102,21 @@ export interface SandboxSpec {
   // unit), and the code folder stays read-only. Deploy snapshots under the
   // state folder are read-only too; the rest of the state folder is writable.
   fn?: { socket?: string | null } | null
+  // Files systemd copies into the unit's $CREDENTIALS_DIRECTORY (LoadCredential=),
+  // readable only by the unit's user: how key material reaches a sandboxed
+  // server. Never through env, which ends up in systemd-run's argv.
+  credentials?: { name: string; path: string }[]
   description?: string
 }
+
+/** Env names that hold key material: never put on a systemd-run command line. */
+export const SECRET_ENV_NAMES: readonly string[] = ["CANDY_AUTH_KEYS"]
+const CREDENTIAL_NAME_RE = /^[a-z0-9-]{1,64}$/
+/** A LoadCredential= entry: a plain name, and an absolute, normal path with nothing systemd would read as syntax. */
+export const validCredential = (c: { name: unknown; path: unknown }): boolean =>
+  typeof c.name === "string" && CREDENTIAL_NAME_RE.test(c.name) &&
+  typeof c.path === "string" && c.path.length <= 1024 && isAbsolute(c.path) && normalize(c.path) === c.path &&
+  !/[\x00-\x20\x7f:\\%$"']/.test(c.path)
 
 // What the app is told about its writable places. Caches that normally land
 // in the (now read-only) home are pointed at the state folder. Only caches:
@@ -166,6 +179,10 @@ export const sandboxProperties = (spec: SandboxSpec): string[] => {
     if (spec.fn.socket) props.push(`BindPaths=${spec.fn.socket}`)
   }
   if (spec.envFile) props.push(`EnvironmentFile=${spec.envFile}`)
+  for (const c of spec.credentials ?? []) {
+    if (!validCredential(c)) throw new Error(`bad credential for ${spec.name}: ${JSON.stringify(c.name)}`)
+    props.push(`LoadCredential=${c.name}:${c.path}`)
+  }
   if (spec.bindsTo) props.push(`BindsTo=${spec.bindsTo}`, `After=${spec.bindsTo}`)
   return props
 }
@@ -185,6 +202,8 @@ export const systemdRunCommand = (spec: SandboxSpec): string[] => {
   ]
   for (const prop of sandboxProperties(spec)) cmd.push(`--property=${prop}`)
   for (const [key, value] of Object.entries(env)) {
+    // Key material never goes in argv (readable by every user in /proc): credentials carry it
+    if (SECRET_ENV_NAMES.includes(key)) continue
     if (value !== undefined && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) cmd.push(`--setenv=${key}=${value}`)
   }
   cmd.push("--", "bash", "-ic", spec.script, ...(spec.args?.length ? ["candy", ...spec.args] : []))

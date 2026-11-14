@@ -1,8 +1,14 @@
 const API = process.env.CANDY_DAEMON_URL || "http://localhost:9999"
 import { exchangeSecret, readSecrets, secretHint } from "./secret.ts"
 import { CRON_JOB_ENV, validateCronJob, type CronJob } from "./cron.ts"
+import { createAppAuth, type AppAuth, type AppAuthOptions } from "./sdk-auth.ts"
 
 export type { CronJob } from "./cron.ts"
+// Sign in with candy (SDK_AUTH_DESIGN.md): the app side
+export {
+  createAppAuth, redirectAfterLogin, safeAppPath, portalForHost, ReplayCache, LOGIN_PATH, CALLBACK_PATH,
+  type AppAuth, type AppAuthOptions, type AuthUser, type CallbackResult, type VerifyResult, type ReplayStore, type AuthErrorCode,
+} from "./sdk-auth.ts"
 
 export const CANDY_RUNTIME_MAGIC_ENV = "X_CANDY_RUNTIME_MAGIC_STRING"
 
@@ -378,6 +384,51 @@ export function cronJob(): string | null {
   return process.env[CRON_JOB_ENV]?.trim() || null
 }
 
+// ---------------------------------------------------------------------------
+// Sign in with candy
+// ---------------------------------------------------------------------------
+
+/** The key ring for `site`, from the daemon: only the site owner's own API key gets it. */
+const fetchSiteKeys = async (site: string): Promise<string> => {
+  const res = await daemonFetch<{ keys?: unknown }>("/sdk/auth/keys", { method: "POST", body: JSON.stringify({ name: site }) })
+  if (typeof res?.keys !== "string") throw new Error("candy auth: the daemon sent no keys")
+  return res.keys
+}
+
+let defaultAppAuth: AppAuth | null = null
+
+/**
+ * "Sign in with candy" for this app: send users to the portal, get back who
+ * they are (`user`, e.g. "ashwin"). No options: memoized, the site and key
+ * from what candy gave this process (CANDY_AUTH_SITE, the key credential or
+ * CANDY_AUTH_KEYS), refetched from the daemon with your API key when the key
+ * rotates. Inside a candy function it is the same object as env.CANDY_AUTH.
+ *
+ *   const auth = appAuth()
+ *   const r = await auth.handle(req, u => redirectAfterLogin(u.next, newSessionCookie(u.user)))
+ *   if (r) return r
+ *
+ * Outside candy, pass { site } (a site you own); the key comes from the daemon.
+ */
+export function appAuth(opts?: AppAuthOptions): AppAuth {
+  if (opts === undefined) {
+    const fromHost = (globalThis as Record<symbol, unknown>)[Symbol.for("candy.appAuth")] as AppAuth | undefined
+    if (fromHost) return fromHost
+    if (defaultAppAuth) return defaultAppAuth
+  }
+  let auth: AppAuth
+  try {
+    auth = createAppAuth({ fetchKeys: fetchSiteKeys, ...opts })
+  } catch (e) {
+    if ((e as Error).message === "candy auth: no site name") {
+      throw new Error("candy auth: no site name. Servers and functions candy starts get CANDY_AUTH_SITE; elsewhere pass appAuth({ site: '<your site>' }).")
+    }
+    throw e
+  }
+  if (opts === undefined) defaultAppAuth = auth
+  return auth
+}
+
 const candySdk = {
   checkRuntime,
   registerServer,
@@ -390,6 +441,8 @@ const candySdk = {
   removeCron,
   listCrons,
   cronJob,
+  appAuth,
+  createAppAuth,
 }
 
 export default candySdk

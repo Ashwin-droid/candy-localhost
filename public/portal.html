@@ -102,6 +102,10 @@
       background: var(--lemon-soft); color: var(--lemon);
     }
 
+    .dialog .form-msg { min-height: 18px; font-size: 13px; color: var(--cherry); }
+    .dialog .form-msg.wait { color: var(--lemon); }
+    .dialog .form-msg:empty { display: none; }
+
     /* ---------- Buttons ---------- */
     .btn {
       display: inline-flex; align-items: center; justify-content: center; gap: 6px;
@@ -112,6 +116,7 @@
       cursor: pointer;
     }
     .btn:hover { border-color: var(--ink-3); }
+    a.btn { text-decoration: none; }
     .btn:disabled { opacity: 0.5; cursor: default; }
     .btn.primary { background: var(--cherry); border-color: var(--cherry); color: var(--cherry-ink); font-weight: 600; }
     .btn.primary:hover { background: var(--cherry-hover); border-color: var(--cherry-hover); }
@@ -526,6 +531,9 @@
     <div class="who" aria-label="Logged in">
       <span class="who-name" id="who-name"></span>
       <span class="badge-su" id="who-su" hidden title="You see and manage every user's sites and the daemon's settings">superuser</span>
+      <!-- A sudoer's passkey login: superuser only after the password again (/auth/reauth), for an hour -->
+      <button class="btn quiet small" id="who-unlock" hidden onclick="unlockSuperuser()" title="You logged in with a passkey. Enter your password to act as a superuser for an hour.">Unlock superuser</button>
+      <a class="btn quiet small" href="/passkeys" title="Log in to the portal with a passkey instead of your password">Passkeys</a>
       <button class="btn quiet small" onclick="logout()">Log out</button>
     </div>
     <div class="top-actions">
@@ -793,6 +801,31 @@
     </div>
   </div>
 
+  <!-- Superuser step-up: the password again (POST /auth/reauth), as on the passkeys page. Never kept. -->
+  <div id="unlock-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="unlock-title">
+    <div class="dialog" style="width: 400px;">
+      <div class="dialog-head">
+        <h2 id="unlock-title">Enter your password again</h2>
+        <button class="btn quiet dots" onclick="closeUnlock(false)" aria-label="Close">&times;</button>
+      </div>
+      <div class="dialog-body">
+        <form id="unlock-form" onsubmit="submitUnlock(event)" autocomplete="on">
+          <input type="text" name="username" id="unlock-user" autocomplete="username" hidden>
+          <div class="hint" id="unlock-why">You logged in with a passkey. Acting as a superuser needs your password, and lasts an hour.</div>
+          <div class="field">
+            <label for="unlock-password">Password</label>
+            <input type="password" id="unlock-password" class="input-field" autocomplete="current-password" required>
+          </div>
+          <div class="form-msg" id="unlock-msg" role="status" aria-live="polite"></div>
+          <div class="dialog-actions">
+            <button type="button" class="btn" onclick="closeUnlock(false)">Cancel</button>
+            <button type="submit" class="btn primary" id="unlock-go">Confirm</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
   <!-- Single-field prompt (rename, set port) -->
   <div id="prompt-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
     <div class="dialog" style="width: 400px;">
@@ -962,9 +995,11 @@
 
     // Who is logged in. The daemon enforces every rule; this only hides what would be refused.
     const ME = window.CANDY_VARS || {};
-    const SUPER = !!ME.superuser;
+    // Can change without a reload: a passkey login's superuser step-up (applyAuth)
+    let SUPER = !!ME.superuser;
     document.getElementById('who-name').textContent = ME.user || '';
     document.getElementById('who-su').hidden = !SUPER;
+    document.getElementById('who-unlock').hidden = !ME.superuserNeedsPassword;
 
     function goLogin() {
       location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
@@ -1024,9 +1059,140 @@
           if (retry.ok) await refreshToken();
           return retry;
         }
+      } else if (res.status === 403) {
+        // A superuser route refused a passkey login that hasn't re-entered the
+        // password (the guard's superuserNeedsPassword). The guard ran before the
+        // token check, so the token is unused. Something the user did: offer the
+        // password and try once more. A background poll only updates the header.
+        const body = await res.clone().json().catch(() => ({}));
+        if (body && body.superuserNeedsPassword) {
+          applyAuth({ ...ME, superuser: false, superuserNeedsPassword: true, superuserUntil: null });
+          const method = String(options.method || 'GET').toUpperCase();
+          if (method !== 'GET' && method !== 'HEAD' && await askSuperuserPassword(true)) {
+            headers['X-Candy-Token'] = currentToken;
+            const retry = await fetch(API + endpoint, { ...options, headers });
+            if (retry.ok) await refreshToken();
+            return retry;
+          }
+        }
       }
       return res;
     }
+
+    // ---------- Superuser step-up (a sudoer's passkey login) ----------
+    // The daemon's /auth/me says who this login is. A passkey login of a sudoer
+    // is a superuser only for an hour after POST /auth/reauth (superuserUntil);
+    // until then (and after) it gets superuserNeedsPassword and the Unlock button.
+    let superuserTimer = null;
+    function applyAuth(me) {
+      const was = SUPER;
+      ME.superuser = SUPER = !!me.superuser;
+      ME.superuserNeedsPassword = !!me.superuserNeedsPassword;
+      ME.superuserUntil = typeof me.superuserUntil === 'number' ? me.superuserUntil : null;
+      document.getElementById('who-su').hidden = !SUPER;
+      document.getElementById('who-unlock').hidden = !ME.superuserNeedsPassword;
+      document.getElementById('system-btn').hidden = !SUPER;
+      if (!SUPER) { try { if (sys.open) hideSystem(); } catch {} }  // sys: the system monitor, further down
+      // Ask /auth/me again just after the step-up runs out, so the button comes back
+      clearTimeout(superuserTimer);
+      if (ME.superuserUntil) superuserTimer = setTimeout(refreshMe, Math.max(0, ME.superuserUntil - Date.now()) + 1000);
+      // Superuser views (settings, everyone's sites, LAN/Tailscale menus) redraw from SUPER
+      if (was !== SUPER) refreshAll();
+    }
+    async function refreshMe() {
+      try {
+        const res = await fetch(API + '/auth/me', { cache: 'no-store' });
+        if (res.status === 401 && res.headers.get('X-Candy-Login')) { goLogin(); return; }
+        if (res.ok) applyAuth(await res.json());
+      } catch {}
+    }
+    // A background tab's timer may run late: look again when the portal is back in view
+    document.addEventListener('visibilitychange', () => { if (!document.hidden && (ME.superuserUntil || ME.superuserNeedsPassword)) refreshMe(); });
+
+    let unlockWaiter = null;
+    let unlockTimer = null;
+    // Opens the password prompt; resolves true once /auth/reauth took it.
+    // Callers arriving while it's open wait for the same answer.
+    let unlockPending = null;
+    function askSuperuserPassword(forAction = false) {
+      if (unlockPending) return unlockPending;
+      document.getElementById('unlock-user').value = ME.user || '';
+      document.getElementById('unlock-why').textContent = (forAction ? 'That needs a superuser. ' : '')
+        + 'You logged in with a passkey. Acting as a superuser needs your password, and lasts an hour.';
+      const msg = document.getElementById('unlock-msg');
+      msg.className = 'form-msg';
+      msg.textContent = '';
+      const pw = document.getElementById('unlock-password');
+      pw.value = '';
+      document.getElementById('unlock-modal').style.display = 'flex';
+      pw.focus();
+      unlockPending = new Promise((resolve) => { unlockWaiter = resolve; });
+      return unlockPending;
+    }
+    function closeUnlock(ok) {
+      document.getElementById('unlock-modal').style.display = 'none';
+      document.getElementById('unlock-password').value = '';
+      clearInterval(unlockTimer);
+      document.getElementById('unlock-go').disabled = false;
+      const w = unlockWaiter;
+      unlockWaiter = null;
+      unlockPending = null;
+      if (w) w(ok);
+    }
+    async function unlockSuperuser() {
+      if (await askSuperuserPassword() && SUPER) toast('You can act as a superuser for the next hour', 'success');
+    }
+    async function submitUnlock(e) {
+      e.preventDefault();
+      const go = document.getElementById('unlock-go');
+      if (go.disabled) return;
+      go.disabled = true;
+      const msg = document.getElementById('unlock-msg');
+      const pw = document.getElementById('unlock-password');
+      msg.className = 'form-msg';
+      msg.textContent = 'Checking…';
+      const password = pw.value;
+      // Never kept: cleared after every attempt, whatever the answer
+      pw.value = '';
+      try {
+        // Not apiCall: a failed password is a 401 that must not be sent again.
+        // The page token is used up either way, so get the next one after.
+        const res = await fetch(API + '/auth/reauth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Candy-Token': currentToken },
+          body: JSON.stringify({ password }),
+        });
+        await refreshToken();
+        if (res.status === 401 && res.headers.get('X-Candy-Login')) { goLogin(); return; }
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && typeof data.superuserUntil === 'number') {
+          await refreshMe();
+          closeUnlock(true);
+          return;
+        }
+        if (data.retryAfter) {
+          const until = Date.now() + data.retryAfter * 1000;
+          clearInterval(unlockTimer);
+          const reason = data.error || 'Too many failed logins.';
+          const tick = () => {
+            const left = Math.max(0, Math.ceil((until - Date.now()) / 1000));
+            if (!left) { clearInterval(unlockTimer); msg.className = 'form-msg'; msg.textContent = ''; go.disabled = false; return; }
+            msg.className = 'form-msg wait';
+            msg.textContent = `${reason} Try again in ${left}s.`;
+          };
+          tick();
+          unlockTimer = setInterval(tick, 1000);
+          return;
+        }
+        msg.textContent = data.error || 'That didn’t work.';
+        go.disabled = false;
+        pw.focus();
+      } catch {
+        msg.textContent = 'Can’t reach the candy daemon.';
+        go.disabled = false;
+      }
+    }
+    if (ME.superuserUntil) applyAuth(ME);
 
 
     // Toast notifications
@@ -1419,7 +1585,8 @@
 
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
-      if (document.getElementById('prompt-modal').style.display === 'flex') hidePrompt();
+      if (document.getElementById('unlock-modal').style.display === 'flex') closeUnlock(false);
+      else if (document.getElementById('prompt-modal').style.display === 'flex') hidePrompt();
       else if (document.getElementById('add-route-modal').style.display === 'flex') hideAddRoute();
       else if (document.getElementById('bind-domain-modal').style.display === 'flex') hideBindDomain();
       else if (document.getElementById('domain-auth-modal').style.display === 'flex') hideDomainPasswordForm();

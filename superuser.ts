@@ -89,7 +89,9 @@ export const createSuperuser = (deps: SuperuserDeps = {}) => {
     return parseGroup(res.stdout.split("\n")[0] ?? "")
   }
 
-  // Locked (passwd -l / usermod -L: "!" before the hash) or past its expiry date.
+  // Locked (passwd -l / usermod -L: "!" before the hash), past its expiry
+  // date, or its password must be changed first (passwd -e: last change 0;
+  // or older than the max age): pam_unix refuses those logins too.
   // Only root can read shadow; elsewhere PAM's account check is all there is.
   const lockedOrExpired = async (name: string): Promise<boolean> => {
     if (!isRoot) return false
@@ -98,8 +100,13 @@ export const createSuperuser = (deps: SuperuserDeps = {}) => {
     const f = (res.stdout.split("\n")[0] ?? "").split(":")
     if (f[0] !== name) return false
     if ((f[1] ?? "").startsWith("!")) return true
-    const expire = Number(f[7])
-    return f[7] !== "" && f[7] !== undefined && Number.isFinite(expire) && expire * 86400000 <= now()
+    const day = (v: string | undefined) => v !== undefined && /^\d{1,9}$/.test(v) ? Number(v) : null
+    const today = Math.floor(now() / 86400000)
+    const expire = day(f[7])
+    if (expire !== null && expire * 86400000 <= now()) return true
+    const lastchg = day(f[2]), max = day(f[4])
+    if (lastchg === 0) return true
+    return lastchg !== null && max !== null && today > lastchg + max
   }
 
   const check = async (user: string): Promise<boolean> => {

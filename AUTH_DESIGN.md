@@ -126,6 +126,8 @@ incoming request on bound domain
 
 # Portal Login (PAM) — Design
 
+> Passkey login (an alternative to the password, set up after a password login) and "Sign in with candy" for apps build on this section: see `SDK_AUTH_DESIGN.md`.
+
 ## Goal
 
 The portal (`portal.localhost`, `portal.candy`) and the public-MCP consent page require a local account login. The username is picked from a dropdown, and the password is checked against the machine's password through PAM.

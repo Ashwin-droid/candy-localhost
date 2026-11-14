@@ -123,6 +123,10 @@
     }
     .note code { font-family: var(--font-host); font-size: 12px; }
     .foot { margin-top: 14px; color: var(--ink-3); font-size: 12px; text-align: center; }
+    .or { display: flex; align-items: center; gap: 10px; margin: 16px 0 12px; color: var(--ink-3); font-size: 12px; }
+    .or::before, .or::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+    .btn.passkey { background: var(--sheet-2); border-color: var(--line-2); color: var(--ink); }
+    .btn.passkey:hover { background: var(--sheet-2); border-color: var(--ink-3); }
   </style>
 </head>
 <body>
@@ -143,6 +147,11 @@
         <button class="btn" id="submit" type="submit">Log in</button>
         <div class="msg" id="msg" role="status" aria-live="polite"></div>
       </form>
+      <div id="passkeyBox" hidden>
+        <div class="or">or</div>
+        <button class="btn passkey" id="passkeyBtn" type="button">Log in with a passkey</button>
+        <div class="msg" id="passkeyMsg" role="status" aria-live="polite"></div>
+      </div>
       <div class="note" id="unavailable" hidden>
         Login isn't set up on this machine: <code>/etc/pam.d/candy</code> is missing. Run <code>install-service.sh</code> as root to install it.
       </div>
@@ -251,6 +260,127 @@
         submit.disabled = false;
       }
     });
+
+    // ---- Passkey login ----
+    (function () {
+      const box = document.getElementById('passkeyBox');
+      const btn = document.getElementById('passkeyBtn');
+      const pkMsg = document.getElementById('passkeyMsg');
+      if (!window.PublicKeyCredential || !navigator.credentials || vars.passkeys === false) return;
+      box.hidden = false;
+
+      const b64urlToBuf = (s) => {
+        s = String(s).replace(/-/g, '+').replace(/_/g, '/');
+        while (s.length % 4) s += '=';
+        const bin = atob(s);
+        const out = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+        return out.buffer;
+      };
+      const bufToB64url = (buf) => {
+        const bytes = new Uint8Array(buf);
+        let bin = '';
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      };
+      const requestOptions = (json) => {
+        if (typeof PublicKeyCredential.parseRequestOptionsFromJSON === 'function') {
+          try { return PublicKeyCredential.parseRequestOptionsFromJSON(json); } catch {}
+        }
+        return Object.assign({}, json, {
+          challenge: b64urlToBuf(json.challenge),
+          allowCredentials: (json.allowCredentials || []).map(c => Object.assign({}, c, { id: b64urlToBuf(c.id) })),
+        });
+      };
+      const assertionJSON = (cred) => {
+        if (typeof cred.toJSON === 'function') {
+          try { return cred.toJSON(); } catch {}
+        }
+        const r = cred.response;
+        return {
+          id: cred.id,
+          rawId: bufToB64url(cred.rawId),
+          type: cred.type,
+          response: {
+            clientDataJSON: bufToB64url(r.clientDataJSON),
+            authenticatorData: bufToB64url(r.authenticatorData),
+            signature: bufToB64url(r.signature),
+            userHandle: r.userHandle ? bufToB64url(r.userHandle) : null,
+          },
+          authenticatorAttachment: cred.authenticatorAttachment || null,
+          clientExtensionResults: typeof cred.getClientExtensionResults === 'function' ? cred.getClientExtensionResults() : {},
+        };
+      };
+
+      let pkTimer = null;
+      function pkLockFor(seconds) {
+        clearInterval(pkTimer);
+        const until = Date.now() + seconds * 1000;
+        btn.disabled = true;
+        const tick = () => {
+          const left = Math.max(0, Math.ceil((until - Date.now()) / 1000));
+          if (left === 0) {
+            clearInterval(pkTimer);
+            btn.disabled = false;
+            pkMsg.className = 'msg';
+            pkMsg.textContent = '';
+            return;
+          }
+          const m = Math.floor(left / 60), s = left % 60;
+          pkMsg.className = 'msg wait';
+          pkMsg.textContent = `Too many failed passkey logins. Try again in ${m ? `${m}m ${String(s).padStart(2, '0')}s` : `${s}s`}.`;
+        };
+        tick();
+        pkTimer = setInterval(tick, 1000);
+      }
+
+      const json = async (path, body) => {
+        const res = await fetch(path, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify(body),
+        });
+        return { res, data: await res.json().catch(() => ({})) };
+      };
+
+      btn.addEventListener('click', async () => {
+        if (btn.disabled) return;
+        btn.disabled = true;
+        pkMsg.className = 'msg';
+        pkMsg.textContent = '';
+        msg.textContent = '';
+        try {
+          const opts = await json('/auth/passkey/options', {});
+          if (opts.res.status === 429 && opts.data.retryAfter) { pkLockFor(opts.data.retryAfter); return; }
+          if (!opts.res.ok) throw new Error(opts.data.error || `Failed (HTTP ${opts.res.status})`);
+          let cred;
+          try {
+            cred = await navigator.credentials.get({ publicKey: requestOptions(opts.data.publicKey), mediation: 'optional' });
+          } catch (e) {
+            if (e && (e.name === 'NotAllowedError' || e.name === 'AbortError')) { btn.disabled = false; return; }   // cancelled: say nothing
+            throw new Error('Your browser couldn’t use a passkey' + (e && e.message ? ': ' + e.message : '.'));
+          }
+          if (!cred) { btn.disabled = false; return; }
+          pkMsg.textContent = 'Checking…';
+          const { res, data } = await json('/auth/passkey', { challengeId: opts.data.challengeId, credential: assertionJSON(cred) });
+          if (res.ok) {
+            // Same as the password path: the session secret goes to this origin's storage
+            try { localStorage.setItem('candy_session', data.session || ''); } catch {}
+            if (!data.session) { pkMsg.textContent = 'This browser blocks storage, which the portal needs to stay logged in.'; btn.disabled = false; return; }
+            pkMsg.textContent = '';
+            location.replace(next);
+            return;
+          }
+          if (res.status === 429 && data.retryAfter) { pkLockFor(data.retryAfter); return; }
+          pkMsg.textContent = data.error || 'That passkey didn’t work.';
+          btn.disabled = false;
+        } catch (e) {
+          pkMsg.className = 'msg';
+          pkMsg.textContent = e instanceof TypeError ? 'Could not reach the candy daemon.' : e.message;
+          btn.disabled = false;
+        }
+      });
+    })();
 
     loadUsers();
   </script>

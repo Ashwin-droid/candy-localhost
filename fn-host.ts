@@ -4,6 +4,7 @@
 //
 // Sibling modules are imported lazily inside main() so tests can import loadHandler on its own.
 import { isAbsolute, join, resolve } from "node:path"
+import { readFileSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { pathToFileURL } from "node:url"
 import type { FnProjectConfig } from "./fn-config.ts"
@@ -162,6 +163,51 @@ export const createAssetsBinding = (
   }
 }
 
+// --- env.CANDY_AUTH: Sign in with candy (SDK_AUTH_DESIGN.md) ---
+
+export const CANDY_AUTH_BINDING = "CANDY_AUTH"
+// $CREDENTIALS_DIRECTORY/<this> (sdk-auth.ts CREDENTIAL_NAME; not imported here, the shim loads sdk-auth lazily)
+const AUTH_CREDENTIAL = "candy-auth-keys"
+const MAX_RING_TEXT = 8192
+
+export interface AuthSpec { site: string; portal?: string; issuers?: string[]; keys: string | null }
+
+// What the daemon handed this instance for candy auth: the site from env, the
+// ring from the unit's credential file (sandboxed) or CANDY_AUTH_KEYS. null
+// when the daemon gave no site (a cron run, or a manual start).
+export const authFromEnv = (env: Record<string, string | undefined>, readFile: (path: string) => string | null): AuthSpec | null => {
+  const site = env.CANDY_AUTH_SITE?.trim()
+  if (!site) return null
+  const dir = env.CREDENTIALS_DIRECTORY
+  const fromFile = dir ? readFile(`${dir.replace(/\/+$/, "")}/${AUTH_CREDENTIAL}`) : null
+  const raw = (fromFile ?? env.CANDY_AUTH_KEYS ?? "").trim()
+  const issuers = env.CANDY_AUTH_ISSUERS?.split(",").map(x => x.trim()).filter(Boolean)
+  return {
+    site,
+    ...(env.CANDY_AUTH_URL ? { portal: env.CANDY_AUTH_URL } : {}),
+    ...(issuers?.length ? { issuers } : {}),
+    keys: raw && raw.length <= MAX_RING_TEXT ? raw : null,
+  }
+}
+
+// A small regular file's text, or null (missing, too big, unreadable)
+const readSmallFile = (path: string): string | null => {
+  try {
+    const st = statSync(path)
+    return st.isFile() && st.size <= MAX_RING_TEXT ? readFileSync(path, "utf8") : null
+  } catch {
+    return null
+  }
+}
+
+// env.CANDY_AUTH is candy's: a var, secret or binding by that name would shadow it, so refuse to start
+export const checkReservedBindings = (cfg: HostConfig, secretKeys: string[]): void => {
+  const name = CANDY_AUTH_BINDING
+  const clash = Object.hasOwn(cfg.vars ?? {}, name) || secretKeys.includes(name) || (cfg.kv ?? []).includes(name)
+    || (cfg.d1 ?? []).includes(name) || cfg.assets?.binding === name
+  if (clash) throw new Error(`${name} is reserved for candy auth`)
+}
+
 // Secrets are named by CANDY_FN_SECRET_KEYS and read from the process env (filled from envFile).
 export const secretsFromEnv = (keys: string | undefined, env: Record<string, string | undefined>): Record<string, string> => {
   const out: Record<string, string> = {}
@@ -256,13 +302,16 @@ async function main(): Promise<void> {
     if ((cfg.main as string | null) === null) throw new Error("this function has no main (assets only), so there is nothing to run")
     assets = assetsFromEnv(cfg, process.env.CANDY_FN_ASSETS_DIR, process.env.CANDY_FN_ASSETS_MODE)
     checkAssetsBinding(cfg, secretKeys)
+    checkReservedBindings(cfg, secretKeys)
   } catch (e) {
     log(`bad CANDY_FN_CONFIG: ${(e as Error).message}`)
     process.exit(2)
   }
   const secrets = secretsFromEnv(process.env.CANDY_FN_SECRET_KEYS, process.env)
   const lingerMs = parseLingerMs(process.env.CANDY_FN_LINGER_MS)
-  for (const k of ["CANDY_FN_TOKEN", "CANDY_FN_SOCKET", "CANDY_FN_CONFIG", "CANDY_FN_SECRET_KEYS", "CANDY_FN_LINGER_MS", "CANDY_FN_ASSETS_DIR", "CANDY_FN_ASSETS_MODE"]) delete process.env[k]
+  // Candy auth's ring: read before any of the function's code runs, then out of process.env
+  const authSpec = authFromEnv(process.env, readSmallFile)
+  for (const k of ["CANDY_FN_TOKEN", "CANDY_FN_SOCKET", "CANDY_FN_CONFIG", "CANDY_FN_SECRET_KEYS", "CANDY_FN_LINGER_MS", "CANDY_FN_ASSETS_DIR", "CANDY_FN_ASSETS_MODE", "CANDY_AUTH_KEYS"]) delete process.env[k]
 
   const [{ buildEnv, closeBindings }, { ExecutionContext, runScheduled }] = await Promise.all([
     import("./fn-bindings.ts"),
@@ -283,6 +332,18 @@ async function main(): Promise<void> {
   }
 
   const env = buildEnv(cfg, stateDir, secrets)
+  // env.CANDY_AUTH: `const r = await env.CANDY_AUTH.handle(request, onLogin); if (r) return r`
+  if (authSpec) {
+    try {
+      const { createAppAuth } = await import("./sdk-auth.ts")
+      const auth = createAppAuth({ site: authSpec.site, portal: authSpec.portal, issuers: authSpec.issuers, ...(authSpec.keys ? { keys: authSpec.keys } : {}) })
+      env[CANDY_AUTH_BINDING] = auth
+      // sdk.ts appAuth() inside this function returns the same object
+      ;(globalThis as Record<symbol, unknown>)[Symbol.for("candy.appAuth")] = auth
+    } catch (e) {
+      log(`candy auth is off: ${(e as Error).message}`)
+    }
+  }
   // Also present in --scheduled runs: a cron handler may read files too.
   const assetsBinding = assets?.config.binding ? createAssetsBinding(assets.config, assets.mode) : null
   if (assetsBinding) env[assets!.config.binding!] = assetsBinding.binding

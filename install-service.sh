@@ -44,12 +44,14 @@ printf '%s\n' "$rendered" | sudo tee "$dest" >/dev/null
 # Functions: the shim runs inside each function's sandbox as that function's
 # user, so it (and every module it imports) goes somewhere all users can read.
 # fn-tool.ts is what the daemon runs as a function's user for config, deploys and KV/D1.
+# sdk-auth.ts + jwe.ts: env.CANDY_AUTH (Sign in with candy) inside a function.
 if [ "$kind" = daemon ]; then
   fn_dir=/usr/lib/candy
   sudo install -d -m 0755 "$fn_dir"
   sudo install -m 0644 \
     "$dir/fn-host.ts" "$dir/fn-protocol.ts" "$dir/fn-bindings.ts" "$dir/fn-cron.ts" "$dir/fn-console.ts" \
     "$dir/fn-config.ts" "$dir/fn-deploy.ts" "$dir/fn-tool.ts" "$dir/fn-assets.ts" "$dir/cron.ts" \
+    "$dir/sdk-auth.ts" "$dir/jwe.ts" \
     "$fn_dir/"
   echo "Installed the function shim in $fn_dir"
   # Portal login checks passwords through this PAM service (pam.ts)

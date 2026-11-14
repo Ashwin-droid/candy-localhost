@@ -122,6 +122,25 @@ describe("loginUsers", () => {
     }
   })
 
+  // Review finding: a passkey login skipped pam_acct_mgmt; loginUsers now also
+  // leaves out accounts whose password must be changed first (as pam_unix does)
+  it("root mode leaves out accounts whose password must be changed (passwd -e, max age passed)", async () => {
+    const now = Date.UTC(2026, 10, 12)
+    const today = Math.floor(now / 86400000)
+    shadow.bob = "bob:$6$abc:0:0:99999:7:::"                              // passwd -e
+    shadow.dave = `dave:$6$abc:${today - 91}:0:90:7:::`                     // 90-day max, changed 91 days ago
+    try {
+      const su = () => createSuperuser({ run: fakeSystem().run, isRoot: true, owner: "alice", now: () => now })
+      expect(await su().loginUsers()).toEqual(["alice"])
+      shadow.dave = `dave:$6$abc:${today - 90}:0:90:7:::`                   // exactly 90 days: still fine
+      shadow.bob = `bob:$6$abc:${today}:0::7:::`                            // no max age
+      expect(await su().loginUsers()).toEqual(["alice", "bob", "dave"])
+    } finally {
+      delete shadow.bob
+      delete shadow.dave
+    }
+  })
+
   it("user mode lists only the daemon's own user", async () => {
     expect(await createSuperuser({ run: fakeSystem().run, isRoot: false, owner: "bob", self: "bob" }).loginUsers()).toEqual(["bob"])
     expect(await createSuperuser({ run: fakeSystem().run, isRoot: false, owner: "svc", self: "svc" }).loginUsers()).toEqual([])

@@ -98,7 +98,7 @@ describe("1. the portal cookie alone never authenticates", () => {
     const guardAt = control.indexOf("auth = await requestAuth(req)")
     expect(shellAt).toBeGreaterThan(0)
     expect(shellAt).toBeLessThan(guardAt)
-    expect(daemon).toContain('const PORTAL_PAGES = new Set(["/", "/oauth/consent", "/go/kill", "/go/portal"])')
+    expect(daemon).toContain('const PORTAL_PAGES = new Set(["/", "/oauth/consent", "/go/kill", "/go/portal", "/app-auth/consent", "/passkeys"])')
   })
 
   it("every page token goes out with the session fetch patch, and only after the guard", () => {

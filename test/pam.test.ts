@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { CFunction, CString, FFIType, ptr, read } from "bun:ffi"
 import {
-  createConversation, HELPER_NO_LIBPAM, HELPER_NO_SERVICE, loadLibc, PAM, pamAvailable,
+  checkAccount, checkAccountWith, createConversation, HELPER_NO_LIBPAM, HELPER_NO_SERVICE, loadLibc, PAM, pamAvailable,
   reasonFor, validUsername, verifyPassword, verifyPasswordWith, type HelperSpawner,
 } from "../pam"
 
@@ -83,6 +83,41 @@ describe("verifyPassword through the helper", () => {
   it("pamAvailable is false for a missing service", async () => {
     expect(await pamAvailable("candy-no-such-service-xyz")).toBe(false)
     expect(await pamAvailable("../passwd")).toBe(false)
+  })
+})
+
+// Review finding: passkey login skipped pam_acct_mgmt, so `passwd -e`,
+// pam_access, pam_time or pam_nologin didn't stop it
+describe("checkAccount: the account stage alone (passkey login)", () => {
+  it("ok when the account stage permits, without asking for a password", async () => {
+    // "deny" fails auth but permits account: only the account stage runs
+    expect(await checkAccount("someone", opts("deny"))).toEqual({ ok: true, reason: "ok" })
+    expect(await checkAccount("someone", opts("check"))).toEqual({ ok: true, reason: "ok" })
+  })
+
+  it("account when acct_mgmt refuses (pam_access, pam_succeed_if)", async () => {
+    expect(await checkAccount("nobody", opts("acct-denied"))).toEqual({ ok: false, reason: "account" })
+    expect(await checkAccount("nobody", opts("acct-succeed-if"))).toEqual({ ok: false, reason: "account" })
+    expect(await checkAccount("candy-no-such-user", opts("acct-succeed-if"))).toEqual({ ok: false, reason: "denied" })
+  })
+
+  it("unavailable for a missing service; denied for root or a bad name without running PAM", async () => {
+    expect(await checkAccount("someone", opts("no-such-service"))).toEqual({ ok: false, reason: "unavailable" })
+    const neverSpawn: HelperSpawner = () => { throw new Error("must not spawn") }
+    for (const user of ["root", "", "a b", "../x"]) {
+      expect(await checkAccountWith({ spawn: neverSpawn }, user, opts("permit"))).toEqual({ ok: false, reason: "denied" })
+    }
+  })
+
+  it("the helper refuses a password together with account mode, and an unknown mode", async () => {
+    const run = async (input: unknown) => {
+      const p = Bun.spawn([process.execPath, join(import.meta.dir, "..", "pam.ts"), "--helper"], { stdin: "pipe", stdout: "pipe", stderr: "ignore" })
+      p.stdin.write(JSON.stringify(input)); p.stdin.end()
+      return JSON.parse((await new Response(p.stdout).text()).trim())
+    }
+    expect(await run({ service: "permit", confdir, user: "someone", mode: "account", password: "x" })).toMatchObject({ ok: false, stage: "setup" })
+    expect(await run({ service: "permit", confdir, user: "someone", mode: "other" })).toMatchObject({ ok: false, stage: "setup" })
+    expect(await run({ service: "permit", confdir, user: "someone", mode: "account" })).toMatchObject({ ok: true, stage: "done" })
   })
 })
 

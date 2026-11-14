@@ -35,8 +35,14 @@ import { SystemMonitor, SIGNALS, isUnitName, killProblem, unitActionProblem } fr
 import { PortalSessions, readSessionCookie, sessionCookieHeader, clearSessionCookieHeader } from "./portal-session.ts"
 import { attemptLogin, loginKeys, auditActor, auditSafe, cachedList, classifyRoute, clientIp, guardRequest, isPortalOrigin, LoginSlots, mayActOn, PageTokens, parseShortcutHost, safeNext, sameOrigin, shortcutConfirmUrl, SiteTokens, SoftLockout, SESSION_HEADER, userScopedFetch, wantsHtml, logSafe, type RequestAuth, type RouteRule, type ShortcutAction } from "./portal-auth.ts"
 import { coalesced, caddyGlobalBlock, checkBindings, cloudflaredYaml, dedupeSiteAddresses, isCaddyUpstream, isCredentialsPath, isDnsLabel, isHostName, isIpOrCidr, isQuickTunnelUrl, isTunnelId, isTunnelName, isZoneId, isZoneName, loopbackBind, lowerName, mergeLowerCase, newNameProblem, PROXY_TAG_HEADER, stripProxyHeaders, SYSTEM_BLOCK_MARK, tagDaemonUpstreams } from "./caddy-config.ts"
-import { verifyPassword, pamAvailable } from "./pam.ts"
+import { verifyPassword, pamAvailable, checkAccount } from "./pam.ts"
 import { isSuperuser, loginUsers } from "./superuser.ts"
+import { AppKeyStore, ConsentStore, PendingRequests, issuersFor, type SiteLookup } from "./app-auth.ts"
+import { ChallengeStore, PasskeyStore, SUPERUSER_PAM_MS, mayActAsSuperuser, prunePasskeyAccounts, type PasskeyDeps } from "./passkey-store.ts"
+import * as webauthn from "./webauthn.ts"
+import { formatKeyRing, type JweKey } from "./jwe.ts"
+import { createAuthRoutes, type AuthRouteContext } from "./app-auth-routes.ts"
+import { CREDENTIAL_NAME as APP_AUTH_CREDENTIAL } from "./sdk-auth.ts"
 import { AsyncLocalStorage } from "node:async_hooks"
 import { JtiBloom, readCredential, signJwt, stripCandyCredentials, verifyJwt, JWT_AUDIENCE, MAX_TOKEN_LIFETIME_S, type AuthResult, ipAllowed, isLoopback, parseCidr, TAILSCALE_RANGES } from "./server-auth.ts"
 
@@ -152,6 +158,14 @@ const ROUTE_USERS_FILE = `${CANDY_CONFIG_DIR}/route-users.json`
 const PORTAL_SESSIONS_FILE = process.getuid?.() === 0
   ? "/var/lib/candy-daemon/portal-sessions.json"
   : `${process.env.HOME}/.local/state/candy/portal-sessions.json`
+// Sign in with candy (SDK_AUTH_DESIGN.md): per-site key rings, remembered
+// approvals, passkeys (public keys only). Root-only files, 0600 in a 0700 folder.
+const AUTH_STATE_DIR = process.getuid?.() === 0 ? "/var/lib/candy-daemon" : `${process.env.HOME}/.local/state/candy`
+const APP_AUTH_KEYS_FILE = `${AUTH_STATE_DIR}/app-auth-keys.json`
+const APP_AUTH_CONSENT_FILE = `${AUTH_STATE_DIR}/app-auth-consent.json`
+const PASSKEYS_FILE = `${AUTH_STATE_DIR}/passkeys.json`
+// Root mode: what LoadCredential= copies into a sandboxed unit (dir 0700, files 0600, root's)
+const APP_AUTH_CRED_DIR = "/run/candy/app-auth"
 const CLOUDFLARED_SYSTEM_CONFIG = `/etc/cloudflared/config.yml`
 const CLOUDFLARED_USER_CONFIG = `${process.env.HOME}/.cloudflared/config.yml`
 const CANDY_RUNTIME_MAGIC_ENV = "X_CANDY_RUNTIME_MAGIC_STRING"
@@ -1300,10 +1314,19 @@ const portalSessions = new PortalSessions(PORTAL_SESSIONS_FILE)
 const pageTokens = new PageTokens()
 // Start/restart tokens for a site's own pages (starting, crashed), per page load
 const siteTokens = new SiteTokens()
+// Sign in with candy: site key rings, remembered approvals, parked requests.
+// Passkeys: credentials and their single-use challenges.
+const appKeys = new AppKeyStore(APP_AUTH_KEYS_FILE)
+const appConsents = new ConsentStore(APP_AUTH_CONSENT_FILE)
+const appPending = new PendingRequests()
+const passkeys = new PasskeyStore(PASSKEYS_FILE)
+const passkeyChallenges = new ChallengeStore()
 setInterval(() => {
   portalSessions.sweep()
   pageTokens.sweep(id => portalSessions.alive(id))
   siteTokens.sweep()
+  appPending.sweep()
+  passkeyChallenges.sweep()
 }, 10 * 60 * 1000)
 
 // Auto-kill idle servers (1hr no activity, no portal). Activity is:
@@ -1517,6 +1540,11 @@ const forgetUser = (user: string) => {
   const oauthKey = oauthKeys.get(user)
   if (oauthKey) { oauthKeys.delete(user); oauthKeyUsers.delete(oauthKey) }
   if (portalSessions.destroyUser(user) > 0) auditLog('AUTH_LOGOUT', `${user}: every portal session ended (left the ${SHARED_GROUP} group)`, 'System')
+  // Their app approvals and passkeys go too: whoever gets the name or the
+  // group membership next starts from nothing
+  appConsents.dropUser(user)
+  const n = passkeys.dropAccount(user)
+  if (n > 0) auditLog('PASSKEY_DROP', `${user}: ${n} passkey(s) removed (left the ${SHARED_GROUP} group)`, 'System')
 }
 
 // Root mode: one secret per member of the candy group (plus the owner).
@@ -1666,11 +1694,24 @@ const requestAuth = async (req: Request): Promise<RequestAuth | null> => {
   if (!eligible.includes(session.user)) {
     const n = portalSessions.destroyUser(session.user)
     pageTokens.dropSession(session.id)
+    appConsents.dropUser(session.user)
     auditLog('AUTH_REVOKED', `${session.user}: can't log in any more, ${n} login(s) ended`, 'System')
     return null
   }
-  return { user: session.user, superuser: await isSuperuser(session.user).catch(() => false), via: "portal", sessionId: session.id }
+  // A sudoer's passkey session is a superuser only after re-entering the
+  // password (/auth/reauth): root-level actions never rest on a passkey alone
+  const sudoer = await isSuperuser(session.user).catch(() => false)
+  const stepped = mayActAsSuperuser(session, Date.now())
+  return {
+    user: session.user, superuser: sudoer && stepped, via: "portal", sessionId: session.id,
+    amr: session.amr, pamAt: session.pamAt, sessionCreated: session.created,
+    ...(sudoer && !stepped ? { superuserNeedsPassword: true } : {}),
+  }
 }
+// When a passkey session's superuser step-up (/auth/reauth) runs out, for the
+// portal to ask again then; null when it doesn't (a password login, or none yet)
+const superuserUntil = (auth: RequestAuth): number | null =>
+  auth.superuser && auth.amr === "passkey" && typeof auth.pamAt === "number" ? auth.pamAt + SUPERUSER_PAM_MS : null
 // Who may log in, cached for a minute: checked on every portal request
 const eligibleLoginUsers = cachedList(() => loginUsers(), 60 * 1000)
 
@@ -2540,6 +2581,7 @@ const removeServerConfig = async (name: string, actor: Actor = 'Portal', configI
   }
   await saveServerConfigs()
   auditLog('CONFIG_REMOVE', configId ? `${name}:${configId}` : name, actor)
+  if (!nameInUse(name)) await dropAppAuth(name, actor)
   if (await forgetLanPublishedIfGone(name) || fnConfig) await syncCaddy()
 }
 
@@ -2642,6 +2684,85 @@ const apiModeGate = createApiModeGate<ServerConfig, DomainBinding>({
   holdMs: API_START_HOLD,
 })
 
+// ============================================================================
+// Sign in with candy: per-site key rings (SDK_AUTH_DESIGN.md, F)
+// ============================================================================
+
+// Portal hosts tokens may come from (the SDK's issuers), and where apps send users
+const appAuthPortalHosts = (): string[] => {
+  const label = getLocalCandyHostLabel()
+  return ["portal.localhost", "portal.candy", ...(label ? [`portal.${label}.candy`] : [])]
+}
+const appAuthPortalUrl = (): string => tailscaleIp ? "https://portal.candy" : "https://portal.localhost"
+const appAuthCredentialPath = (name: string): string => `${APP_AUTH_CRED_DIR}/${fnFileName(name)}.keys`
+
+// The site's ring for its current owner. A ring left by someone who used the
+// name before is replaced, and approvals given to them go with it.
+const appAuthRing = (site: string, owner: string, actor: Actor = 'System'): JweKey[] => {
+  const { ring, replaced } = appKeys.ensure(site, owner)
+  if (replaced) {
+    const n = appConsents.dropSite(site)
+    auditLog('APP_AUTH_RESET', `${site}: now run by ${owner}, new key, ${n} approval(s) dropped`, actor)
+  }
+  return ring
+}
+
+// What a launch of `name` gets: env for the SDK, and the ring (kept apart from env)
+const appAuthLaunch = (name: string, owner: string): { env: Record<string, string>; keys: string } | null => {
+  try {
+    const ring = appAuthRing(name, owner)
+    return {
+      env: { CANDY_AUTH_SITE: name, CANDY_AUTH_URL: appAuthPortalUrl(), CANDY_AUTH_ISSUERS: issuersFor(appAuthPortalHosts()).join(",") },
+      keys: formatKeyRing(ring),
+    }
+  } catch (e) {
+    console.error(`\x1b[33mNo candy auth key for ${name}: ${(e as Error).message}\x1b[0m`)
+    return null
+  }
+}
+
+// The LoadCredential= source for a sandboxed unit: root's, 0600, in a 0700
+// folder, written atomically. null (no credential) if it can't be written.
+const writeAppAuthCredential = async (name: string, keys: string): Promise<string | null> => {
+  if (!RUNNING_AS_ROOT) return null
+  const path = appAuthCredentialPath(name)
+  const tmp = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`
+  try {
+    await mkdir(APP_AUTH_CRED_DIR, { recursive: true, mode: 0o700 })
+    await chmod(APP_AUTH_CRED_DIR, 0o700)
+    await writeFile(tmp, keys, { mode: 0o600, flag: 'wx' })
+    await chmod(tmp, 0o600)
+    await rename(tmp, path)
+    return path
+  } catch (e) {
+    await unlink(tmp).catch(() => {})
+    console.error(`\x1b[33mCould not write the auth key credential for ${name}: ${(e as Error).message}\x1b[0m`)
+    return null
+  }
+}
+
+// A ring changed (rotated, or replaced for a new owner): rewrite the
+// credential file, restart a function's instances (they read it at start).
+// Returns the running servers that still hold the old ring.
+const appAuthKeysChanged = async (site: string, ring: JweKey[]): Promise<string[]> => {
+  if (RUNNING_AS_ROOT && existsSync(appAuthCredentialPath(site))) await writeAppAuthCredential(site, formatKeyRing(ring))
+  if (fnConfigOf(site)) {
+    await restartFn(site).catch(e => auditLog('FN_RESTART_FAIL', `${site}: ${fnErrorText(e)}`, 'System'))
+    return []
+  }
+  const proc = processes.get(site)
+  return proc && (proc.status === 'running' || proc.status === 'starting') ? [site] : []
+}
+
+// The name is gone: its keys, approvals and credential file go too, so
+// whoever uses the name next starts from nothing
+const dropAppAuth = async (name: string, actor: Actor = 'System') => {
+  const hadKeys = appKeys.drop(name)
+  const n = appConsents.dropSite(name)
+  await unlink(appAuthCredentialPath(name)).catch(() => {})
+  if (hadKeys || n) auditLog('APP_AUTH_DROP', `${name}: key and ${n} approval(s) removed`, actor)
+}
+
 // How to run a config. As root, drop to the config's user with setpriv and
 // cd as that user (so a cwd they couldn't reach on their own fails).
 // A cron run passes `cron`: its args reach the command as "$@" (positional
@@ -2659,6 +2780,12 @@ const launchSpec = async (config: ServerConfig, cron?: { job: string; args: stri
   }
   const fn = config.fn ? await fnLaunchParts(name, config, cron, fnInstance) : null
   if (fn) Object.assign(extra, fn.env, { TERM: 'dumb' })
+  // Sign in with candy: the site's name, portal and issuers for servers and
+  // function instances (never cron runs). The key ring itself never goes into
+  // `extra`: sandboxed units get it as a credential file, others in the spawn env.
+  const appAuth = !cron && name ? appAuthLaunch(name, configUser(config)) : null
+  if (appAuth) Object.assign(extra, appAuth.env)
+  const authKeysEnv: Record<string, string> = appAuth ? { CANDY_AUTH_KEYS: appAuth.keys } : {}
   const script = fn ? fn.script : cron ? cronScript(config.cmd) : config.cmd
   const args = fn ? ['candy', ...fn.args] : cron ? ['candy', ...cron.args] : []
   let fileEnv: Record<string, string> = {}
@@ -2667,7 +2794,7 @@ const launchSpec = async (config: ServerConfig, cron?: { job: string; args: stri
     fileEnv = parseEnvFile(await readFnEnvFile(config))
   }
   if (!RUNNING_AS_ROOT) {
-    return { cmd: ['bash', fn ? '-c' : '-ic', script, ...args], cwd: config.cwd, env: { ...process.env, ...fileEnv, ...extra }, unit: null }
+    return { cmd: ['bash', fn ? '-c' : '-ic', script, ...args], cwd: config.cwd, env: { ...process.env, ...fileEnv, ...extra, ...authKeysEnv }, unit: null }
   }
   const account = await lookupUser(configUser(config))
   if (!account || account.uid === 0) {
@@ -2687,6 +2814,7 @@ const launchSpec = async (config: ServerConfig, cron?: { job: string; args: stri
   // everywhere except the code folder, the state folder and a private /tmp.
   if (SANDBOX_AVAILABLE && config.sandbox !== false && name) {
     const unit = unitName(name, cron ? 'cron' : fn ? 'fn' : 'srv')
+    const credential = appAuth ? await writeAppAuthCredential(name, appAuth.keys) : null
     return {
       cmd: systemdRunCommand({
         name,
@@ -2704,6 +2832,7 @@ const launchSpec = async (config: ServerConfig, cron?: { job: string; args: stri
         mode: cron || fn ? 'pipe' : 'pty',
         bindsTo: OWN_UNIT,
         fn: fn ? { socket: fn.socket } : null,
+        credentials: credential ? [{ name: APP_AUTH_CREDENTIAL, path: credential }] : undefined,
         description: fn ? (cron ? 'function cron run' : 'function') : undefined,
       }),
       cwd: '/',
@@ -2718,7 +2847,7 @@ const launchSpec = async (config: ServerConfig, cron?: { job: string; args: stri
       'bash', '-c', LAUNCH_WRAPPER, 'candy', config.cwd, script, ...args,
     ],
     cwd: '/',
-    env: { ...env, ...fileEnv, ...extra },
+    env: { ...env, ...fileEnv, ...extra, ...authKeysEnv },
     unit: null,
   }
 }
@@ -5106,7 +5235,7 @@ const scriptJson = (v: unknown): string => JSON.stringify(v).replace(/</g, "\\u0
 // Portal pages that are served as a shell on navigation (public/portal-shell.html):
 // the real page, with its page token, only comes back to a request that carries
 // the session secret header, which a stolen cookie alone can't add
-const PORTAL_PAGES = new Set(["/", "/oauth/consent", "/go/kill", "/go/portal"])
+const PORTAL_PAGES = new Set(["/", "/oauth/consent", "/go/kill", "/go/portal", "/app-auth/consent", "/passkeys"])
 
 // Put into every portal page: same-origin fetches carry the session secret,
 // which the login page keeps in this origin's localStorage
@@ -5151,7 +5280,8 @@ const siteAction = (req: Request, url: URL, name: string): boolean => {
 const SITE_LOG_EXCERPT_BYTES = 32 * 1024
 
 // Logging in and out happens before there is a page token; /token is the refresh itself
-const TOKENLESS_ROUTES = new Set(["/auth/login", "/auth/logout", "/token"])
+// (passkey login too; all of them are still held to sameOrigin)
+const TOKENLESS_ROUTES = new Set(["/auth/login", "/auth/logout", "/token", "/auth/passkey/options", "/auth/passkey"])
 
 // Whether /etc/pam.d/candy is there. Login fails closed (with a message) while it isn't.
 let pamReady = false
@@ -5182,6 +5312,104 @@ const loginDeps = {
   sleep: (ms: number) => Bun.sleep(ms),
 }
 
+// Passkey login: its own soft lockout (per address, loopback as one), plus
+// the password login's address lockout (appAuthRoutes.addressWait)
+// The account's uid, null when getent says there's no such user (exit 2);
+// throws when it can't tell (NSS/LDAP trouble), so nothing is pruned on a hiccup
+const passkeyUid = async (name: string): Promise<number | null> => {
+  if (!/^[a-z_][a-z0-9_.-]*\$?$/i.test(name)) return null
+  const res = await $`getent passwd ${name}`.quiet().nothrow()
+  if (res.exitCode === 2) return null
+  if (res.exitCode !== 0) throw new Error(`getent passwd exited ${res.exitCode}`)
+  const f = res.stdout.toString().trim().split(":")
+  const uid = Number(f[2])
+  if (f[0] !== name || !Number.isSafeInteger(uid)) throw new Error("getent passwd: unexpected output")
+  return uid
+}
+
+const passkeyDeps: PasskeyDeps = {
+  store: passkeys,
+  challenges: passkeyChallenges,
+  webauthn,
+  soft: new SoftLockout(),
+  loginUsers: () => eligibleLoginUsers(),
+  uidOf: passkeyUid,
+  // PAM's account stage (pam_acct_mgmt only), as a password login has it. Without
+  // /etc/pam.d/candy, loginUsers' shadow checks (locked, expired, must change) are all there is
+  accountOk: async user => !pamReady || (await checkAccount(user)).ok,
+  isSuperuser,
+  isLoopback,
+  audit: (action, details) => { auditLog(action, details, 'Portal') },
+  now: () => Date.now(),
+  sleep: (ms: number) => Bun.sleep(ms),
+}
+
+// Passkeys of accounts that are gone, or that are another account now (the
+// name was reused): dropped. Login checks the uid anyway; this cleans up.
+const prunePasskeys = () => prunePasskeyAccounts(passkeyDeps).catch(e => console.error(`\x1b[33mPasskey cleanup: ${(e as Error).message}\x1b[0m`))
+setTimeout(prunePasskeys, 30 * 1000)
+setInterval(prunePasskeys, 10 * 60 * 1000)
+
+// Which site candy routes an https host to, for return_to: a site's
+// .localhost / .candy name or a bound domain. Never the portal, a shortcut
+// host, a tunnel, a host with a port, or a name nobody uses.
+const appAuthSites: SiteLookup = {
+  siteOfHost: (raw: string) => {
+    const h = raw.toLowerCase()
+    if (!h || h.includes(":") || isPortalHost(h) || parseShortcutHost(h)) return null
+    if (h.endsWith(".localhost") || h.endsWith(".candy")) {
+      const name = resolveLocalCandyDomain(h)
+      return name && nameInUse(name) && !isReserved(name) ? name : null
+    }
+    const name = resolveBindingFromHost(h)?.serverName ?? null
+    return name && nameInUse(name) && !isReserved(name) ? name : null
+  },
+  ownerOf: (name: string) => nameInUse(name) ? nameOwner(name) : null,
+}
+
+const appAuthRoutes = createAuthRoutes({
+  appKeys,
+  consents: appConsents,
+  pending: appPending,
+  passkeys: passkeyDeps,
+  sessions: portalSessions,
+  pageTokens,
+  site: appAuthSites,
+  mayUse: (auth, name) => mayChangeName(auth, name),
+  passwordLogin: input => attemptLogin(loginDeps, input),
+  addressWait: async (ip: string) => {
+    const local = isLoopback(ip)
+    const key = loginKeys("", ip, local).ip
+    if (local) return Math.ceil(loginDeps.soft.wait(key) / 1000)
+    const hard = await checkAuthBlocked(key)
+    return hard.blocked ? Math.max(1, hard.retryAfter) : 0
+  },
+  siteForKeyFetch: body => {
+    if (typeof body.configId === "string" && body.configId) {
+      for (const [name, configs] of serverConfigs) if (configs.some(c => c.id === body.configId)) return name
+      return null
+    }
+    if (typeof body.name !== "string") return null
+    const name = lowerName(body.name)
+    return isSafeName(name) && !isReserved(name) && nameInUse(name) ? name : null
+  },
+  issuers: () => issuersFor(appAuthPortalHosts()),
+  portalUrl: appAuthPortalUrl,
+  keysChanged: appAuthKeysChanged,
+  page: file => Bun.file(`${import.meta.dir}/public/${file}`).text(),
+  pageScript: portalPageScript,
+  readSessionCookie,
+  sessionCookie: sessionCookieHeader,
+  sessionHeader: SESSION_HEADER,
+  audit: (action, details, actor) => { auditLog(action, details, actor as Actor) },
+  now: () => Date.now(),
+})
+
+const appAuthContext = (req: Request, auth: RequestAuth | null, portalHost: boolean, cors: Record<string, string>, actor: Actor): AuthRouteContext => {
+  const { ip, userAgent } = getFingerprint(req, controlServer)
+  return { auth, portalHost, host: (req.headers.get("host") || "").toLowerCase().replace(/:443$/, ""), ip, userAgent, https: isHttps(req), cors, actor }
+}
+
 // The public MCP endpoint runs mcp.ts in this process; its calls back to the
 // daemon carry the API key of the user who approved the client (oauthKeyFor).
 const publicMcpUser = new AsyncLocalStorage<string>()
@@ -5199,6 +5427,9 @@ const ROUTE_TABLE: readonly RouteRule[] = [
   ["GET", "/auth/users", "public"],
   ["POST", "/auth/login", "public"],
   ["POST", "/auth/logout", "public"],
+  ["POST", "/auth/passkey/options", "public"],
+  ["POST", "/auth/passkey", "public"],
+  ["GET", "/app-auth/authorize", "public"],
   ["GET", "/favicon.svg", "public"],
   ["POST", "/mcp/auth", "public"],
   ["POST", "/candy/advertise", "public"],
@@ -5215,6 +5446,19 @@ const ROUTE_TABLE: readonly RouteRule[] = [
   ["GET", "/go/portal", "user"],
   ["POST", "/go/portal", "user"],
   ["POST", "/oauth/decision", "user"],
+  ["GET", "/app-auth/consent", "user"],
+  ["POST", "/app-auth/decision", "user"],
+  ["GET", "/app-auth/sites", "user"],
+  ["POST", "/app-auth/rotate", "user"],
+  ["GET", "/app-auth/consents", "user"],
+  ["POST", "/app-auth/consents/revoke", "user"],
+  ["POST", "/auth/reauth", "user"],
+  ["GET", "/passkeys", "user"],
+  ["GET", "/passkeys/list", "user"],
+  ["POST", "/passkeys/register/options", "user"],
+  ["POST", "/passkeys/register", "user"],
+  ["POST", "/passkeys/rename", "user"],
+  ["POST", "/passkeys/delete", "user"],
   ["POST", "/auth/set", "user"],
   ["POST", "/auth/clear", "user"],
   ["POST", "/auth/token", "user"],
@@ -5225,6 +5469,7 @@ const ROUTE_TABLE: readonly RouteRule[] = [
   ["POST", "/sdk/portal", "user"],
   ["POST", "/sdk/idle", "user"],
   ["POST", "/sdk/cron", "user"],
+  ["POST", "/sdk/auth/keys", "user"],
   ["*", "/fn/*", "user"],
   ["POST", "/register", "user"],
   ["DELETE", "/register/*", "user"],
@@ -5634,7 +5879,8 @@ async function controlFetch(req: Request): Promise<Response> {
       if (!verdict.ok) {
         if (verdict.status === 302) return new Response(null, { status: 302, headers: { Location: verdict.location, "Cache-Control": "no-store" } })
         const loginHeader: Record<string, string> = verdict.status === 401 ? { "X-Candy-Login": "required" } : {}
-        return Response.json({ error: verdict.error }, { status: verdict.status, headers: { ...corsHeaders, ...loginHeader } })
+        const stepUp = verdict.status === 403 && verdict.superuserNeedsPassword ? { superuserNeedsPassword: true } : {}
+        return Response.json({ error: verdict.error, ...stepUp }, { status: verdict.status, headers: { ...corsHeaders, ...loginHeader } })
       }
       // === API Routes require token validation ===
       // Anything that changes state from the portal: sent by a portal page (Origin),
@@ -5680,14 +5926,15 @@ async function controlFetch(req: Request): Promise<Response> {
       const next = safeNext(url.searchParams.get("next"))
       if (auth?.via === "portal") return new Response(null, { status: 302, headers: { Location: next, "Cache-Control": "no-store" } })
       const rawHtml = await Bun.file(import.meta.dir + "/public/portal-login.html").text()
-      const vars = { next, available: pamReady }
+      // Passkey login works without PAM installed
+      const vars = { next, available: pamReady, passkeys: true }
       const html = rawHtml.replace('<script>', `<script>window.CANDY_VARS=${scriptJson(vars)};</script><script>`)
       return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } })
     }
 
     if (req.method === "GET" && url.pathname === "/auth/users") {
       if (!portalHost) return Response.json({ error: "not found" }, { status: 404, headers: corsHeaders })
-      return Response.json({ users: await loginUsers().catch(() => []), available: pamReady }, { headers: { ...corsHeaders, "Cache-Control": "no-store" } })
+      return Response.json({ users: await loginUsers().catch(() => []), available: pamReady, passkeys: true }, { headers: { ...corsHeaders, "Cache-Control": "no-store" } })
     }
 
     if (req.method === "POST" && url.pathname === "/auth/login") {
@@ -5720,7 +5967,20 @@ async function controlFetch(req: Request): Promise<Response> {
     }
 
     if (req.method === "GET" && url.pathname === "/auth/me") {
-      return Response.json({ user: auth!.user, superuser: auth!.superuser, via: auth!.via, multiUser: RUNNING_AS_ROOT }, { headers: { ...corsHeaders, "Cache-Control": "no-store" } })
+      return Response.json({ user: auth!.user, superuser: auth!.superuser, superuserNeedsPassword: auth!.superuserNeedsPassword === true, superuserUntil: superuserUntil(auth!), via: auth!.via, amr: auth!.amr, multiUser: RUNNING_AS_ROOT }, { headers: { ...corsHeaders, "Cache-Control": "no-store" } })
+    }
+
+    // === Sign in with candy, and passkeys (app-auth-routes.ts) ===
+    // After the guard: the class, the login, and for state-changing portal
+    // requests sameOrigin and the page token (passkey login is TOKENLESS)
+    if (url.pathname === "/app-auth/authorize" || url.pathname === "/app-auth/consent" || url.pathname === "/app-auth/decision"
+      || url.pathname === "/app-auth/sites" || url.pathname === "/app-auth/rotate"
+      || url.pathname === "/app-auth/consents" || url.pathname === "/app-auth/consents/revoke"
+      || url.pathname === "/auth/passkey/options" || url.pathname === "/auth/passkey" || url.pathname === "/auth/reauth"
+      || url.pathname === "/passkeys" || url.pathname === "/passkeys/list" || url.pathname === "/passkeys/register/options"
+      || url.pathname === "/passkeys/register" || url.pathname === "/passkeys/rename" || url.pathname === "/passkeys/delete") {
+      const answer = await appAuthRoutes.handle(req, url, appAuthContext(req, auth, portalHost, corsHeaders, requestActor))
+      return answer ?? Response.json({ error: "not found" }, { status: 404, headers: corsHeaders })
     }
 
     // Where the shortcut hosts (<name>.k / <name>.p) send the browser: a
@@ -6004,6 +6264,12 @@ async function controlFetch(req: Request): Promise<Response> {
       return unauthorizedResponse(corsHeaders)
     }
 
+    // The site's auth key ring, for its owner's own process (sdk.ts appAuth): app-auth-routes.ts
+    if (req.method === "POST" && url.pathname === "/sdk/auth/keys") {
+      const answer = await appAuthRoutes.handle(req, url, appAuthContext(req, auth, portalHost, corsHeaders, requestActor))
+      return answer ?? Response.json({ error: "not found" }, { status: 404, headers: corsHeaders })
+    }
+
     if (req.method === "POST" && url.pathname === "/sdk/runtime") {
       const { configId, pid } = await req.json() as { configId?: string; pid?: number }
       if (!configId) {
@@ -6251,6 +6517,7 @@ async function controlFetch(req: Request): Promise<Response> {
       routes.delete(name)
       releasePidOwnedRoute(name)
       if (!serverConfigs.has(name)) await setRouteUser(name, null)
+      if (!nameInUse(name)) await dropAppAuth(name, actor)
       await forgetLanPublishedIfGone(name)
       await syncCaddy()
       if (wasRoute?.persistent) await savePersistentRoutes()
@@ -6288,6 +6555,7 @@ async function controlFetch(req: Request): Promise<Response> {
       routes.delete(oldName)
       routes.set(newName, routeData)
       if (!serverConfigs.has(oldName)) await setRouteUser(oldName, null)
+      if (!nameInUse(oldName)) await dropAppAuth(oldName, requestActor)
       await setRouteUser(newName, routeUser)
       if (routeData.persistent) await savePersistentRoutes()
 
@@ -7852,7 +8120,7 @@ async function serveSitePage(req: Request, url: URL, corsHeaders: Record<string,
       if (domain === "portal" && isRootPath && !isBoundDomain) {
         domainHits.set(domain, (domainHits.get(domain) || 0) + 1)
         const rawHtml = await Bun.file(import.meta.dir + "/public/portal.html").text()
-        let html = injectVars(rawHtml, { user: auth!.user, superuser: auth!.superuser, multiUser: RUNNING_AS_ROOT })
+        let html = injectVars(rawHtml, { user: auth!.user, superuser: auth!.superuser, superuserNeedsPassword: auth!.superuserNeedsPassword === true, superuserUntil: superuserUntil(auth!), multiUser: RUNNING_AS_ROOT })
         // Check if any bound domain is unprotected → inject nag banner on portal
         const domainConfig = await loadDomainConfig()
         const hasUnprotected = domainConfig?.bindings && Object.values(domainConfig.bindings).some((b: any) => mayChangeName(auth, b.serverName) && (!b.auth?.password || !b.auth?.enabled))
@@ -8042,6 +8310,8 @@ await initMcpAuth()
 // Portal login: PAM service present? Re-checked so installing it later needs no restart.
 await checkPam(true)
 setInterval(() => { checkPam(false).catch(() => {}) }, 5 * 60 * 1000)
+// Sign in with candy: a key file others could read was thrown away at load (new keys from here on)
+if (appKeys.discarded) auditLog('APP_AUTH_KEYS_DISCARDED', `${APP_AUTH_KEYS_FILE} was readable or writable by others, or not ours: every site gets a new key`, 'System')
 // Public MCP approvals without a user are revoked (and audited) as the state loads
 await getMcpOAuth()
 

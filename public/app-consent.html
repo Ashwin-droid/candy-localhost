@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="referrer" content="no-referrer">
+  <title>Sign in · candy</title>
+  <link rel="icon" href="/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,400..700&family=Schibsted+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #eceef2;
+      --sheet: #ffffff;
+      --sheet-2: #f5f6f9;
+      --ink: #1a1d33;
+      --ink-2: #555b75;
+      --ink-3: #8a90a8;
+      --line: #e1e4eb;
+      --line-2: #c9cdd9;
+      --cherry: #d42a47;
+      --cherry-hover: #bb1f3b;
+      --cherry-ink: #ffffff;
+      --cherry-soft: rgba(212, 42, 71, 0.09);
+      --lemon: #c18a06;
+      --lemon-soft: rgba(232, 177, 11, 0.2);
+      --green: #0b9468;
+      --green-soft: rgba(11, 148, 104, 0.12);
+      --blue: #3b6fd8;
+      --blue-soft: rgba(59, 111, 216, 0.1);
+      --font-ui: 'Schibsted Grotesk', system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --font-host: 'Martian Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --bg: #10121a;
+        --sheet: #171a25;
+        --sheet-2: #1d2130;
+        --ink: #e7e9f2;
+        --ink-2: #a3a8c0;
+        --ink-3: #6c7290;
+        --line: #252938;
+        --line-2: #353a4c;
+        --cherry: #ff5d78;
+        --cherry-hover: #ff7a90;
+        --cherry-ink: #2a0710;
+        --cherry-soft: rgba(255, 93, 120, 0.12);
+        --lemon: #f2c14e;
+        --lemon-soft: rgba(242, 193, 78, 0.2);
+        --green: #3fd3a1;
+        --green-soft: rgba(63, 211, 161, 0.14);
+        --blue: #74a0ff;
+        --blue-soft: rgba(116, 160, 255, 0.12);
+      }
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      font: 14px/1.45 var(--font-ui);
+      background: var(--bg);
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px 16px;
+    }
+    :focus-visible { outline: 2px solid var(--cherry); outline-offset: 2px; border-radius: 6px; }
+    [hidden] { display: none !important; }
+
+    main { width: 100%; max-width: 400px; }
+    .wordmark {
+      display: block;
+      margin-bottom: 18px;
+      font-family: var(--font-host);
+      font-weight: 700;
+      font-size: 22px;
+      font-stretch: 112.5%;
+      letter-spacing: -0.04em;
+      color: var(--ink);
+      text-decoration: none;
+    }
+    .wordmark span { color: var(--cherry); }
+    .sheet {
+      background: var(--sheet);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 22px;
+      box-shadow: 0 1px 2px rgba(10, 12, 24, 0.04);
+    }
+    h1 { font-size: 17px; font-weight: 600; margin-bottom: 14px; overflow-wrap: anywhere; }
+    .host, h1 .site { font-family: var(--font-host); font-stretch: 87.5%; font-weight: 600; letter-spacing: -0.02em; overflow-wrap: anywhere; }
+    h1 .site { color: var(--cherry); }
+    .facts { list-style: none; display: grid; gap: 8px; margin-bottom: 16px; color: var(--ink-2); font-size: 13px; }
+    .facts b { color: var(--ink); font-weight: 600; }
+    .badge {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 1px 7px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      vertical-align: 1px;
+    }
+    .badge.local { background: var(--green-soft); color: var(--green); }
+    .badge.tailnet { background: var(--blue-soft); color: var(--blue); }
+    .badge.domain { background: var(--lemon-soft); color: var(--lemon); }
+    .warn {
+      margin-bottom: 16px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: var(--lemon-soft);
+      color: var(--ink);
+      font-size: 13px;
+    }
+    .remember { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+    .remember input { width: 16px; height: 16px; accent-color: var(--cherry); }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .btn {
+      height: 38px;
+      border: 1px solid var(--cherry);
+      border-radius: 8px;
+      background: var(--cherry);
+      color: var(--cherry-ink);
+      font: 600 14px var(--font-ui);
+      cursor: pointer;
+    }
+    .btn:hover { background: var(--cherry-hover); border-color: var(--cherry-hover); }
+    .btn.secondary { background: var(--sheet-2); border-color: var(--line-2); color: var(--ink-2); }
+    .btn.secondary:hover { color: var(--ink); border-color: var(--ink-3); }
+    .btn:disabled { opacity: 0.5; cursor: default; }
+    .msg { min-height: 20px; margin-top: 12px; font-size: 13px; color: var(--cherry); }
+    .busy { color: var(--ink-2); font-size: 14px; }
+    .busy a { color: var(--cherry); margin-left: 6px; }
+    .foot { margin-top: 14px; color: var(--ink-3); font-size: 12px; text-align: center; }
+  </style>
+</head>
+<body>
+  <main>
+    <a class="wordmark" href="/" aria-label="candy">candy<span>.</span></a>
+    <div class="sheet">
+      <h1 id="title">…</h1>
+      <div id="ask" hidden>
+        <ul class="facts">
+          <li id="back"></li>
+          <li id="who"></li>
+        </ul>
+        <p class="warn" id="owner" hidden></p>
+        <label class="remember"><input type="checkbox" id="remember" checked> Remember for this site</label>
+        <div class="actions">
+          <button type="button" class="btn secondary" id="cancel">Cancel</button>
+          <button type="button" class="btn" id="go">Continue</button>
+        </div>
+      </div>
+      <p class="busy" id="busy" hidden></p>
+      <div class="msg" id="msg" role="alert"></div>
+    </div>
+    <p class="foot" id="foot" hidden>The site learns only your user name on this machine. It never sees your password or passkey.</p>
+  </main>
+
+  <script>
+    // "Sign in with candy": an app asks who you are. The request was parked by
+    // /app-auth/authorize; one POST to /app-auth/decision answers it, and the
+    // answer goes to the app as a form POST (never in a URL).
+    const vars = window.CANDY_VARS || {};
+    const titleEl = document.getElementById('title');
+    const msgEl = document.getElementById('msg');
+    const askEl = document.getElementById('ask');
+    const busyEl = document.getElementById('busy');
+    const goBtn = document.getElementById('go');
+    const cancelBtn = document.getElementById('cancel');
+    const rememberEl = document.getElementById('remember');
+
+    const text = (v) => String(v == null ? '' : v);
+    const el = (tag, cls, content) => {
+      const e = document.createElement(tag);
+      if (cls) e.className = cls;
+      e.textContent = content;
+      return e;
+    };
+    const showMsg = (t) => { msgEl.textContent = t || ''; };
+
+    const site = text(vars.site);
+    const returnHost = text(vars.returnHost).toLowerCase();
+    const KIND = { local: ['local', 'only this machine'], tailnet: ['tailnet', 'your tailnet'], domain: ['public domain', 'a public domain'] };
+
+    let sent = false;        // the page token is good for one POST
+    let cancelled = false;   // cancelled while an automatic approve was in flight
+
+    // Builds and submits <form method=POST action=…> with hidden fields. The
+    // action must be https on the exact host this page showed.
+    function deliver(data) {
+      let url;
+      try { url = new URL(text(data && data.action)); } catch { throw new Error('candy sent back an invalid address.'); }
+      if (url.protocol !== 'https:' || url.username || url.password || url.port || url.hostname.toLowerCase() !== returnHost) {
+        throw new Error('candy sent back an address that isn’t ' + returnHost + '.');
+      }
+      const fields = data.fields && typeof data.fields === 'object' ? data.fields : {};
+      const allowed = ['candy_token', 'state', 'error'];
+      const form = document.createElement('form');
+      form.method = 'POST';
+      form.action = url.href;
+      form.hidden = true;
+      for (const key of Object.keys(fields)) {
+        if (!allowed.includes(key) || typeof fields[key] !== 'string') continue;
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = key;
+        input.value = fields[key];
+        form.appendChild(input);
+      }
+      document.body.appendChild(form);
+      form.submit();
+    }
+
+    async function decide(approve, remember) {
+      if (sent) { location.reload(); return; }
+      sent = true;
+      goBtn.disabled = true;
+      cancelBtn.disabled = true;
+      showMsg('');
+      try {
+        const res = await fetch('/app-auth/decision', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Candy-Token': window.CANDY_TOKEN || '' },
+          body: JSON.stringify({ request: text(vars.request), approve: !!approve, remember: !!remember }),
+        });
+        if (res.status === 401 && res.headers.get('X-Candy-Login')) {
+          location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
+          return;
+        }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `Failed (HTTP ${res.status})`);
+        if (cancelled) return;
+        busyEl.textContent = approve ? `Signing you in to ${site}…` : `Going back to ${site}…`;
+        busyEl.hidden = false;
+        askEl.hidden = true;
+        deliver(data);
+      } catch (e) {
+        // The page token is used up either way; a fresh page has a new one
+        busyEl.hidden = true;
+        askEl.hidden = false;
+        showMsg((e instanceof TypeError ? 'Can’t reach the candy daemon.' : e.message) + ' Go back to the app and try again.');
+        goBtn.textContent = 'Reload';
+        goBtn.disabled = false;
+        cancelBtn.hidden = true;
+      }
+    }
+
+    function render() {
+      if (vars.error) {
+        document.title = 'Sign in · candy';
+        titleEl.textContent = 'Can’t sign you in';
+        showMsg(text(vars.error));
+        return;
+      }
+      document.title = `Sign in to ${site} · candy`;
+      titleEl.textContent = '';
+      titleEl.append(el('span', 'site', site), ' wants to know who you are');
+
+      const back = document.getElementById('back');
+      const kind = KIND[vars.hostKind] || KIND.domain;
+      const badge = el('span', 'badge ' + (KIND[vars.hostKind] ? vars.hostKind : 'domain'), kind[0]);
+      badge.title = 'Reachable on ' + kind[1];
+      back.append('You’ll go back to ', el('b', 'host', 'https://' + returnHost), badge);
+
+      const who = document.getElementById('who');
+      who.append('Signed in as ', el('b', '', text(vars.user)), vars.amr === 'passkey' ? ' (with a passkey)' : ' (with your password)');
+
+      if (!vars.ownerIsYou) {
+        const owner = document.getElementById('owner');
+        owner.append('This site is run by ', el('b', '', text(vars.owner)), ', not you. They will see your user name.');
+        owner.hidden = false;
+      }
+      document.getElementById('foot').hidden = false;
+      goBtn.addEventListener('click', () => decide(true, rememberEl.checked));
+      cancelBtn.addEventListener('click', () => decide(false, false));
+
+      if (vars.remembered === true) {
+        // Approved before: answer at once, with a way out
+        busyEl.textContent = `Signing you in to ${site}…`;
+        const cancel = el('a', '', 'Cancel');
+        cancel.href = '#';
+        cancel.addEventListener('click', (e) => {
+          e.preventDefault();
+          cancelled = true;
+          busyEl.textContent = 'Cancelled. You can close this page.';
+        });
+        busyEl.append(' ', cancel);
+        busyEl.hidden = false;
+        decide(true, true);
+        return;
+      }
+
+      askEl.hidden = false;
+      goBtn.focus();
+    }
+
+    render();
+  </script>
+</body>
+</html>

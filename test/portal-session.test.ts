@@ -31,7 +31,7 @@ describe("create and get", () => {
     const { s } = make(null)
     const { id, cookie, secret } = s.create("alice", { ip: "127.0.0.1", ua: "test" })
     expect(cookie).toMatch(/^[A-Za-z0-9_-]{43}$/)
-    expect(s.get(cookie, secret)).toEqual({ id, user: "alice", created: T0, lastSeen: T0 })
+    expect(s.get(cookie, secret)).toEqual({ id, user: "alice", created: T0, lastSeen: T0, amr: "pam", pamAt: T0 })
     expect(s.get(cookie + "x", secret)).toBeNull()
     expect(s.get("", secret)).toBeNull()
     expect(s.get(null, secret)).toBeNull()
@@ -166,7 +166,7 @@ describe("persistence", () => {
     const { s } = make(file)
     const { id, cookie, secret } = s.create("alice", { ip: "100.64.0.1", ua: "firefox" })
     const { s: again } = make(file)
-    expect(again.get(cookie, secret)).toEqual({ id, user: "alice", created: T0, lastSeen: T0 })
+    expect(again.get(cookie, secret)).toEqual({ id, user: "alice", created: T0, lastSeen: T0, amr: "pam", pamAt: T0 })
     expect(again.list()[0]).toMatchObject({ ip: "100.64.0.1", ua: "firefox" })
   })
 
@@ -343,5 +343,54 @@ describe("per-user cap", () => {
     for (const old of alice.slice(0, 5)) expect(s.get(old.cookie, old.secret)).toBeNull()
     for (const kept of alice.slice(5)) expect(s.get(kept.cookie, kept.secret)).not.toBeNull()
     expect(s.get(bob.cookie, bob.secret)?.user).toBe("bob")
+  })
+})
+
+// SDK_AUTH_DESIGN.md, F: how a login was made, and when its password was last checked
+describe("amr and pamAt", () => {
+  it("a password login is amr pam with pamAt = now; a passkey login has no pamAt", () => {
+    const { s } = make(null)
+    const pam = s.create("alice")
+    const key = s.create("alice", {}, { amr: "passkey" })
+    expect(s.get(pam.cookie, pam.secret)).toMatchObject({ amr: "pam", pamAt: T0 })
+    expect(s.get(key.cookie, key.secret)).toMatchObject({ amr: "passkey", pamAt: null })
+    expect(() => s.create("alice", {}, { amr: "sms" as any })).toThrow()
+  })
+
+  it("markPam moves pamAt to now, persists, and refuses unknown or expired sessions", () => {
+    const { s, clock } = make(file, { idleMs: HOUR, maxMs: 10 * HOUR })
+    const key = s.create("alice", {}, { amr: "passkey" })
+    clock.t += 5 * MIN
+    expect(s.markPam(key.id)).toBe(T0 + 5 * MIN)
+    expect(s.get(key.cookie, key.secret)).toMatchObject({ amr: "passkey", pamAt: T0 + 5 * MIN })
+    const { s: again } = make(file, { idleMs: HOUR, maxMs: 10 * HOUR })
+    expect(again.get(key.cookie, key.secret)).toMatchObject({ amr: "passkey", pamAt: T0 + 5 * MIN })
+    expect(s.markPam("nope")).toBeNull()
+    clock.t += 2 * HOUR
+    expect(s.markPam(key.id)).toBeNull()
+  })
+
+  it("loads sessions from before amr existed as password logins (pamAt = created)", () => {
+    const { s } = make(file)
+    const a = s.create("alice")
+    const data = JSON.parse(readFileSync(file, "utf8"))
+    delete data.sessions[0].amr
+    delete data.sessions[0].pamAt
+    writeFileSync(file, JSON.stringify(data), { mode: 0o600 })
+    const { s: again } = make(file)
+    expect(again.get(a.cookie, a.secret)).toMatchObject({ amr: "pam", pamAt: T0 })
+  })
+
+  it("drops stored sessions with a bad amr or pamAt", () => {
+    for (const bad of [{ amr: "sms" }, { amr: "pam", pamAt: null }, { amr: "pam", pamAt: "x" }, { amr: "passkey", pamAt: T0 - 1 }, { amr: "pam", pamAt: T0 + 24 * HOUR }]) {
+      const { s } = make(file)
+      const a = s.create("alice")
+      const data = JSON.parse(readFileSync(file, "utf8"))
+      Object.assign(data.sessions[0], bad)
+      writeFileSync(file, JSON.stringify(data), { mode: 0o600 })
+      const { s: again } = make(file)
+      expect(again.get(a.cookie, a.secret)).toBeNull()
+      rmSync(file, { force: true })
+    }
   })
 })

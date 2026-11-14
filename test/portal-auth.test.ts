@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { AsyncLocalStorage } from "node:async_hooks"
 import {
-  attemptLogin, classifyRoute, guardRequest, logSafe, loginKeys, mayActOn, PageTokens, parseShortcutHost, safeNext, sameOrigin,
+  attemptLogin, classifyRoute, guardRequest, logSafe, SUPERUSER_NEEDS_PASSWORD, loginKeys, mayActOn, PageTokens, parseShortcutHost, safeNext, sameOrigin,
   shortcutConfirmUrl, userScopedFetch, wantsHtml, LOGIN_FAILED, LOGIN_FAILURE_FLOOR_MS, LOGIN_UNAVAILABLE,
   type LoginDeps, type RequestAuth, type RouteRule,
 } from "../portal-auth.ts"
@@ -78,6 +78,13 @@ describe("guardRequest", () => {
     expect(g({ cls: "superuser", auth: alice })).toMatchObject({ ok: false, status: 403 })
     expect(g({ cls: "superuser", auth: key })).toMatchObject({ ok: false, status: 403, error: expect.stringContaining("portal") })
     expect(g({ cls: "superuser", auth: root })).toEqual({ ok: true })
+  })
+
+  it("tells a sudoer's passkey session that the password would lift the refusal", () => {
+    const passkey: RequestAuth = { user: "bob", superuser: false, via: "portal", sessionId: "s3", amr: "passkey", pamAt: null, superuserNeedsPassword: true }
+    expect(g({ cls: "superuser", auth: passkey })).toEqual({ ok: false, status: 403, error: SUPERUSER_NEEDS_PASSWORD, superuserNeedsPassword: true })
+    expect(g({ cls: "superuser", auth: alice })).not.toHaveProperty("superuserNeedsPassword")
+    expect(g({ cls: "user", auth: passkey })).toEqual({ ok: true })
   })
 })
 

@@ -1062,6 +1062,12 @@
       return httpsUrl ? ` <a class="route-lan" href="${escapeHtml(httpsUrl)}" target="_blank" title="LAN HTTPS (trusted certificate)">${escapeHtml(httpsUrl.replace(/^https:\/\//, ''))}</a>` : '';
     }
 
+    // 2048 -> "2G", 1536 -> "1.5G", 512 -> "512M"; usage (loose) rounds: 81.5 -> "82M", 1300 -> "1.3G"
+    function fmtMb(mb, loose) {
+      if (loose) return mb >= 1024 ? `${(mb / 1024).toFixed(1).replace(/\.0$/, '')}G` : `${Math.max(1, Math.round(mb))}M`;
+      return mb >= 1024 && mb % 512 === 0 ? `${mb / 1024}G` : `${Math.round(mb)}M`;
+    }
+
     // Per-site memory limit (default 2G, at most 16G)
     function setMemoryLimit(name, current) {
       showPrompt({
@@ -2400,6 +2406,12 @@
 
       const meta = [`<span class="state ${st}">${escapeHtml(label)}</span>`];
       if (active && s.proc.pid) meta.push(`<span>pid ${escapeHtml(s.proc.pid)}</span>`);
+      if (active && s.proc.memoryUsed) {
+        const used = fmtMb(s.proc.memoryUsed / 1048576, true);
+        meta.push(s.proc.memoryMax
+          ? `<span title="Memory in use, of its limit">${used} of ${fmtMb(s.proc.memoryMax / 1048576)}</span>`
+          : `<span title="Memory in use. Started before limits existed: it gets one at its next start.">${used}, no limit yet</span>`);
+      }
       if (s.traffic) meta.push(`<span>${plural(s.traffic.total, 'request')}</span>`);
       if (variants.length > 1) meta.push(`<span>${variants.length} variants</span>`);
       // A superuser sees everyone's sites: say whose this one is
@@ -2425,8 +2437,14 @@
       const ttl = s.config?.ttl;
       if (ttl) chips.push(`<span class="chip on" title="Stops after this many minutes without activity, instead of the usual 60">Stops after ${Number(ttl)} min idle</span>`);
       const memory = s.config?.memory;
-      const memoryText = memory ? (memory >= 1024 && memory % 512 === 0 ? `${memory / 1024}G` : `${memory}M`) : '';
-      if (memory && s.config.sandbox !== false) chips.push(`<span class="chip on" title="Its memory limit, instead of the usual 2G. It is stopped if it uses more.">${memoryText} memory</span>`);
+      const memoryText = memory ? fmtMb(memory) : '';
+      // Every sandboxed site has a limit: its own (highlighted) or the usual 2G
+      if (s.config && state.status?.multiUser && s.config.sandbox !== false) {
+        const limit = fmtMb(s.config.memoryLimit || memory || 2048);
+        chips.push(memory
+          ? `<span class="chip on" title="Its own memory limit, instead of the usual 2G. It is stopped if it uses more.">${limit} memory limit</span>`
+          : `<span class="chip" title="The usual memory limit. It is stopped if it uses more. Change it under Memory limit… in the menu.">${limit} memory limit</span>`);
+      }
       const runsAs = s.config?.user;
       if (state.status?.multiUser && runsAs && runsAs !== state.status.owner) chips.push(`<span class="chip" title="Started as this user">Runs as ${escapeHtml(runsAs)}</span>`);
       if (lan) chips.push(`<span class="chip on" title="${safe}.candy is reachable from the local network">On LAN</span>`);

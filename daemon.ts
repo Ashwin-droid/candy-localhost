@@ -6802,9 +6802,18 @@ async function controlFetch(req: Request): Promise<Response> {
 
     if (req.method === "GET" && url.pathname === "/processes") {
       const processList: Record<string, any> = {}
+      // What a running unit uses and may use, in bytes, from its cgroup (null: no unit, or no limit)
+      const cgroupNumber = async (unit: string | null | undefined, file: string): Promise<number | null> => {
+        if (!unit || !/^[A-Za-z0-9_.@-]+\.service$/.test(unit)) return null
+        const n = Number((await Bun.file(`/sys/fs/cgroup/${SANDBOX_SLICE}/${unit}/${file}`).text().catch(() => "")).trim())
+        return Number.isFinite(n) && n > 0 ? n : null
+      }
       for (const [name, proc] of processes) {
         if (!mayUse(name)) continue
+        const up = proc.status === 'running' || proc.status === 'starting'
         processList[name] = {
+          memoryUsed: up ? await cgroupNumber(proc.unit, "memory.current") : null,
+          memoryMax: up ? await cgroupNumber(proc.unit, "memory.max") : null,
           status: proc.status,
           port: proc.port,
           pid: proc.pid,

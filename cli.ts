@@ -1730,6 +1730,7 @@ function printHelp() {
   console.log(`  ${c.cyan}candy dev${c.reset} <cmd> --api        API mode: hold the first request while starting, then forward it`)
   console.log(`  ${c.cyan}candy api${c.reset} <name> [on|off]     Turn API mode on or off for a site`)
   console.log(`  ${c.cyan}candy ttl${c.reset} <name> <minutes|off>  Stop a site after that many idle minutes (default 60)`)
+  console.log(`  ${c.cyan}candy mem${c.reset} <name> <size|off>     Memory limit for a site (default 2G, at most 16G)`)
   console.log(`  ${c.cyan}candy env${c.reset} <name> <path|off>     Give a site its environment from a KEY=VALUE file`)
   console.log(`  ${c.cyan}candy route serve${c.reset} <name> <port|off>  https://<host>.ts.net:<port> on the tailnet (tailscale serve, run by candy)`)
   console.log(`  ${c.cyan}candy route entry${c.reset} <name> <port|off>  A local port that always reaches the site through candy`)
@@ -1850,6 +1851,23 @@ switch (command) {
       process.exit(1)
     }
     console.log(`${name}: stops after ${c.cyan}${res.minutes ?? res.defaultMinutes} min${c.reset} without activity${res.minutes ? '' : ' (the default)'}`)
+    break
+  }
+  case 'mem': {
+    // candy mem <name> <size|off>: this site's memory limit (default 2G, at most 16G)
+    const [name, value] = args.slice(1)
+    if (!name || !value) {
+      console.error(`${c.red}Usage: candy mem <name> <size|off>   (4G, 512M; at most 16G; off = the default 2G)${c.reset}`)
+      process.exit(1)
+    }
+    const off = value === 'off' || value === 'default'
+    const res = await apiPost('/config/memory', { name, memory: off ? null : /^\d+(\.\d+)?$/.test(value) ? Number(value) : value })
+    if (!res || res.error) {
+      console.error(`${c.red}${res?.error || 'Daemon not running'}${c.reset}`)
+      process.exit(1)
+    }
+    console.log(`${name}: memory limit ${c.cyan}${res.text}${c.reset}${res.isDefault ? ' (the default)' : ''}, ${res.applied === 'now' ? 'applied to the running server' : 'from its next start'}`)
+    if (!res.sandboxed) console.log(`${c.dim}The limit only applies to sandboxed servers; this one runs without the sandbox.${c.reset}`)
     break
   }
   case 'env': {

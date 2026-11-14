@@ -260,6 +260,14 @@ describe("daemon calls", () => {
     expect(calls[1].body).toEqual({ name: "y", target: "http://10.0.0.5:8080", persistent: false })
   })
 
+  test("candy_config set_memory", async () => {
+    const calls = stubDaemon()
+    await callTool("candy_config", { action: "set_memory", name: "wa", memory: "4G" })
+    expect(calls[0]).toMatchObject({ path: "/config/memory", method: "POST", body: { name: "wa", memory: "4G" } })
+    await callTool("candy_config", { action: "set_memory", name: "wa" })
+    expect(calls[1]).toMatchObject({ path: "/config/memory", method: "POST", body: { name: "wa", memory: null } })
+  })
+
   test("candy_domain auth actions", async () => {
     const calls = stubDaemon()
     await callTool("candy_domain", { action: "auth_status" })

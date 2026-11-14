@@ -10,6 +10,36 @@ export const STATE_ROOT = "/var/lib/candy"
 export const SANDBOX_SLICE = "candy.slice"
 export const MAX_RW_PATHS = 16
 
+// Memory: every unit gets a hard limit. 2G unless the site has its own
+// (candy mem), and never more than 16G whatever is asked for.
+export const DEFAULT_MEMORY_MB = 2048
+export const MAX_MEMORY_MB = 16 * 1024
+export const MIN_MEMORY_MB = 64
+
+/** A memory limit in MB from a number (MB) or text like "4G", "512M", "1.5g". Null when it isn't one or is outside 64M-16G. */
+export const validateMemoryMb = (value: unknown): number | null => {
+  let mb: number
+  if (typeof value === "number") mb = value
+  else if (typeof value === "string") {
+    const m = value.trim().match(/^(\d+(?:\.\d+)?)\s*([mg])(?:i?b)?$/i)
+    if (!m) return null
+    mb = Number(m[1]) * (m[2].toLowerCase() === "g" ? 1024 : 1)
+  } else return null
+  if (!Number.isFinite(mb)) return null
+  mb = Math.round(mb)
+  return mb >= MIN_MEMORY_MB && mb <= MAX_MEMORY_MB ? mb : null
+}
+
+/** The limit a unit runs with: the site's own if valid, else the default; capped at 16G even if a bad value got into the config. */
+export const memoryLimitMb = (configured: unknown): number =>
+  Math.min(validateMemoryMb(configured) ?? DEFAULT_MEMORY_MB, MAX_MEMORY_MB)
+
+/** "2G", "512M", "1.5G" */
+export const formatMemory = (mb: number): string => mb >= 1024 && mb % 512 === 0 ? `${mb / 1024}G` : `${mb}M`
+
+/** systemd properties for a limit: RAM capped, and no swap to spill into */
+export const memoryProperties = (mb: number): string[] => [`MemoryMax=${mb}M`, "MemorySwapMax=0"]
+
 // "wa" -> "candy-wa-3f9a1c.service". Names are DNS-safe labels already; the
 // suffix keeps a restart from colliding with a unit that is still stopping.
 export const unitName = (name: string, kind: "srv" | "cron" | "fn" = "srv"): string => {
@@ -61,6 +91,7 @@ export interface SandboxSpec {
   cwd: string
   codeDir: string
   extraRw?: string[]
+  memoryMb?: number | null  // the site's own memory limit (default 2G, at most 16G)
   envFile?: string | null   // read by systemd itself, so it may be unreadable to the server's user
   env: Record<string, string | undefined>
   script: string            // run as: bash -ic <script> [candy <args...>]
@@ -116,6 +147,8 @@ export const sandboxProperties = (spec: SandboxSpec): string[] => {
     "KeyringMode=private",
     // A function gets its 30s waitUntil grace (fn-host SHUTDOWN_WAIT_MS) before SIGKILL
     `TimeoutStopSec=${spec.fn ? FN_STOP_TIMEOUT_S : 10}`,
+    // A hard memory limit: past it the kernel kills the unit, not the machine
+    ...memoryProperties(memoryLimitMb(spec.memoryMb)),
   ]
   // ...and the code folder, plus any extra paths the owner listed. A folder
   // under /tmp is hidden by the private /tmp, so it is bound back in instead.

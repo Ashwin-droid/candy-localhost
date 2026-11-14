@@ -674,13 +674,15 @@ Renaming a route is candy_route rename. Removing one variant is candy_deregister
 
 - set_ttl: How long a server may sit idle before candy stops it. minutes: 1-10080 (default 60); omit or null to go back to the default. An open connection still counts as activity
 
-set_api, set_port, set_sandbox, set_env_file and set_ttl MODIFY CONFIGURATION - confirm with user if they haven't asked.`,
+- set_memory: The server's memory limit. Every sandboxed server, function and cron run has one: 2G by default. memory: "4G", "512M" or a number of MB, from 64M to 16G (never more); omit or null for the default. Past the limit the server is killed. A running server takes the new limit at once
+
+set_api, set_port, set_sandbox, set_env_file, set_ttl and set_memory MODIFY CONFIGURATION - confirm with user if they haven't asked.`,
     inputSchema: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["list", "users", "set_api", "set_port", "set_sandbox", "set_env_file", "set_ttl"],
+          enum: ["list", "users", "set_api", "set_port", "set_sandbox", "set_env_file", "set_ttl", "set_memory"],
           description: "Action to perform"
         },
         name: {
@@ -698,6 +700,10 @@ set_api, set_port, set_sandbox, set_env_file and set_ttl MODIFY CONFIGURATION - 
         minutes: {
           type: ["number", "null"],
           description: "set_ttl: idle minutes before the server stops (null for the default hour)"
+        },
+        memory: {
+          type: ["string", "number", "null"],
+          description: "set_memory: the limit, like \"4G\" or \"512M\" (a number is MB); at most 16G; null for the default 2G"
         },
         envFile: {
           type: "string",
@@ -1310,8 +1316,15 @@ async function handleDeregister(params: any): Promise<any> {
 }
 
 async function handleConfig(params: any): Promise<any> {
-  const { action, name, configId, api, port, sandbox, addRw, removeRw, envFile, minutes } = params
+  const { action, name, configId, api, port, sandbox, addRw, removeRw, envFile, minutes, memory } = params
   switch (action) {
+    case "set_memory":
+      if (!name) return { error: "name is required for set_memory" }
+      return await post("/config/memory", {
+        name,
+        ...(configId ? { configId } : {}),
+        memory: memory === null || memory === undefined ? null : memory,
+      })
     case "set_ttl":
       if (!name) return { error: "name is required for set_ttl" }
       return await post("/config/ttl", {
@@ -1346,7 +1359,7 @@ async function handleConfig(params: any): Promise<any> {
       return res
     }
     default:
-      return { error: "Unknown action. Use: list, users, set_api, set_port, set_sandbox, set_env_file, set_ttl" }
+      return { error: "Unknown action. Use: list, users, set_api, set_port, set_sandbox, set_env_file, set_ttl, set_memory" }
   }
 }
 

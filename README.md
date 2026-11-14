@@ -188,6 +188,17 @@ candy ttl vault off   # back to the default hour
 
 Activity is counted the same way, so an open connection still keeps it up. The check runs every 30 seconds.
 
+### Memory limit
+
+Every sandboxed server, function and cron run has a hard memory limit: 2G unless you set another, and never more than 16G. Past its limit the server is killed (it shows as crashed; an API-mode server starts again on the next request).
+
+```bash
+candy mem vault 4G     # 64M to 16G; a bare number is MB
+candy mem vault off    # back to the default 2G
+```
+
+A running server takes the new limit at once. Servers that run without the sandbox have no limit.
+
 Servers with an open portal are never stopped for idleness. A server that called `setIdling()` is kept past the hour until memory is tight (80% of RAM in use, or PSI memory pressure `some avg10` at 10 or more).
 
 The daemon's own proxies (unprotected bound domains, API mode, first request to a stopped bound server) wait up to 30 seconds for response headers; after that the body can stream indefinitely.
@@ -495,6 +506,7 @@ candy dev [cmd...]             Start dev server (uses saved config, or auto-dete
 candy dev <cmd> --name <name>  Register and run with custom route name
 candy dev <cmd> --api          Register in API mode (hold the first request while starting, then forward it)
 candy api <name> [on|off]      Turn API mode on or off
+candy mem <name> <size|off>    Memory limit for a site (default 2G, at most 16G)
 candy stop [name]              Stop server (current directory or by name)
 candy status                   Show daemon status and all servers
 candy logs [name]              Tail logs via SSE
@@ -546,7 +558,7 @@ candy version | -v             Show version
 | `candy_start` / `candy_restart` / `candy_stop` | Control a server. `candy_start` takes `configId` when a name has several variants |
 | `candy_logs` / `candy_input` | Read a server's output (tail, head, search) and type into its terminal |
 | `candy_register` / `candy_deregister` | Add or remove a config. Register accepts `api` (API mode) and `user` (another account: only a portal superuser can, so over MCP it must be yourself); deregister accepts `configId` to remove one variant |
-| `candy_config` | `list` configs and variants, `users` (run-as accounts), `set_api` (API mode on/off), `set_port` (pick one of several detected ports), `set_sandbox` (sandbox on/off, extra writable folders), `set_env_file`, `set_ttl` (idle minutes before it stops) |
+| `candy_config` | `list` configs and variants, `users` (run-as accounts), `set_api` (API mode on/off), `set_port` (pick one of several detected ports), `set_sandbox` (sandbox on/off, extra writable folders), `set_env_file`, `set_ttl` (idle minutes before it stops), `set_memory` (memory limit, 2G by default, at most 16G) |
 | `candy_route` | `list`, `add` (port or URL `target`, `persistent`), `remove`, `rename`; LAN: `lan_list`, `lan_publish` (`https`: `true`, `false`, `"domain"` or `"tailscale"`, optional `port`), `lan_unpublish`; `entry` / `entry_list` (loopback entry ports), `serve` / `serve_list` (tailscale serve); AdGuard Home: `adguard_status`, `adguard_unlink` |
 | `candy_domain` | Bound domains: `list`, `bind`, `unbind`, `config`; protection: `auth_status`, `auth_generate_jwt`, `auth_token` (`ttl`, `once`), `auth_clear` (`which`: password, jwt or all), `allowlist` (`add`, `remove`, `ips`, `enabled`); the public MCP endpoint: `public_mcp_status`, `public_mcp_on`, `public_mcp_off`, `public_mcp_revoke` |
 | `candy_portal_open` / `candy_portal_close` / `candy_portals` | Cloudflare quick tunnels |

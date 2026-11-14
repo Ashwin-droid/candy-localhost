@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { parseEnvFile, validateEnvFilePath, userEnvDir } from "../sandbox.ts"
 import { listeningPortsOf, tailscaleServeTargets } from "../activity.ts"
-import { findCodeDir, sandboxProperties, stateDirPath, systemdRunCommand, unitName, unitOfCgroup, validateRwPath, type SandboxSpec } from "../sandbox.ts"
+import { DEFAULT_MEMORY_MB, MAX_MEMORY_MB, formatMemory, memoryLimitMb, validateMemoryMb, findCodeDir, sandboxProperties, stateDirPath, systemdRunCommand, unitName, unitOfCgroup, validateRwPath, type SandboxSpec } from "../sandbox.ts"
 
 const spec = (over: Partial<SandboxSpec> = {}): SandboxSpec => ({
   name: "wa", unit: "candy-wa-abc123.service", uid: 1001, gid: 1001,
@@ -125,5 +125,47 @@ describe("ports and tailscale serve", () => {
     expect(targets.get(22)).toBe("(something else)")
     expect(tailscaleServeTargets("").size).toBe(0)
     expect(tailscaleServeTargets("{}").size).toBe(0)
+  })
+})
+
+describe("memory limit", () => {
+  it("every unit gets 2G and no swap unless the site has its own limit", () => {
+    for (const s of [spec(), spec({ mode: "pipe" }), spec({ mode: "pipe", fn: {} }), spec({ memoryMb: null })]) {
+      const props = sandboxProperties(s)
+      expect(props).toContain("MemoryMax=2048M")
+      expect(props).toContain("MemorySwapMax=0")
+    }
+    expect(systemdRunCommand(spec())).toContain("--property=MemoryMax=2048M")
+    expect(sandboxProperties(spec({ memoryMb: 4096 }))).toContain("MemoryMax=4096M")
+    expect(sandboxProperties(spec({ memoryMb: 512 }))).toContain("MemoryMax=512M")
+  })
+
+  it("never more than 16G, whatever the config says", () => {
+    expect(DEFAULT_MEMORY_MB).toBe(2048)
+    expect(MAX_MEMORY_MB).toBe(16384)
+    expect(sandboxProperties(spec({ memoryMb: 16384 }))).toContain("MemoryMax=16384M")
+    // A value over the cap (a hand-edited config) falls back to the default, not to "unlimited"
+    for (const bad of [16385, 64 * 1024, Infinity, NaN, -1, 0]) {
+      expect(sandboxProperties(spec({ memoryMb: bad }))).toContain("MemoryMax=2048M")
+      expect(memoryLimitMb(bad)).toBe(2048)
+    }
+    expect(sandboxProperties(spec({ memoryMb: 999999 })).filter(p => p.startsWith("MemoryMax=")).length).toBe(1)
+  })
+
+  it("reads sizes like 4G and 512M, and refuses anything outside 64M-16G", () => {
+    expect(validateMemoryMb("4G")).toBe(4096)
+    expect(validateMemoryMb("4g")).toBe(4096)
+    expect(validateMemoryMb("1.5G")).toBe(1536)
+    expect(validateMemoryMb("512M")).toBe(512)
+    expect(validateMemoryMb("512 MB")).toBe(512)
+    expect(validateMemoryMb("16GiB")).toBe(16384)
+    expect(validateMemoryMb(3000)).toBe(3000)
+    for (const bad of ["17G", "16.1G", "32M", "4", "4T", "infinity", "", "4G; rm -rf /", "-4G", 16385, 63, null, undefined, {}, true]) {
+      expect(validateMemoryMb(bad), String(bad)).toBeNull()
+    }
+    expect(formatMemory(2048)).toBe("2G")
+    expect(formatMemory(1536)).toBe("1.5G")
+    expect(formatMemory(512)).toBe("512M")
+    expect(formatMemory(3000)).toBe("3000M")
   })
 })

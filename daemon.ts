@@ -13,7 +13,7 @@ import { timingSafeEqual } from "node:crypto"
 import { networkInterfaces, userInfo } from "node:os"
 import { SHARED_GROUP, SHARED_SECRET_FILE } from "./secret.ts"
 import { AccessLogTail, activityFromAccessLog, countEstablished, idleVerdict, IDLE_TIMEOUT_MS, listeningPortsOf, localNameCandidates, readMemoryState, tailscaleServeTargets, validateTtlMinutes, type MemoryState } from "./activity.ts"
-import { findCodeDir, parseEnvFile, stateDirPath, systemdRunCommand, unitName, unitOfCgroup, userEnvDir, validateEnvFilePath, validateRwPath, MAX_RW_PATHS, SANDBOX_SLICE, STATE_ROOT } from "./sandbox.ts"
+import { findCodeDir, parseEnvFile, stateDirPath, systemdRunCommand, unitName, unitOfCgroup, userEnvDir, validateEnvFilePath, validateRwPath, MAX_RW_PATHS, SANDBOX_SLICE, STATE_ROOT, DEFAULT_MEMORY_MB, MAX_MEMORY_MB, MIN_MEMORY_MB, formatMemory, memoryLimitMb, memoryProperties, validateMemoryMb } from "./sandbox.ts"
 import { OAuthServer, type OAuthPersisted } from "./mcp-oauth.ts"
 import { handlePublicRequest as handlePublicMcpRequest } from "./mcp.ts"
 import { applyAdguardUpstreams, upstreamRule, type AdguardConfig } from "./adguard.ts"
@@ -82,6 +82,7 @@ interface ServerConfig {
   rw?: string[]     // extra writable paths inside the sandbox
   envFile?: string  // KEY=VALUE file handed to the server as environment at launch
   ttl?: number      // its own idle limit in minutes (default: one hour)
+  memory?: number   // its own memory limit in MB (default 2048, at most 16384)
   fn?: FnSettings   // a function (candy-functions): no port, dispatched by the daemon
 }
 
@@ -2430,6 +2431,8 @@ const loadServerConfigs = async () => {
           const rawTtl = (item as any).ttl
           const ttl = validateTtlMinutes(typeof rawTtl === "object" && rawTtl ? rawTtl.idleMin : rawTtl)
           if (ttl) cfg.ttl = ttl
+          const memory = validateMemoryMb((item as any).memory)
+          if (memory) cfg.memory = memory
           const envFile = validateEnvFilePath((item as any).envFile)
           if (envFile) cfg.envFile = envFile
           if (Array.isArray((item as any).cron)) {
@@ -2689,6 +2692,7 @@ const launchSpec = async (config: ServerConfig, cron?: { job: string; args: stri
         cwd: config.cwd,
         codeDir: findCodeDir(config.cwd, account.home, dir => existsSync(`${dir}/.git`)),
         extraRw: config.rw,
+        memoryMb: config.memory,
         envFile: config.envFile,
         env,
         script,
@@ -5196,6 +5200,7 @@ const ROUTE_TABLE: readonly RouteRule[] = [
   ["POST", "/config", "user"],
   ["POST", "/config/api", "user"],
   ["POST", "/config/ttl", "user"],
+  ["POST", "/config/memory", "user"],
   ["POST", "/config/env", "user"],
   ["POST", "/config/sandbox", "user"],
   ["DELETE", "/config/*", "user"],
@@ -7026,6 +7031,8 @@ async function controlFetch(req: Request): Promise<Response> {
           sandbox: SANDBOX_AVAILABLE && first.sandbox !== false,
           envFile: first.envFile ?? null,
           ttl: first.ttl ?? null,
+          memory: first.memory ?? null,
+          memoryLimit: memoryLimitMb(first.memory),
           rw: first.rw ?? [],
           count: entries.length,
           variants: entries.map(c => ({ id: c.id, cwd: c.cwd, cmd: c.cmd, user: configUser(c), api: !!c.api })),
@@ -7127,6 +7134,48 @@ async function controlFetch(req: Request): Promise<Response> {
       const actor = requestActor
       auditLog('CONFIG_TTL', `${name}: stops after ${minutes ?? IDLE_TIMEOUT / 60000}min idle${minutes ? '' : ' (default)'}`, actor)
       return Response.json({ success: true, minutes, defaultMinutes: IDLE_TIMEOUT / 60000 }, { headers: corsHeaders })
+    }
+
+    if (req.method === "POST" && url.pathname === "/config/memory") {
+      const body = await req.json().catch(() => ({})) as { name?: string, configId?: string, memory?: number | string | null }
+      const { name, configId } = body
+      if (!name) return Response.json({ error: "name is required" }, { status: 400, headers: corsHeaders })
+      const targets = getConfigsForName(name).filter(cfg => !configId || cfg.id === configId)
+      if (targets.length === 0) {
+        return Response.json({ error: `No site named '${name}' with a start command.` }, { status: 404, headers: corsHeaders })
+      }
+      const denied = targets.find(cfg => !mayChangeConfig(auth, cfg))
+      if (denied) {
+        return Response.json({ error: `${name} runs as ${configUser(denied)}. Only they can change it.` }, { status: 403, headers: corsHeaders })
+      }
+      const reset = body.memory === null || body.memory === undefined
+      const mb = reset ? null : validateMemoryMb(body.memory)
+      if (!reset && !mb) {
+        return Response.json({ error: `The memory limit must be between ${formatMemory(MIN_MEMORY_MB)} and ${formatMemory(MAX_MEMORY_MB)}, like 4G or 512M (a bare number is MB).` }, { status: 400, headers: corsHeaders })
+      }
+      for (const cfg of targets) {
+        if (mb && mb !== DEFAULT_MEMORY_MB) cfg.memory = mb
+        else delete cfg.memory
+      }
+      await saveServerConfigs()
+      const limit = memoryLimitMb(mb)
+      // A running unit takes the new limit now; otherwise it applies at the next start
+      const managed = processes.get(name)
+      let live = false
+      if (managed?.unit && (managed.status === 'running' || managed.status === 'starting') && targets.some(cfg => cfg.id === managed.config.id)) {
+        const [max, swap] = memoryProperties(limit)
+        live = (await $`systemctl set-property --runtime ${managed.unit} ${max} ${swap}`.quiet().nothrow()).exitCode === 0
+      }
+      auditLog('CONFIG_MEMORY', `${name}: memory limit ${formatMemory(limit)}${mb ? '' : ' (default)'}${live ? ', applied to the running unit' : ''}`, requestActor)
+      return Response.json({
+        success: true,
+        memory: mb,
+        limit,
+        text: formatMemory(limit),
+        isDefault: limit === DEFAULT_MEMORY_MB,
+        applied: live ? "now" : "next start",
+        sandboxed: SANDBOX_AVAILABLE && targets.every(cfg => cfg.sandbox !== false),
+      }, { headers: corsHeaders })
     }
 
     if (req.method === "POST" && url.pathname === "/config/env") {

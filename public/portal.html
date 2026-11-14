@@ -1062,6 +1062,36 @@
       return httpsUrl ? ` <a class="route-lan" href="${escapeHtml(httpsUrl)}" target="_blank" title="LAN HTTPS (trusted certificate)">${escapeHtml(httpsUrl.replace(/^https:\/\//, ''))}</a>` : '';
     }
 
+    // Per-site memory limit (default 2G, at most 16G)
+    function setMemoryLimit(name, current) {
+      showPrompt({
+        title: `Memory limit for ${name}`,
+        label: 'Limit',
+        value: current || '',
+        required: false,
+        submit: 'Save',
+        hint: `Like 4G or 512M, at most 16G. Leave it empty for the usual 2G. If ${name} uses more than this, it is stopped.`,
+        onSubmit: async (value) => {
+          const text = String(value).trim();
+          try {
+            const res = await apiCall('/config/memory', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name, memory: text === '' ? null : /^\d+(\.\d+)?$/.test(text) ? Number(text) : text }),
+            });
+            const data = await res.json();
+            if (data.error) { toast(data.error, 'error'); return false; }
+            toast(`${name}: memory limit ${data.text}${data.applied === 'now' ? '' : ', from its next start'}`, 'success');
+            refreshAll();
+            return true;
+          } catch {
+            toast('Could not save the memory limit', 'error');
+            return false;
+          }
+        },
+      });
+    }
+
     // Per-site idle limit: stop after this many minutes without activity
     function setIdleLimit(name, current) {
       showPrompt({
@@ -2394,6 +2424,9 @@
       if (state.status?.multiUser && s.config && s.config.sandbox === false) chips.push('<span class="chip" title="Runs without the sandbox: it can write anywhere its user can">No sandbox</span>');
       const ttl = s.config?.ttl;
       if (ttl) chips.push(`<span class="chip on" title="Stops after this many minutes without activity, instead of the usual 60">Stops after ${Number(ttl)} min idle</span>`);
+      const memory = s.config?.memory;
+      const memoryText = memory ? (memory >= 1024 && memory % 512 === 0 ? `${memory / 1024}G` : `${memory}M`) : '';
+      if (memory && s.config.sandbox !== false) chips.push(`<span class="chip on" title="Its memory limit, instead of the usual 2G. It is stopped if it uses more.">${memoryText} memory</span>`);
       const runsAs = s.config?.user;
       if (state.status?.multiUser && runsAs && runsAs !== state.status.owner) chips.push(`<span class="chip" title="Started as this user">Runs as ${escapeHtml(runsAs)}</span>`);
       if (lan) chips.push(`<span class="chip on" title="${safe}.candy is reachable from the local network">On LAN</span>`);
@@ -2430,6 +2463,7 @@
       if (SUPER && tsServe) toggles.push(menuItem('Stop serving on Tailscale', `stopTailscaleServe('${js}')`));
       // Functions exit when idle and always hold requests while starting, so these don't apply
       if (s.config && !fn) toggles.push(menuItem('Idle time…', `setIdleLimit('${js}', ${Number(ttl) || 'null'})`));
+      if (s.config && state.status?.multiUser && s.config.sandbox !== false) toggles.push(menuItem('Memory limit…', `setMemoryLimit('${js}', '${memoryText}')`));
       if (s.config && !fn) toggles.push(menuItem(s.config.api ? 'Turn off API mode' : 'API mode', `toggleApiMode('${js}', ${!s.config.api})`));
       if (s.config && state.status?.multiUser) toggles.push(menuItem(s.config.sandbox === false ? 'Turn on sandbox' : 'Run without sandbox', `toggleSandbox('${js}', ${s.config.sandbox === false})`));
       const danger = [];

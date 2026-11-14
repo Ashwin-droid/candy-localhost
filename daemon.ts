@@ -38,7 +38,7 @@ import { coalesced, caddyGlobalBlock, checkBindings, cloudflaredYaml, dedupeSite
 import { verifyPassword, pamAvailable, checkAccount } from "./pam.ts"
 import { isSuperuser, loginUsers } from "./superuser.ts"
 import { AppKeyStore, ConsentStore, PendingRequests, issuersFor, type SiteLookup } from "./app-auth.ts"
-import { ChallengeStore, PasskeyStore, SUPERUSER_PAM_MS, mayActAsSuperuser, prunePasskeyAccounts, type PasskeyDeps } from "./passkey-store.ts"
+import { ChallengeStore, PasskeyStore, prunePasskeyAccounts, type PasskeyDeps } from "./passkey-store.ts"
 import * as webauthn from "./webauthn.ts"
 import { formatKeyRing, type JweKey } from "./jwe.ts"
 import { createAuthRoutes, type AuthRouteContext } from "./app-auth-routes.ts"
@@ -1698,20 +1698,12 @@ const requestAuth = async (req: Request): Promise<RequestAuth | null> => {
     auditLog('AUTH_REVOKED', `${session.user}: can't log in any more, ${n} login(s) ended`, 'System')
     return null
   }
-  // A sudoer's passkey session is a superuser only after re-entering the
-  // password (/auth/reauth): root-level actions never rest on a passkey alone
-  const sudoer = await isSuperuser(session.user).catch(() => false)
-  const stepped = mayActAsSuperuser(session, Date.now())
+  // A sudoer is a superuser however the login was made (password or passkey)
   return {
-    user: session.user, superuser: sudoer && stepped, via: "portal", sessionId: session.id,
+    user: session.user, superuser: await isSuperuser(session.user).catch(() => false), via: "portal", sessionId: session.id,
     amr: session.amr, pamAt: session.pamAt, sessionCreated: session.created,
-    ...(sudoer && !stepped ? { superuserNeedsPassword: true } : {}),
   }
 }
-// When a passkey session's superuser step-up (/auth/reauth) runs out, for the
-// portal to ask again then; null when it doesn't (a password login, or none yet)
-const superuserUntil = (auth: RequestAuth): number | null =>
-  auth.superuser && auth.amr === "passkey" && typeof auth.pamAt === "number" ? auth.pamAt + SUPERUSER_PAM_MS : null
 // Who may log in, cached for a minute: checked on every portal request
 const eligibleLoginUsers = cachedList(() => loginUsers(), 60 * 1000)
 
@@ -5879,8 +5871,7 @@ async function controlFetch(req: Request): Promise<Response> {
       if (!verdict.ok) {
         if (verdict.status === 302) return new Response(null, { status: 302, headers: { Location: verdict.location, "Cache-Control": "no-store" } })
         const loginHeader: Record<string, string> = verdict.status === 401 ? { "X-Candy-Login": "required" } : {}
-        const stepUp = verdict.status === 403 && verdict.superuserNeedsPassword ? { superuserNeedsPassword: true } : {}
-        return Response.json({ error: verdict.error, ...stepUp }, { status: verdict.status, headers: { ...corsHeaders, ...loginHeader } })
+        return Response.json({ error: verdict.error }, { status: verdict.status, headers: { ...corsHeaders, ...loginHeader } })
       }
       // === API Routes require token validation ===
       // Anything that changes state from the portal: sent by a portal page (Origin),
@@ -5967,7 +5958,7 @@ async function controlFetch(req: Request): Promise<Response> {
     }
 
     if (req.method === "GET" && url.pathname === "/auth/me") {
-      return Response.json({ user: auth!.user, superuser: auth!.superuser, superuserNeedsPassword: auth!.superuserNeedsPassword === true, superuserUntil: superuserUntil(auth!), via: auth!.via, amr: auth!.amr, multiUser: RUNNING_AS_ROOT }, { headers: { ...corsHeaders, "Cache-Control": "no-store" } })
+      return Response.json({ user: auth!.user, superuser: auth!.superuser, via: auth!.via, amr: auth!.amr, multiUser: RUNNING_AS_ROOT }, { headers: { ...corsHeaders, "Cache-Control": "no-store" } })
     }
 
     // === Sign in with candy, and passkeys (app-auth-routes.ts) ===
@@ -8120,7 +8111,7 @@ async function serveSitePage(req: Request, url: URL, corsHeaders: Record<string,
       if (domain === "portal" && isRootPath && !isBoundDomain) {
         domainHits.set(domain, (domainHits.get(domain) || 0) + 1)
         const rawHtml = await Bun.file(import.meta.dir + "/public/portal.html").text()
-        let html = injectVars(rawHtml, { user: auth!.user, superuser: auth!.superuser, superuserNeedsPassword: auth!.superuserNeedsPassword === true, superuserUntil: superuserUntil(auth!), multiUser: RUNNING_AS_ROOT })
+        let html = injectVars(rawHtml, { user: auth!.user, superuser: auth!.superuser, multiUser: RUNNING_AS_ROOT })
         // Check if any bound domain is unprotected → inject nag banner on portal
         const domainConfig = await loadDomainConfig()
         const hasUnprotected = domainConfig?.bindings && Object.values(domainConfig.bindings).some((b: any) => mayChangeName(auth, b.serverName) && (!b.auth?.password || !b.auth?.enabled))

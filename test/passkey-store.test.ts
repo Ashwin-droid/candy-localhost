@@ -7,7 +7,7 @@ import {
   PasskeyStore, ChallengeStore, mayManagePasskeys, passkeyLoginKey, cleanPasskeyName, isRpId,
   startPasskeyLogin, attemptPasskeyLogin, startRegistration, finishRegistration, deletePasskey, renamePasskey,
   MAX_PER_USER_RP, MAX_PER_USER, MAX_PASSKEYS, MAX_NAME_LENGTH, CHALLENGE_TTL_MS, MAX_CHALLENGES,
-  mayActAsSuperuser, prunePasskeyAccounts, SUPERUSER_PAM_MS,
+  prunePasskeyAccounts,
   RECENT_PAM_MS, PASSKEY_FAILURE_FLOOR_MS, PASSKEY_FAILED, PASSKEY_SLOWED, PASSKEY_NEEDS_PASSWORD, PASSKEY_LIMIT,
   PASSKEY_EXISTS, PASSKEY_EXPIRED, PASSKEY_NOT_FOUND, PASSKEY_INVALID, MAX_CREDENTIAL_ID_CHARS,
   type PasskeyRecord, type PasskeyDeps, type WebAuthnImpl, type SessionAuthState,
@@ -1266,16 +1266,5 @@ describe("passkey login runs PAM's account stage", () => {
     state.acctThrow = false
     c = loginChallenge(d)
     expect((await attemptPasskeyLogin(d, { challengeId: c.challengeId, credential: assertion(record.id, c.challenge, handle, 8), ...LOCAL, ip: "10.0.0.1" })).ok).toBe(true)
-  })
-})
-
-describe("mayActAsSuperuser", () => {
-  it("a password login may; a passkey login only within SUPERUSER_PAM_MS of re-entering the password", () => {
-    expect(mayActAsSuperuser({ amr: "pam", pamAt: T0 - 7 * 24 * 60 * MIN }, T0)).toBe(true)
-    expect(mayActAsSuperuser({ amr: "passkey", pamAt: null }, T0)).toBe(false)
-    expect(mayActAsSuperuser({ amr: "passkey", pamAt: T0 - SUPERUSER_PAM_MS }, T0)).toBe(true)
-    expect(mayActAsSuperuser({ amr: "passkey", pamAt: T0 - SUPERUSER_PAM_MS - 1 }, T0)).toBe(false)
-    expect(mayActAsSuperuser({ amr: "passkey", pamAt: T0 + 2 * MIN }, T0)).toBe(false)   // from the future
-    expect(mayActAsSuperuser({ amr: "passkey", pamAt: NaN }, T0)).toBe(false)
   })
 })

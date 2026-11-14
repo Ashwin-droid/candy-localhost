@@ -120,65 +120,14 @@ describe("superuser settings", () => {
   })
 })
 
-describe("superuser step-up in the portal (a sudoer's passkey login)", () => {
-  it("gets superuserNeedsPassword and superuserUntil in the portal's CANDY_VARS and /auth/me", () => {
+describe("superuser in the portal (a sudoer's passkey login too)", () => {
+  it("is the daemon's superuser flag, fixed for the page; no step-up prompt", async () => {
     const portalVars = daemon.slice(daemon.indexOf('const rawHtml = await Bun.file(import.meta.dir + "/public/portal.html")'))
-    expect(portalVars.slice(0, 400)).toContain("superuserNeedsPassword: auth!.superuserNeedsPassword === true, superuserUntil: superuserUntil(auth!)")
-    const me = block(daemon, 'if (req.method === "GET" && url.pathname === "/auth/me") {')
-    expect(me).toContain("superuserNeedsPassword:")
-    expect(me).toContain("superuserUntil: superuserUntil(auth!)")
-    // The guard's superuser refusal carries the flag the portal's prompt keys on
-    expect(daemon).toContain("verdict.status === 403 && verdict.superuserNeedsPassword ? { superuserNeedsPassword: true } : {}")
-  })
-
-  it("shows an Unlock superuser button by the user's name, only when the daemon says so", async () => {
+    expect(portalVars.slice(0, 400)).toContain("superuser: auth!.superuser, multiUser")
     const html = await page("portal.html")
-    expect(html.slice(html.indexOf('<div class="who"'), html.indexOf('<div class="top-actions">'))).toContain('id="who-unlock" hidden onclick="unlockSuperuser()"')
-    expect(html).toContain("document.getElementById('who-unlock').hidden = !ME.superuserNeedsPassword;")
-    const apply = block(html, "function applyAuth(me) {")
-    expect(apply).toContain("document.getElementById('who-unlock').hidden = !ME.superuserNeedsPassword;")
-    expect(apply).toContain("document.getElementById('who-su').hidden = !SUPER;")
-    expect(apply).toContain("if (was !== SUPER) refreshAll();")
-    // SUPER changes without a reload
-    expect(html).toContain("let SUPER = !!ME.superuser;")
-    expect(html).not.toContain("const SUPER")
-  })
-
-  it("asks for the password in a dialog and POSTs it to /auth/reauth with the page token, never keeping it", async () => {
-    const html = await page("portal.html")
-    for (const id of ["unlock-modal", "unlock-form", "unlock-password", "unlock-msg", "unlock-go"]) expect(html).toContain(`id="${id}"`)
-    expect(html).toContain('id="unlock-password" class="input-field" autocomplete="current-password" required')
-    const submit = block(html, "async function submitUnlock(e) {")
-    expect(submit).toContain("fetch(API + '/auth/reauth'")
-    expect(submit).toContain("'X-Candy-Token': currentToken")
-    expect(submit).toContain("JSON.stringify({ password })")
-    // Cleared before the request goes out, whatever comes back; the next token fetched either way
-    expect(submit.indexOf("pw.value = '';")).toBeLessThan(submit.indexOf("fetch(API + '/auth/reauth'"))
-    expect(submit.indexOf("await refreshToken();")).toBeGreaterThan(submit.indexOf("fetch(API + '/auth/reauth'"))
-    // Success re-reads /auth/me; failures show the daemon's words (wrong password, slowed, busy)
-    expect(submit).toContain("await refreshMe();")
-    expect(submit).toContain("msg.textContent = data.error ||")
-    expect(submit).toContain("data.retryAfter")
-    expect(block(html, "function closeUnlock(ok) {")).toContain("document.getElementById('unlock-password').value = '';")
-    expect(html).not.toMatch(/(localStorage|sessionStorage)\.setItem\([^)]*password/i)
-  })
-
-  it("reads /auth/me again when the hour runs out, so the button comes back", async () => {
-    const html = await page("portal.html")
-    expect(block(html, "async function refreshMe() {")).toContain("fetch(API + '/auth/me'")
-    expect(block(html, "function applyAuth(me) {")).toContain("setTimeout(refreshMe, Math.max(0, ME.superuserUntil - Date.now()) + 1000)")
-  })
-
-  it("offers the prompt when a superuser route refuses a passkey login, then tries once more", async () => {
-    const html = await page("portal.html")
-    // (block() would stop at the `{}` default)
-    const api = html.slice(html.indexOf("async function apiCall(endpoint, options = {}) {"), html.indexOf("// ---------- Superuser step-up"))
-    const branch = api.slice(api.indexOf("} else if (res.status === 403) {"))
-    expect(branch).toContain("body.superuserNeedsPassword")
-    expect(branch).toContain("await askSuperuserPassword(true)")
-    expect(branch).toContain("const retry = await fetch(API + endpoint, { ...options, headers });")
-    // Background GETs (polling) never pop the dialog
-    expect(branch).toContain("method !== 'GET' && method !== 'HEAD'")
+    expect(html).toContain("const SUPER = !!ME.superuser;")
+    // The portal never asks for the password again (that's the passkeys page, to manage passkeys)
+    expect(html).not.toContain("/auth/reauth")
   })
 })
 

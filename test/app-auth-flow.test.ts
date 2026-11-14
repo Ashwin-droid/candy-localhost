@@ -15,9 +15,9 @@ import { join } from "node:path"
 import { AppKeyStore, ConsentStore, PendingRequests, AUTHZ_BAD_RETURN, AUTHZ_CHANGED, AUTHZ_EXPIRED, AUTHZ_NOT_SITE, type SiteLookup } from "../app-auth.ts"
 import { APP_AUTH_ROUTES, createAuthRoutes, MAX_AUTH_BODY_BYTES, readJsonBody, type AuthRouteContext } from "../app-auth-routes.ts"
 import { openClaims, parseKeyRing } from "../jwe.ts"
-import { ChallengeStore, PasskeyStore, PASSKEY_FAILED, PASSKEY_NEEDS_PASSWORD, mayActAsSuperuser, type PasskeyDeps } from "../passkey-store.ts"
+import { ChallengeStore, PasskeyStore, PASSKEY_FAILED, PASSKEY_NEEDS_PASSWORD, type PasskeyDeps } from "../passkey-store.ts"
 import {
-  attemptLogin, classifyRoute, guardRequest, LoginSlots, PageTokens, sameOrigin, SESSION_HEADER, SoftLockout, SUPERUSER_NEEDS_PASSWORD, wantsHtml,
+  attemptLogin, classifyRoute, guardRequest, LoginSlots, PageTokens, sameOrigin, SESSION_HEADER, SoftLockout, wantsHtml,
   type LoginDeps, type RequestAuth, type RouteClass, type RouteRule,
 } from "../portal-auth.ts"
 import { PortalSessions, readSessionCookie, sessionCookieHeader } from "../portal-session.ts"
@@ -243,12 +243,8 @@ const requestAuthOf = (req: Request, portalHost: boolean): RequestAuth | null =>
   if (!portalHost) return null
   const s = sessions.get(readSessionCookie(req.headers.get("cookie")), req.headers.get(SESSION_HEADER))
   if (!s || !loginUsers.includes(s.user)) return null
-  // As daemon.ts requestAuth: a passkey session is a superuser only after re-entering the password
-  const sudoer = SUPERUSERS.has(s.user), stepped = mayActAsSuperuser(s, clock.now)
-  return {
-    user: s.user, superuser: sudoer && stepped, via: "portal", sessionId: s.id, amr: s.amr, pamAt: s.pamAt, sessionCreated: s.created,
-    ...(sudoer && !stepped ? { superuserNeedsPassword: true } : {}),
-  }
+  // As daemon.ts requestAuth: a sudoer is a superuser however the login was made
+  return { user: s.user, superuser: SUPERUSERS.has(s.user), via: "portal", sessionId: s.id, amr: s.amr, pamAt: s.pamAt, sessionCreated: s.created }
 }
 
 const daemon = async (req: Request, ip = "127.0.0.1"): Promise<Response> => {
@@ -265,9 +261,7 @@ const daemon = async (req: Request, ip = "127.0.0.1"): Promise<Response> => {
   })
   if (!verdict.ok) {
     if (verdict.status === 302) return new Response(null, { status: 302, headers: { Location: verdict.location } })
-    // As daemon.ts: the superuser refusal of a passkey session says the password would lift it
-    const stepUp = verdict.status === 403 && verdict.superuserNeedsPassword ? { superuserNeedsPassword: true } : {}
-    return Response.json({ error: verdict.error, ...stepUp }, { status: verdict.status, headers: verdict.status === 401 ? { "X-Candy-Login": "required" } : {} })
+    return Response.json({ error: verdict.error }, { status: verdict.status, headers: verdict.status === 401 ? { "X-Candy-Login": "required" } : {} })
   }
   if (portalHost && req.method !== "GET" && req.method !== "HEAD") {
     if (!sameOrigin(req.headers, isPortal)) return Response.json({ error: "Cross-site request refused." }, { status: 403 })
@@ -1029,37 +1023,35 @@ describe("review findings (routes)", () => {
   const authOf = (b: Browser, portal = "portal.localhost") =>
     requestAuthOf(new Request(`https://${portal}/auth/me`, { headers: { host: portal, cookie: `candy_portal=${b.jar.get(portal)!.get("candy_portal")}`, [SESSION_HEADER]: b.secret.get(portal)! } }), true)
 
-  it("a passkey session of a sudoer is not a superuser until the password is entered again", async () => {
+  it("a passkey session of a sudoer is a superuser straight away; a non-sudoer's still isn't", async () => {
     const auth = new SoftAuthenticator()
     const b = new Browser()
     b.pamLogin("ashwin")
-    expect(authOf(b)!.superuser).toBe(true)                 // a password login: as before
     expect((await register(b, auth)).status).toBe(200)
     const pk = new Browser()
     const login = await passkeyLogin(pk, auth)
     expect(login.status).toBe(200)
-    expect(await login.json()).toMatchObject({ user: "ashwin", superuser: false, superuserNeedsPassword: true })
-    expect(authOf(pk)!.superuser).toBe(false)
-    // A superuser route (ROUTE_TABLE) is refused by the guard, with the flag the portal's prompt keys on
-    const system = () => pk.fetch("https://portal.localhost/system/stats", { withSecret: true })
-    const refused = await system()
+    const body = await login.json() as any
+    expect(body).toMatchObject({ user: "ashwin", superuser: true })
+    expect(Object.keys(body).sort()).toEqual(["session", "superuser", "user"])
+    expect(authOf(pk)).toMatchObject({ superuser: true, amr: "passkey", pamAt: null })
+    // A superuser route (ROUTE_TABLE) with no password re-entered: past the guard (the harness has no handler: 404)
+    const system = (br: Browser) => br.fetch("https://portal.localhost/system/stats", { withSecret: true })
+    expect((await system(pk)).status).toBe(404)
+    clock.now += 61 * 60_000                                // no hour-long window either
+    expect((await system(pk)).status).toBe(404)
+    // A non-sudoer's passkey session is refused
+    const auth2 = new SoftAuthenticator()
+    const c = new Browser()
+    c.pamLogin("claude")
+    expect((await register(c, auth2)).status).toBe(200)
+    const pk2 = new Browser()
+    const login2 = await passkeyLogin(pk2, auth2)
+    expect(login2.status).toBe(200)
+    expect(await login2.json()).toMatchObject({ user: "claude", superuser: false })
+    const refused = await system(pk2)
     expect(refused.status).toBe(403)
-    expect(await refused.json()).toEqual({ error: SUPERUSER_NEEDS_PASSWORD, superuserNeedsPassword: true })
-    const ok = await pk.post("portal.localhost", "/auth/reauth", (await pk.page("https://portal.localhost/passkeys")).token, { password: PASSWORDS.ashwin })
-    expect(ok.status).toBe(200)
-    expect((await ok.json() as any).superuserUntil).toBeGreaterThan(Date.now())
-    expect(authOf(pk)!.superuser).toBe(true)
-    expect((await system()).status).not.toBe(403)          // past the guard (the harness has no handler: 404)
-    clock.now += 61 * 60_000
-    expect(authOf(pk)!.superuser).toBe(false)
-    expect(authOf(pk)!.superuserNeedsPassword).toBe(true)
-    expect((await system()).status).toBe(403)
-    // A password login is refused without the flag: no prompt would help
-    const plain = new Browser()
-    plain.pamLogin("claude")
-    const notSudoer = await plain.fetch("https://portal.localhost/system/stats", { withSecret: true })
-    expect(notSudoer.status).toBe(403)
-    expect((await notSudoer.json() as any).superuserNeedsPassword).toBeUndefined()
+    expect(await refused.json()).toEqual({ error: "Only a superuser can do that." })
   })
 
   it("a passkey of an earlier account with the same name, or of an account PAM refuses, logs in no one", async () => {

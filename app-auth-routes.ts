@@ -31,7 +31,7 @@ import {
 import { formatKeyRing, type JweKey } from "./jwe.ts"
 import {
   attemptPasskeyLogin, deletePasskey, finishRegistration, renamePasskey, startPasskeyLogin, startRegistration,
-  RECENT_PAM_MS, SUPERUSER_PAM_MS, type PasskeyDeps, type SessionAuthState,
+  RECENT_PAM_MS, type PasskeyDeps, type SessionAuthState,
 } from "./passkey-store.ts"
 import { logSafe, type LoginOutcome, type RequestAuth } from "./portal-auth.ts"
 import { lowerName } from "./caddy-config.ts"
@@ -316,10 +316,8 @@ export const createAuthRoutes = (d: AuthRouteDeps) => {
     const old = d.sessions.get(d.readSessionCookie(req.headers.get("cookie")), req.headers.get(d.sessionHeader))
     if (old) { d.sessions.destroy(old.id); d.pageTokens.dropSession(old.id) }
     const { cookie, secret } = d.sessions.create(out.user, { ip: ctx.ip, ua: ctx.userAgent }, { amr: "passkey" })
-    // A passkey session is never a superuser on its own (mayActAsSuperuser): a
-    // sudoer re-enters the password (/auth/reauth) for that
-    const extra = out.superuser ? { superuserNeedsPassword: true } : {}
-    return json(ctx, { user: out.user, superuser: false, ...extra, session: secret }, 200, { "Set-Cookie": d.sessionCookie(cookie, ctx.https) })
+    // A sudoer is a superuser, as after a password login
+    return json(ctx, { user: out.user, superuser: out.superuser, session: secret }, 200, { "Set-Cookie": d.sessionCookie(cookie, ctx.https) })
   }
 
   const portalLogin = (ctx: AuthRouteContext): RequestAuth | null =>
@@ -335,7 +333,7 @@ export const createAuthRoutes = (d: AuthRouteDeps) => {
     const at = d.sessions.markPam(auth.sessionId!)
     if (at === null) return json(ctx, { error: "login required" }, 401, { "X-Candy-Login": "required" })
     d.audit("AUTH_REAUTH", `${logSafe(auth.user)} from ${logSafe(ctx.ip)}`, ctx.actor)
-    return json(ctx, { pamUntil: at + RECENT_PAM_MS, superuserUntil: at + SUPERUSER_PAM_MS })
+    return json(ctx, { pamUntil: at + RECENT_PAM_MS })
   }
 
   const passkeysPage = async (ctx: AuthRouteContext): Promise<Response> => {

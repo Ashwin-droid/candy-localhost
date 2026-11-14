@@ -23,8 +23,6 @@ export interface RequestAuth {
   amr?: "pam" | "passkey"
   pamAt?: number | null
   sessionCreated?: number
-  // Portal only: a sudoer whose passkey session needs the password again (/auth/reauth) to be a superuser
-  superuserNeedsPassword?: boolean
 }
 
 export const classifyRoute = (table: readonly RouteRule[], method: string, path: string): RouteClass | null => {
@@ -66,14 +64,12 @@ export const wantsHtml = (method: string, accept: string | null): boolean =>
 export type GuardResult =
   | { ok: true }
   | { ok: false; status: 302; location: string }
-  | { ok: false; status: 401 | 403 | 404; error: string; superuserNeedsPassword?: true }
+  | { ok: false; status: 401 | 403 | 404; error: string }
 
 /**
  * Login and class checks for a portal-host or control request. Fails closed:
  * a route missing from the table is a 404 whoever asks.
  */
-export const SUPERUSER_NEEDS_PASSWORD = "Enter your password again to act as a superuser."
-
 export const guardRequest = (o: {
   cls: RouteClass | null
   auth: RequestAuth | null
@@ -89,8 +85,6 @@ export const guardRequest = (o: {
     return { ok: false, status: 401, error: "login required" }
   }
   if (o.cls === "superuser" && !o.auth.superuser) {
-    // A sudoer's passkey session: the portal offers the password prompt (/auth/reauth)
-    if (o.auth.superuserNeedsPassword) return { ok: false, status: 403, error: SUPERUSER_NEEDS_PASSWORD, superuserNeedsPassword: true }
     return { ok: false, status: 403, error: o.auth.via === "portal" ? "Only a superuser can do that." : "Only a superuser, logged in to the portal, can do that." }
   }
   return { ok: true }

@@ -314,7 +314,6 @@ export const MAX_NAME_LENGTH = 64
 export const CHALLENGE_TTL_MS = 5 * 60_000
 export const MAX_CHALLENGES = 10_000       // used challenge ids remembered until they expire (challenges are stateless)
 export const RECENT_PAM_MS = 10 * 60_000
-export const SUPERUSER_PAM_MS = 60 * 60_000   // a sudoer's passkey session is a superuser this long after /auth/reauth
 export const PASSKEY_FAILURE_FLOOR_MS = 1000
 export const PASSKEY_FAILED = "That passkey didn't work. Try again, or log in with your password."
 export const PASSKEY_SLOWED = "Too many failed passkey logins. Try again in a moment."
@@ -391,7 +390,6 @@ Review finding: the store used to keep 8 challenges per key, oldest out, and eve
 ### Policy helpers and orchestrators
 ```ts
 export const mayManagePasskeys: (s: Pick<SessionAuthState, "pamAt">, now: number) => boolean   // pamAt !== null && now - pamAt <= RECENT_PAM_MS
-export const mayActAsSuperuser: (s: Pick<SessionAuthState, "amr" | "pamAt">, now: number) => boolean   // amr === "pam", or pamAt within SUPERUSER_PAM_MS
 export const prunePasskeyAccounts: (d: Pick<PasskeyDeps, "store" | "uidOf" | "audit">) => Promise<string[]>   // drops gone accounts and earlier uids of a name
 export const passkeyLoginKey: (ip: string, loopback: boolean) => string   // "passkey:ip:loopback" | `passkey:ip:${ip}`
 
@@ -432,7 +430,7 @@ export const deletePasskey: (d: PasskeyDeps, i: { id: unknown; session: SessionA
 7. `uidOf(record.user)` must equal `record.uid` and `store.handleUid(record.user)` (review finding: a name reused by a new account, a sudoer say, logged in with the old account's passkey).
 8. `accountOk(record.user)`: PAM's account stage (review finding: `passwd -e`, `pam_access`, `pam_time`, `pam_nologin` stopped password logins but not passkey logins).
 9. `store.touch`. When it returns false → audit `PASSKEY_COUNTER` and fail.
-10. `soft.clear`. Audit `AUTH_LOGIN "<user> from <ip> (passkey <name>)"`. Return `isSuperuser` (whether the account is a sudoer; the route answers `superuser: false, superuserNeedsPassword: true` for one, see F).
+10. `soft.clear`. Audit `AUTH_LOGIN "<user> from <ip> (passkey <name>)"`. Return `isSuperuser` (whether the account is a sudoer; the route answers it as `superuser`, as `/auth/login` does, see F).
 
 The attempt is counted (`soft.fail(key)`) right after step 1, before the first await, and cleared on success, so parallel attempts can't outrun the lockout. Any failure: audit `AUTH_FAIL "<who> (passkey: <reason>)"`, sleep to `PASSKEY_FAILURE_FLOOR_MS` since start, 401 `PASSKEY_FAILED`. Failures use one body for every reason. A counter error (`PASSKEY_COUNTER`) is audited with the credential id and user.
 
@@ -459,7 +457,7 @@ Store: limits, duplicate id, atomic 0600 file, refuse a group-writable file, dro
 
 Challenges: single use, TTL, a kind mismatch consumes it, tampered or foreign ids refused, no number of issues from one key pushes out an earlier challenge, the used set is bounded.
 
-Accounts: a reused name (another uid) or a gone account logs in no one; registering for the new uid drops the old account's passkeys and handle; `prunePasskeyAccounts` drops gone accounts and earlier uids and keeps everything when the lookup fails; `accountOk` false → 401; `mayActAsSuperuser` windows.
+Accounts: a reused name (another uid) or a gone account logs in no one; registering for the new uid drops the old account's passkeys and handle; `prunePasskeyAccounts` drops gone accounts and earlier uids and keeps everything when the lookup fails; `accountOk` false → 401.
 
 Orchestrators (stub `WebAuthnImpl`): the rpId mismatch between the challenge and the request; a credential registered on `portal.candy` presented on `portal.localhost` → 401; a userHandle of another user → 401; a user removed from `loginUsers` → 401; the counter path audits; soft lockout → 429 with nothing counted; the failure floor; registration without recent PAM → 403 + reauth; a challenge from session X finished by session Y → 400; deleting another user's passkey → 404 (superuser + actingUser → ok).
 
@@ -766,8 +764,8 @@ Tests (real `jwe.ts`, keys from `generateKey`): login sets the cookie with the e
 | POST | `/app-auth/consents/revoke` | user | any | `{site}` (lower-cased) | `{revoked: boolean}` |
 | POST | `/sdk/auth/keys` | user | **API key only** (the existing `/sdk/` check) | `{name?: string, configId?: string}` | `{site, keys, issuers, portal}`; `mayFetchSiteKey(auth, owner)` else 403 "<name> belongs to <owner>. Only they can read its auth key."; unknown → 404; audit `APP_AUTH_KEY_FETCH`; `Cache-Control: no-store` |
 | POST | `/auth/passkey/options` | public | portal only, TOKENLESS | `{}` | `{challengeId, publicKey}` or 429. `rpId = host`, `origin = "https://" + host` |
-| POST | `/auth/passkey` | public | portal only, TOKENLESS | `{challengeId, credential}` | exactly like `/auth/login`: destroy any old session, `portalSessions.create(user, meta, {amr:"passkey"})`, `Set-Cookie`, `{user, superuser: false, superuserNeedsPassword?: true, session}`; else 401/429 |
-| POST | `/auth/reauth` | user | portal only, page token | `{password}` | `attemptLogin(loginDeps, {user: auth.user, password, ip})` (the body's user is ignored); ok → `markPam` → `{pamUntil: pamAt + RECENT_PAM_MS, superuserUntil: pamAt + SUPERUSER_PAM_MS}`; else its status and body; audit `AUTH_REAUTH` |
+| POST | `/auth/passkey` | public | portal only, TOKENLESS | `{challengeId, credential}` | exactly like `/auth/login`: destroy any old session, `portalSessions.create(user, meta, {amr:"passkey"})`, `Set-Cookie`, `{user, superuser, session}`; else 401/429 |
+| POST | `/auth/reauth` | user | portal only, page token | `{password}` | `attemptLogin(loginDeps, {user: auth.user, password, ip})` (the body's user is ignored); ok → `markPam` → `{pamUntil: pamAt + RECENT_PAM_MS}`; else its status and body; audit `AUTH_REAUTH` |
 | GET | `/passkeys` | user | portal only, PORTAL_PAGES | | `portal-passkeys.html` + vars |
 | GET | `/passkeys/list` | user | portal or API key | `?user=` (portal superuser only) | `{passkeys: PasskeyView[]}` |
 | POST | `/passkeys/register/options` | user | portal only, page token | `{}` | `startRegistration` |
@@ -781,7 +779,7 @@ Tests (real `jwe.ts`, keys from `generateKey`): login sets the cookie with the e
    - `/auth/users`' JSON and the login page's `CANDY_VARS` gain `passkeys: true`.
    - Passkey **login works without PAM installed**. Registration does not, since it needs a PAM session.
 7. **User removal**: wherever sessions are destroyed because a user left `loginUsers`, also run `appConsents.dropUser` (a temporarily locked account keeps its passkeys; login refuses them while it can't log in). A user who leaves the candy group (`forgetUser`) also loses their passkeys and handle (`passkeys.dropAccount`, audited `PASSKEY_DROP`), and `prunePasskeyAccounts` runs every 10 minutes (and 30s after start) to drop the passkeys of deleted accounts and of an earlier account whose name was reused (another uid). `uidOf` is `getent passwd`: exit 2 = no such account, any other failure throws, so an NSS hiccup prunes nothing.
-8. **Superuser is a step-up (review finding)**: `requestAuth` sets `superuser` only when `isSuperuser(user) && mayActAsSuperuser(session, now)`: a password login, or a passkey login within `SUPERUSER_PAM_MS` of `/auth/reauth`. A sudoer's passkey session otherwise gets `superuser: false` and `superuserNeedsPassword: true` (also in `/auth/me`), so `/system/kill`, `/system/unit`, running sites as others and daemon-wide settings never rest on a (possibly synced) passkey alone. The portal asks for the password itself (see "F as built", portal step-up).
+8. **Superuser with a passkey (owner's decision)**: `requestAuth` sets `superuser` to `isSuperuser(user)` for every portal session, however it was made. A sudoer who logs in with a passkey is a superuser straight away, exactly like a password login: no step-up, no time window, no `/auth/reauth` needed. A review suggested a password step-up for superuser; the owner decided against it and accepts a passkey with user verification as equal to the password. Managing passkeys still needs a recent password (D7, `mayManagePasskeys`).
 9. **PAM account stage on passkey login (review finding)**: `accountOk` = `checkAccount(user)` (pam.ts: the helper with `mode: "account"` runs `pam_start` → `pam_acct_mgmt` → `pam_end`, no password, no `pam_authenticate`), refused on anything but `PAM_SUCCESS`. Without `/etc/pam.d/candy` it is skipped, and `loginUsers` (superuser.ts) is what's left: it also leaves out an account whose password must be changed (`lastchg` 0, or older than its max age), as pam_unix would.
 10. **Logs**: Caddy already deletes `Cookie`/`Set-Cookie` from the access log. Add nothing to URLs that holds a secret. The callback POST body is never logged.
 
@@ -835,7 +833,7 @@ Tests (real `jwe.ts`, keys from `generateKey`): login sets the cookie with the e
 | **A leaked site key after rotation** | The rotated-out key is marked `retired` in every ring candy hands out, and opens only tokens issued before the rotation; SDK apps refetch the ring every 5 minutes. A server with a pre-rotation static ring that can't refetch must be restarted (the CLI says which). |
 | **Passkey of a deleted or renamed account** | Records and the user handle carry the uid; login needs `uidOf(user) === record.uid`. A user who leaves the candy group, or whose account is deleted or replaced, loses their passkeys (`PASSKEY_DROP`). |
 | **Account policy bypass by passkey** | Passkey login runs `pam_acct_mgmt` (pam.ts `checkAccount`), as the password login does. |
-| **Root by a synced passkey alone** | A passkey session is never a superuser until the password is re-entered (`SUPERUSER_PAM_MS`). |
+| **Root by a synced passkey alone** | Accepted by the owner's decision: a passkey with user verification counts as equal to the password, so a sudoer's passkey login is a superuser straight away. A passkey is still bound to its account's uid and portal host, passkey login runs PAM's account stage and the address lockout, and adding or removing passkeys needs a recent password (D7), so a passkey session can't mint more passkeys. |
 | **Body size on public routes** | `readJsonBody` counts bytes as they stream and cancels past 64 KB, chunked bodies included (Content-Length alone was trusted before). |
 
 ## Open questions (do not block the build)
@@ -856,6 +854,5 @@ Where the wiring differs from, or pins down, section F:
 - **`sandbox.ts`** drops `CANDY_AUTH_KEYS` from `--setenv` unconditionally (`SECRET_ENV_NAMES`), and refuses a `LoadCredential` name or path systemd could misread.
 - **Logs**: Caddy's access-log filter also deletes a `candy_token` query parameter (`LOG_REDACTED_QUERY_PARAMS`), for apps that misuse the SDK. The function request log already redacts any field or parameter named like `token` (fn-log `SECRET_NAME`), which covers the callback's form body.
 - **fn-host** refuses a var, secret, KV/D1 or assets binding named `CANDY_AUTH`, reads the ring before the function's module is imported, and removes `CANDY_AUTH_KEYS` from `process.env`.
-- **Request bodies** on these routes are read with a 64 KB cap, counted while streaming (a chunked body is cancelled past it, never buffered). `/app-auth/rotate` and `/app-auth/consents/revoke` lower-case the name themselves (`lowerName`), since `readJsonBody` bypasses the `req.json` patch of `lowerRequestNames`. `/passkeys/list?user=` is for a portal superuser only. `/auth/me` reports `amr`, `superuserNeedsPassword` and `superuserUntil` (when a passkey session's step-up runs out, else null). `/app-auth/rotate` needs the name to be in use (`mayUse`); it creates a ring if there was none.
+- **Request bodies** on these routes are read with a 64 KB cap, counted while streaming (a chunked body is cancelled past it, never buffered). `/app-auth/rotate` and `/app-auth/consents/revoke` lower-case the name themselves (`lowerName`), since `readJsonBody` bypasses the `req.json` patch of `lowerRequestNames`. `/passkeys/list?user=` is for a portal superuser only. `/auth/me` reports `amr`. `/app-auth/rotate` needs the name to be in use (`mayUse`); it creates a ring if there was none.
 - **CLI**: also `candy app-auth consents` and `candy app-auth revoke <site>`. The portal header links to `/passkeys`.
-- **Portal step-up** (`public/portal.html`): the portal's `CANDY_VARS` carry `superuserNeedsPassword` and `superuserUntil`. While `superuserNeedsPassword` is true the header shows an "Unlock superuser" button by the user's name; it opens a password dialog (the passkeys page's prompt: hidden username for password managers, the daemon's error text, a `retryAfter` countdown, the field cleared after every attempt, nothing stored) that POSTs `/auth/reauth` with the page token, then re-reads `/auth/me` and redraws the superuser views without a reload. A timer re-reads `/auth/me` just after `superuserUntil` (and again when the tab comes back into view), so the button returns when the hour is up. The guard's superuser refusal of such a session is `403 {error, superuserNeedsPassword: true}`; `apiCall` offers the same dialog for it and retries once, for a user's action (not GET/HEAD: background polling only updates the header). Handlers that check `auth.superuser` themselves (running a site or function as another user, forced DNS replacement) answer a plain 403 and get no prompt.

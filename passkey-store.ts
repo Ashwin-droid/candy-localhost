@@ -13,7 +13,7 @@
 // portal host (rpId) it was registered on, and only while that account is
 // still allowed to log in, PAM's account checks included. Adding or deleting
 // one needs a recent password login: a session that came from a passkey can't
-// add more passkeys, and isn't a superuser until the password is entered again.
+// add more passkeys until the password is entered again.
 import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 import { timingSafeEqual } from "node:crypto"
@@ -29,8 +29,6 @@ export const CHALLENGE_TTL_MS = 5 * 60_000
 /** Used challenge ids remembered until they expire (challenges themselves are stateless) */
 export const MAX_CHALLENGES = 10_000
 export const RECENT_PAM_MS = 10 * 60_000
-/** A passkey session of a sudoer is a superuser only this long after re-entering the password */
-export const SUPERUSER_PAM_MS = 60 * 60_000
 export const PASSKEY_FAILURE_FLOOR_MS = 1000
 export const PASSKEY_FAILED = "That passkey didn't work. Try again, or log in with your password."
 export const PASSKEY_SLOWED = "Too many failed passkey logins. Try again in a moment."
@@ -429,17 +427,6 @@ export class ChallengeStore {
 /** A password login within the last RECENT_PAM_MS (and not from the future, past a little clock skew). */
 export const mayManagePasskeys = (s: Pick<SessionAuthState, "pamAt">, now: number): boolean =>
   s.pamAt !== null && finite(s.pamAt) && now - s.pamAt <= RECENT_PAM_MS && s.pamAt - now <= PAM_FUTURE_SKEW_MS
-
-/**
- * Whether a portal session may act as a superuser (the account still has to
- * be a sudoer). A password login may; a passkey login only within
- * SUPERUSER_PAM_MS of re-entering the password (/auth/reauth): root-level
- * actions never rest on a (possibly synced) passkey alone.
- */
-export const mayActAsSuperuser = (s: Pick<SessionAuthState, "amr" | "pamAt">, now: number): boolean => {
-  if (s.amr === "pam") return true
-  return s.pamAt !== null && finite(s.pamAt) && now - s.pamAt <= SUPERUSER_PAM_MS && s.pamAt - now <= PAM_FUTURE_SKEW_MS
-}
 
 /** All of loopback is one address, like loginKeys in portal-auth.ts. */
 export const passkeyLoginKey = (ip: string, loopback: boolean): string => loopback ? "passkey:ip:loopback" : `passkey:ip:${ip}`

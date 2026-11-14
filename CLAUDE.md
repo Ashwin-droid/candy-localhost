@@ -115,6 +115,10 @@ Functions: `candy_fn_add`, `candy_fn_deploy`, `candy_fn_rollback`, `candy_fn_dep
 - Root mode launches go through `systemd-run` (`sandbox.ts`, `launchSpec`): read-only filesystem except the code folder, `/var/lib/candy/<name>` and a private `/tmp`; unit bound to the daemon's unit. Stop with `systemctl stop <unit>` (`managed.unit`), not a process-tree kill. `ServerConfig.sandbox === false` opts out; `ServerConfig.rw` adds writable paths. Every unit gets `MemoryMax` (2G default, `ServerConfig.memory` in MB up to 16G, `candy mem`; `memoryLimitMb` in sandbox.ts caps it).
 - `ServerConfig.api`: every request for the server's host (bound domain, `<name>.localhost`/`.candy`), whatever its method or path, is held while a stopped server starts and forwarded 1:1 (`api-mode.ts`, `apiModeGate`), never a loading page or a daemon route. The gate runs in `controlFetch` before anything that matches a path; keep it there (`test/api-mode.test.ts`). Failures are 503 + `Retry-After`. Only `/candy-auth/check` and `POST /candy-auth/login` on a protected bound domain stay candy's.
 
+## System monitor
+
+`sysmon.ts` (parsers + `SystemMonitor`) reads /proc for the whole machine; `/system/stats`, `/system/kill`, `/system/unit` in daemon.ts are class `superuser` and also check for a portal login (never API keys or OAuth tokens). Actions run as the daemon (root): keep `killProblem` / `unitActionProblem` in front of them, and never add a route here that takes a command or a path.
+
 ## Public MCP endpoint
 
 Optional (`domainConfig.mcp`, off by default): `https://<sub>.<zone>/mcp` serves `handleRequest` from mcp.ts over HTTP behind OAuth 2.1 (`mcp-oauth.ts`, pure logic). Consent happens only on the portal host (`/oauth/*`, tailnet) and needs a portal login; tokens act as the approving user, user-scoped. See `handlePublicMcp` in daemon.ts. The public host must never reach any other daemon route.

@@ -31,6 +31,7 @@ import { AssetServer, userCanRead, type AssetsConfig } from "./fn-assets.ts"
 import { isDeployId, type DeployInfo } from "./fn-deploy.ts"
 import { CONFIG_FILES as FN_CONFIG_FILES, type FnProjectConfig } from "./fn-config.ts"
 import { apiHoldSeconds, createApiModeGate } from "./api-mode.ts"
+import { SystemMonitor, SIGNALS, isUnitName, killProblem, unitActionProblem } from "./sysmon.ts"
 import { PortalSessions, readSessionCookie, sessionCookieHeader, clearSessionCookieHeader } from "./portal-session.ts"
 import { attemptLogin, auditActor, auditSafe, cachedList, classifyRoute, clientIp, guardRequest, isPortalOrigin, LoginSlots, mayActOn, PageTokens, parseShortcutHost, safeNext, sameOrigin, shortcutConfirmUrl, SiteTokens, SoftLockout, SESSION_HEADER, userScopedFetch, wantsHtml, logSafe, type RequestAuth, type RouteRule, type ShortcutAction } from "./portal-auth.ts"
 import { caddyGlobalBlock, checkBindings, cloudflaredYaml, dedupeSiteAddresses, isCaddyUpstream, isCredentialsPath, isDnsLabel, isHostName, isIpOrCidr, isQuickTunnelUrl, isTunnelId, isTunnelName, isZoneId, isZoneName, loopbackBind, lowerName, mergeLowerCase, newNameProblem, PROXY_TAG_HEADER, stripProxyHeaders, SYSTEM_BLOCK_MARK, tagDaemonUpstreams } from "./caddy-config.ts"
@@ -2620,6 +2621,9 @@ const portListening = (port: number): Promise<boolean> => new Promise(resolve =>
     },
   }).catch(() => { clearTimeout(timer); done(false) })
 })
+
+// The whole machine's CPU, memory, disks and processes, for the portal's superuser view
+const systemMonitor = new SystemMonitor()
 
 // Every request for an API-mode server's host: held while it starts, then forwarded (api-mode.ts)
 const apiModeGate = createApiModeGate<ServerConfig, DomainBinding>({
@@ -5215,6 +5219,10 @@ const ROUTE_TABLE: readonly RouteRule[] = [
   ["POST", "/domains/mcp/revoke", "superuser"],
   ["POST", "/domains/config", "superuser"],
   ["POST", "/shutdown", "superuser"],
+  // System monitor: the whole machine, as root. Portal superusers only.
+  ["GET", "/system/stats", "superuser"],
+  ["POST", "/system/kill", "superuser"],
+  ["POST", "/system/unit", "superuser"],
 ]
 // route-table:end
 
@@ -6796,6 +6804,66 @@ async function controlFetch(req: Request): Promise<Response> {
         process.exit(0)
       }, 100)
       return Response.json({ status: "shutting_down", message: m }, { headers: corsHeaders })
+    }
+
+    // === System monitor: the whole machine, not only candy's servers ===
+    // Superuser only (ROUTE_TABLE), and only from a portal login: it reads every
+    // process and acts with the daemon's own rights (root, when installed as a service).
+    if (url.pathname.startsWith("/system/")) {
+      if (!portalHost || auth?.via !== "portal" || !auth.superuser) {
+        return Response.json({ error: "Only a superuser, logged in to the portal, can do that." }, { status: 403, headers: corsHeaders })
+      }
+      const noStore = { ...corsHeaders, "Cache-Control": "no-store" }
+
+      if (req.method === "GET" && url.pathname === "/system/stats") {
+        const snap = await systemMonitor.snapshot()
+        // Which units are candy's own servers, so the page can say so
+        const candy: Record<string, string> = {}
+        for (const [name, proc] of processes) if (proc.unit) candy[proc.unit] = name
+        return Response.json({ ...snap, root: RUNNING_AS_ROOT, self: process.pid, ownUnit: OWN_UNIT, candy }, { headers: noStore })
+      }
+
+      if (req.method === "POST" && url.pathname === "/system/kill") {
+        const body = await req.json().catch(() => ({})) as { pid?: unknown; start?: unknown; signal?: unknown }
+        const pid = Number(body.pid), start = Number(body.start)
+        const signal = String(body.signal ?? "TERM").toUpperCase()
+        if (!(SIGNALS as readonly string[]).includes(signal)) return Response.json({ error: "Choose TERM or KILL." }, { status: 400, headers: noStore })
+        if (!Number.isInteger(pid) || !Number.isFinite(start)) return Response.json({ error: "pid and start are required." }, { status: 400, headers: noStore })
+        // The very process the page showed: same pid and start time, so a reused pid is never hit
+        const target = await systemMonitor.find(pid, start)
+        if (!target) return Response.json({ error: `Process ${pid} has already exited.` }, { status: 404, headers: noStore })
+        const problem = killProblem(target, process.pid)
+        if (problem) return Response.json({ error: problem }, { status: 403, headers: noStore })
+        try {
+          process.kill(pid, signal === "KILL" ? "SIGKILL" : "SIGTERM")
+        } catch (e) {
+          return Response.json({ error: `Could not signal ${pid}: ${(e as Error)?.message ?? e}` }, { status: 500, headers: noStore })
+        }
+        auditLog('SYSTEM_KILL', `SIG${signal} to ${pid} (${auditSafe(target.name)}, ${auditSafe(target.user)})`, requestActor)
+        return Response.json({ success: true, pid, signal, name: target.name }, { headers: noStore })
+      }
+
+      if (req.method === "POST" && url.pathname === "/system/unit") {
+        const body = await req.json().catch(() => ({})) as { unit?: unknown; action?: unknown }
+        const unit = String(body.unit ?? ""), action = String(body.action ?? "")
+        const problem = unitActionProblem(unit, action, OWN_UNIT)
+        if (problem) return Response.json({ error: problem }, { status: isUnitName(unit) ? 403 : 400, headers: noStore })
+        // A candy server's unit: through candy, so its state, route and audit trail stay right
+        const candyName = [...processes].find(([, p]) => p.unit === unit)?.[0]
+        if (candyName && action === "stop") {
+          const stopped = await stopProcess(candyName, requestActor)
+          return Response.json(stopped ? { success: true, unit, action } : { error: `${candyName} didn't stop.` }, { status: stopped ? 200 : 500, headers: noStore })
+        }
+        if (candyName) return Response.json({ error: `${unit} is candy's ${candyName}. Restart it from the Sites list.` }, { status: 409, headers: noStore })
+        const result = await $`systemctl ${action} --no-block -- ${unit}`.quiet().nothrow()
+        auditLog('SYSTEM_UNIT', `${action} ${auditSafe(unit)}${result.exitCode === 0 ? '' : ` (failed, exit ${result.exitCode})`}`, requestActor)
+        if (result.exitCode !== 0) {
+          return Response.json({ error: result.stderr.toString().trim().split("\n")[0] || `systemctl ${action} failed` }, { status: 500, headers: noStore })
+        }
+        return Response.json({ success: true, unit, action }, { headers: noStore })
+      }
+
+      return Response.json({ error: "not found" }, { status: 404, headers: corsHeaders })
     }
 
     // === Process Management API ===

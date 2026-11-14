@@ -197,7 +197,13 @@ candy mem vault 4G     # 64M to 16G; a bare number is MB
 candy mem vault off    # back to the default 2G
 ```
 
-A running server takes the new limit at once. Servers that run without the sandbox have no limit.
+A running server takes the new limit at once. Servers that run without the sandbox have no limit. The portal shows each site's limit, and what a running site is using.
+
+### System monitor
+
+For a superuser, the portal's **System** button opens a monitor for the whole machine, not only candy's sites: CPU (with per-core load), memory, disks, network rates, every process and every service, refreshed every two seconds. It can end or kill a process and restart, stop or start a service, with the daemon's own rights (root, when installed as a service). Each action is confirmed first and written to the audit log.
+
+It is only available from a superuser's portal login: not to other users, and not through the CLI, SDK or MCP. It refuses to touch process 1, kernel threads, candy's own daemon and the units the system can't run without.
 
 Servers with an open portal are never stopped for idleness. A server that called `setIdling()` is kept past the hour until memory is tight (80% of RAM in use, or PSI memory pressure `some avg10` at 10 or more).
 

@@ -346,6 +346,52 @@
     .dd-detail { font-family: var(--font-host); font-stretch: 87.5%; font-size: 11.5px; color: var(--ink-3); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .dd-empty { padding: 10px; color: var(--ink-3); font-size: 13px; }
 
+    /* ---------- System monitor (superuser) ---------- */
+    .dialog.sys { width: 1180px; height: 90vh; display: flex; flex-direction: column; overflow: hidden; }
+    .sys .dialog-head { padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+    .sys-sub { font-size: 12.5px; color: var(--ink-3); font-weight: 400; margin-top: 2px; }
+    .sys-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    .sys-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; padding: 14px 22px; }
+    .sys-tile { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; min-width: 0; }
+    .sys-tile h3 { font-size: 12px; font-weight: 500; color: var(--ink-3); display: flex; gap: 8px; align-items: baseline; }
+    .sys-tile h3 span { margin-left: auto; font-family: var(--font-host); font-stretch: 87.5%; font-size: 11.5px; }
+    .sys-big { font-size: 24px; font-weight: 700; margin: 4px 0 6px; font-variant-numeric: tabular-nums; }
+    .sys-big small { font-size: 12.5px; font-weight: 400; color: var(--ink-3); margin-left: 6px; }
+    .sys-spark { width: 100%; height: 34px; display: block; }
+    .sys-spark polyline { fill: none; stroke: var(--grape); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+    .sys-spark polygon { fill: var(--grape); opacity: 0.12; }
+    .sys-cores { display: grid; grid-template-columns: repeat(auto-fill, minmax(8px, 1fr)); gap: 2px; height: 22px; margin-top: 6px; align-items: end; }
+    .sys-cores i { display: block; background: var(--grape); border-radius: 1.5px; min-height: 1px; opacity: 0.75; }
+    .sys-bar { height: 6px; border-radius: 3px; background: var(--sheet-2); overflow: hidden; margin: 4px 0 2px; }
+    .sys-bar i { display: block; height: 100%; background: var(--grape); border-radius: 3px; }
+    .sys-bar i.warn { background: var(--lemon); }
+    .sys-bar i.hot { background: var(--cherry); }
+    .sys-line { display: flex; align-items: baseline; gap: 8px; font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+    .sys-line b { font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sys-line span { margin-left: auto; white-space: nowrap; font-family: var(--font-host); font-stretch: 87.5%; font-size: 11.5px; }
+    .sys-bar-row { display: flex; align-items: center; gap: 10px; padding: 0 22px 10px; flex-wrap: wrap; }
+    .sys-tabs { display: flex; gap: 4px; }
+    .sys-tabs .chip.on { color: var(--ink); border-color: var(--ink-3); background: var(--sheet-2); }
+    .sys-bar-row input { height: 28px; flex: 1; min-width: 160px; max-width: 320px; padding: 0 10px; border: 1px solid var(--line-2); border-radius: 7px; background: var(--sheet); color: var(--ink); font: inherit; font-size: 13px; }
+    .sys-count { margin-left: auto; font-size: 12px; color: var(--ink-3); }
+    .sys-scroll { flex: 1; min-height: 0; overflow: auto; border-top: 1px solid var(--line); }
+    .sys-table { width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+    .sys-table th { position: sticky; top: 0; z-index: 1; background: var(--sheet); text-align: left; font-size: 12px; font-weight: 500; color: var(--ink-3); padding: 7px 10px; border-bottom: 1px solid var(--line-2); white-space: nowrap; cursor: pointer; user-select: none; }
+    .sys-table th.sorted { color: var(--ink); }
+    .sys-table th.plain { cursor: default; }
+    .sys-table td { padding: 5px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    .sys-table td.right, .sys-table th.right { text-align: right; }
+    .sys-table td.cmd { font-family: var(--font-host); font-stretch: 87.5%; font-size: 11.5px; color: var(--ink-2); max-width: 420px; overflow: hidden; text-overflow: ellipsis; }
+    .sys-table td.cmd b { font-weight: 500; color: var(--ink); }
+    .sys-table td.dim, .sys-table .dim { color: var(--ink-3); }
+    .sys-table tr:hover td { background: var(--sheet-2); }
+    .sys-table .acts { display: flex; gap: 4px; justify-content: flex-end; }
+    .sys-table .acts .btn { height: 22px; padding: 0 8px; font-size: 11.5px; border-radius: 6px; }
+    .sys-tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 11px; line-height: 17px; background: var(--sheet-2); color: var(--ink-2); }
+    .sys-tag.bad { background: var(--cherry-soft); color: var(--cherry); }
+    .sys-hot { color: var(--cherry); font-weight: 600; }
+    @media (max-width: 900px) { .sys-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } .dialog.sys { height: calc(100vh - 32px); } }
+
     /* ---------- Toasts ---------- */
     .toast-container { position: fixed; right: 20px; bottom: 20px; z-index: 200; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
     .toast {
@@ -483,6 +529,7 @@
       <button class="btn quiet small" onclick="logout()">Log out</button>
     </div>
     <div class="top-actions">
+      <button class="btn quiet" id="system-btn" hidden onclick="showSystem()" title="CPU, memory, disks and every process on this machine">System</button>
       <button class="btn quiet" onclick="refreshAll(); refreshTraffic();">Refresh</button>
       <button class="btn primary" onclick="showAddRoute()">Add site</button>
     </div>
@@ -784,6 +831,35 @@
         <button class="btn quiet dots" onclick="hideLogs()" aria-label="Close">&times;</button>
       </div>
       <pre id="logs-content"></pre>
+    </div>
+  </div>
+
+  <!-- System monitor: the whole machine, superusers only -->
+  <div id="sys-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="sys-title">
+    <div class="dialog sys">
+      <div class="dialog-head">
+        <h2><span id="sys-title">System</span>
+          <div class="sys-sub" id="sys-sub">Loading…</div>
+        </h2>
+        <button class="btn quiet dots" onclick="hideSystem()" aria-label="Close">&times;</button>
+      </div>
+      <div class="sys-body">
+        <div class="sys-tiles">
+          <div class="sys-tile"><h3>CPU <span id="sys-load"></span></h3><div class="sys-big" id="sys-cpu">–</div><svg class="sys-spark" id="sys-cpu-spark" viewBox="0 0 100 34" preserveAspectRatio="none"></svg><div class="sys-cores" id="sys-cores"></div></div>
+          <div class="sys-tile"><h3>Memory <span id="sys-swap"></span></h3><div class="sys-big" id="sys-mem">–</div><svg class="sys-spark" id="sys-mem-spark" viewBox="0 0 100 34" preserveAspectRatio="none"></svg><div class="sys-line" id="sys-mem-line"></div></div>
+          <div class="sys-tile"><h3>Disks</h3><div id="sys-disks"></div></div>
+          <div class="sys-tile"><h3>Network <span id="sys-temp"></span></h3><div id="sys-net"></div></div>
+        </div>
+        <div class="sys-bar-row">
+          <div class="sys-tabs">
+            <button class="chip on" id="sys-tab-processes" onclick="sysTab('processes')">Processes</button>
+            <button class="chip" id="sys-tab-units" onclick="sysTab('units')">Services</button>
+          </div>
+          <input id="sys-filter" type="search" placeholder="Filter by name, user, service or pid" oninput="sysRender()" aria-label="Filter">
+          <span class="sys-count" id="sys-count"></span>
+        </div>
+        <div class="sys-scroll" id="sys-scroll"><table class="sys-table"><thead id="sys-head"></thead><tbody id="sys-rows"></tbody></table></div>
+      </div>
     </div>
   </div>
 
@@ -2634,6 +2710,167 @@
       if (collectSites().some(site => site.name === logsName)) showLogs(logsName);
       else toast(`${logsName} isn’t one of your sites`, 'error');
     }).then(refreshTraffic);
+    // ---------- System monitor (superuser): the whole machine ----------
+    document.getElementById('system-btn').hidden = !SUPER;
+    const sys = { open: false, timer: null, data: null, tab: 'processes', sort: { processes: ['cpu', -1], units: ['mem', -1] }, cpu: [], mem: [], held: false, busy: false };
+    const sysBytes = (n) => {
+      if (!(n > 0)) return '0';
+      const u = ['B', 'K', 'M', 'G', 'T'];
+      let i = 0;
+      while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+      return `${n >= 100 || i === 0 ? Math.round(n) : n.toFixed(1)}${u[i]}`;
+    };
+    const sysUptime = (s) => {
+      const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+      return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
+    };
+    const sysLevel = (pct) => pct >= 90 ? 'hot' : pct >= 75 ? 'warn' : '';
+    function sysSpark(id, values) {
+      const el = document.getElementById(id);
+      if (values.length < 2) { el.innerHTML = ''; return; }
+      const n = 60, step = 100 / (n - 1), off = n - values.length;
+      const pts = values.map((v, i) => `${((off + i) * step).toFixed(2)},${(33 - Math.min(100, Math.max(0, v)) * 0.32).toFixed(2)}`);
+      el.innerHTML = `<polygon points="${(off * step).toFixed(2)},34 ${pts.join(' ')} 100,34"/><polyline points="${pts.join(' ')}"/>`;
+    }
+    function showSystem() {
+      if (!SUPER) return;
+      sys.open = true;
+      document.getElementById('sys-modal').style.display = 'flex';
+      sysLoad();
+      clearInterval(sys.timer);
+      sys.timer = setInterval(sysLoad, 2000);
+    }
+    function hideSystem() {
+      sys.open = false;
+      clearInterval(sys.timer);
+      document.getElementById('sys-modal').style.display = 'none';
+    }
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && sys.open) hideSystem(); });
+    // Don't redraw the table under a button that is being clicked
+    document.getElementById('sys-scroll').addEventListener('pointerdown', () => { sys.held = true; });
+    document.addEventListener('pointerup', () => { if (sys.held) { sys.held = false; sysRender(); } });
+    async function sysLoad() {
+      if (!sys.open || sys.busy || document.hidden) return;
+      sys.busy = true;
+      try {
+        const res = await fetch(API + '/system/stats');
+        if (res.status === 401 && res.headers.get('X-Candy-Login')) { goLogin(); return; }
+        const data = await res.json();
+        if (!res.ok) { document.getElementById('sys-sub').textContent = data.error || 'Could not read the system'; return; }
+        sys.data = data;
+        sys.cpu.push(data.cpu.percent); sys.mem.push(100 * data.mem.used / (data.mem.total || 1));
+        if (sys.cpu.length > 60) { sys.cpu.shift(); sys.mem.shift(); }
+        sysRender();
+      } catch {
+        document.getElementById('sys-sub').textContent = 'Lost contact with the daemon. Trying again…';
+      } finally {
+        sys.busy = false;
+      }
+    }
+    function sysTab(tab) {
+      sys.tab = tab;
+      document.getElementById('sys-tab-processes').classList.toggle('on', tab === 'processes');
+      document.getElementById('sys-tab-units').classList.toggle('on', tab === 'units');
+      document.getElementById('sys-scroll').scrollTop = 0;
+      sysRender();
+    }
+    function sysSort(key) {
+      const cur = sys.sort[sys.tab];
+      const text = ['name', 'user', 'unit'].includes(key);
+      sys.sort[sys.tab] = cur[0] === key ? [key, -cur[1]] : [key, text ? 1 : -1];
+      sysRender();
+    }
+    function sysRender() {
+      const d = sys.data;
+      if (!d || !sys.open) return;
+      const el = (id) => document.getElementById(id);
+      el('sys-title').textContent = d.host || 'System';
+      el('sys-sub').textContent = `Up ${sysUptime(d.uptime)} · ${d.counts.processes} processes, ${d.counts.threads} threads · ${d.root ? 'acting as root' : 'acting as the daemon\'s user'}`;
+      el('sys-cpu').innerHTML = `${d.cpu.percent.toFixed(d.cpu.percent < 10 ? 1 : 0)}%<small>${d.cpu.cores.length} cores</small>`;
+      el('sys-load').textContent = `load ${d.load.map(n => n.toFixed(2)).join(' ')}`;
+      el('sys-cores').innerHTML = d.cpu.cores.map(c => `<i style="height:${Math.max(4, c).toFixed(0)}%" title="${c.toFixed(0)}%"></i>`).join('');
+      sysSpark('sys-cpu-spark', sys.cpu);
+      const memPct = 100 * d.mem.used / (d.mem.total || 1);
+      el('sys-mem').innerHTML = `${sysBytes(d.mem.used)}<small>of ${sysBytes(d.mem.total)} · ${memPct.toFixed(0)}%</small>`;
+      el('sys-swap').textContent = d.mem.swapTotal ? `swap ${sysBytes(d.mem.swapUsed)} of ${sysBytes(d.mem.swapTotal)}` : 'no swap';
+      el('sys-mem-line').innerHTML = `<b>${sysBytes(d.mem.available)} available</b><span>${sysBytes(d.mem.cached)} cache</span>`;
+      sysSpark('sys-mem-spark', sys.mem);
+      el('sys-disks').innerHTML = d.disks.length ? d.disks.slice(0, 4).map(k => {
+        const pct = 100 * k.used / ((k.used + k.available) || 1);
+        return `<div class="sys-line" title="${escapeHtml(k.device)} (${escapeHtml(k.type)})"><b>${escapeHtml(k.mount)}</b><span>${sysBytes(k.used)} of ${sysBytes(k.used + k.available)}</span></div><div class="sys-bar"><i class="${sysLevel(pct)}" style="width:${pct.toFixed(1)}%"></i></div>`;
+      }).join('') : '<div class="sys-line">No disks found</div>';
+      const nets = d.net.filter(n => n.rx > 0 || n.tx > 0 || d.net.length <= 3).sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx)).slice(0, 4);
+      el('sys-net').innerHTML = nets.map(n => `<div class="sys-line" style="margin:5px 0"><b>${escapeHtml(n.name)}</b><span>↓ ${sysBytes(n.rx)}/s &nbsp;↑ ${sysBytes(n.tx)}/s</span></div>`).join('') || '<div class="sys-line">No traffic</div>';
+      el('sys-temp').textContent = d.temp ? `${Math.round(d.temp)}°C` : '';
+      if (sys.held) return;
+
+      const q = el('sys-filter').value.trim().toLowerCase();
+      const [key, dir] = sys.sort[sys.tab];
+      const cmp = (a, b) => {
+        const x = a[key], y = b[key];
+        return (typeof x === 'string' || typeof y === 'string' ? String(x ?? '').localeCompare(String(y ?? '')) : (x ?? 0) - (y ?? 0)) * dir || a.pid - b.pid || 0;
+      };
+      const th = (k, label, right) => `<th class="${right ? 'right ' : ''}${key === k ? 'sorted' : ''}" onclick="sysSort('${k}')">${label}${key === k ? (dir < 0 ? ' ↓' : ' ↑') : ''}</th>`;
+      const cpuCell = (v) => `<td class="right ${v >= 80 ? 'sys-hot' : v < 0.05 ? 'dim' : ''}">${v.toFixed(1)}%</td>`;
+      const memCell = (v) => `<td class="right ${v >= 2 * 1073741824 ? 'sys-hot' : v === 0 ? 'dim' : ''}">${sysBytes(v)}</td>`;
+      if (sys.tab === 'processes') {
+        const all = d.processes.filter(p => !q || `${p.pid} ${p.user} ${p.name} ${p.cmd} ${p.unit || ''}`.toLowerCase().includes(q));
+        const rows = all.sort(cmp).slice(0, 250);
+        el('sys-count').textContent = all.length > rows.length ? `Showing ${rows.length} of ${all.length}` : `${all.length} processes`;
+        el('sys-head').innerHTML = `<tr>${th('pid', 'PID', true)}${th('user', 'User')}${th('cpu', 'CPU', true)}${th('mem', 'Memory', true)}${th('unit', 'Service')}${th('name', 'Command')}<th class="plain"></th></tr>`;
+        el('sys-rows').innerHTML = rows.map(p => {
+          const locked = p.kernel || p.pid === 1 || p.pid === d.self;
+          const rest = p.cmd && p.cmd !== p.name ? ' ' + escapeHtml(p.cmd) : '';
+          return `<tr><td class="right dim">${p.pid}</td><td>${escapeHtml(p.user)}</td>${cpuCell(p.cpu)}${memCell(p.mem)}`
+            + `<td class="${p.unit ? '' : 'dim'}">${escapeHtml(p.unit ? p.unit.replace(/\.service$/, '') : p.kernel ? 'kernel' : '–')}${p.unit && d.candy[p.unit] ? '<span class="sys-tag">candy</span>' : ''}</td>`
+            + `<td class="cmd" title="${escapeHtml(p.cmd || p.name)}"><b>${escapeHtml(p.name)}</b>${rest}</td>`
+            + `<td>${locked ? '' : `<div class="acts"><button class="btn" onclick="sysKill(${p.pid}, ${p.start}, 'TERM')" title="Ask it to exit (SIGTERM)">End</button><button class="btn stop" onclick="sysKill(${p.pid}, ${p.start}, 'KILL')" title="Kill it at once (SIGKILL)">Kill</button></div>`}</td></tr>`;
+        }).join('') || '<tr><td colspan="7" class="dim">Nothing matches</td></tr>';
+      } else {
+        const all = d.units.filter(u => !q || `${u.unit} ${d.candy[u.unit] || ''}`.toLowerCase().includes(q));
+        const rows = all.sort((a, b) => (b.failed ? 1 : 0) - (a.failed ? 1 : 0) || cmp(a, b));
+        el('sys-count').textContent = `${all.length} services and sessions${d.failed.length ? `, ${d.failed.length} failed` : ''}`;
+        el('sys-head').innerHTML = `<tr>${th('unit', 'Service')}${th('processes', 'Processes', true)}${th('cpu', 'CPU', true)}${th('mem', 'Memory', true)}<th class="plain"></th></tr>`;
+        el('sys-rows').innerHTML = rows.map(u => {
+          const candyName = d.candy[u.unit];
+          const scope = u.unit.endsWith('.scope');
+          const js = escapeJsSingle(u.unit);
+          const acts = u.unit === d.ownUnit ? '' : [
+            u.failed || (!scope && !candyName) ? `<button class="btn" onclick="sysUnit('${js}', '${u.failed ? 'start' : 'restart'}')">${u.failed ? 'Start' : 'Restart'}</button>` : '',
+            u.failed || /^(init\.scope|dbus(-broker)?\.service|systemd-[a-z-]+\.service)$/.test(u.unit) ? '' : `<button class="btn stop" onclick="sysUnit('${js}', 'stop')">Stop</button>`,
+          ].join('');
+          return `<tr><td>${escapeHtml(u.unit)}${candyName ? `<span class="sys-tag">candy: ${escapeHtml(candyName)}</span>` : ''}${u.unit === d.ownUnit ? '<span class="sys-tag">this daemon</span>' : ''}${u.failed ? '<span class="sys-tag bad">failed</span>' : ''}</td>`
+            + `<td class="right">${u.processes}</td>${cpuCell(u.cpu)}${memCell(u.mem)}<td><div class="acts">${acts}</div></td></tr>`;
+        }).join('') || '<tr><td colspan="5" class="dim">Nothing matches</td></tr>';
+      }
+    }
+    async function sysPost(path, body, done) {
+      try {
+        const res = await apiCall(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const data = await res.json();
+        if (data.error) { toast(data.error, 'error'); return; }
+        toast(done, 'success');
+        setTimeout(sysLoad, 600);
+      } catch {
+        toast('Could not reach the daemon', 'error');
+      }
+    }
+    function sysKill(pid, start, signal) {
+      const p = sys.data?.processes.find(x => x.pid === pid && x.start === start);
+      const what = p ? `${p.name} (pid ${pid}, ${p.user})` : `pid ${pid}`;
+      const ask = signal === 'KILL'
+        ? `Kill ${what} right now?\n\nIt gets no chance to save or clean up.`
+        : `Ask ${what} to exit?`;
+      if (!confirm(ask)) return;
+      sysPost('/system/kill', { pid, start, signal }, signal === 'KILL' ? `Killed ${what}` : `Asked ${what} to exit`);
+    }
+    function sysUnit(unit, action) {
+      const n = sys.data?.units.find(u => u.unit === unit)?.processes || 0;
+      const ask = action === 'stop' ? `Stop ${unit}?${n ? `\n\nIts ${n} process${n === 1 ? '' : 'es'} will be ended.` : ''}` : `${action === 'start' ? 'Start' : 'Restart'} ${unit}?`;
+      if (!confirm(ask)) return;
+      sysPost('/system/unit', { unit, action }, `${unit}: ${action === 'stop' ? 'stopping' : action === 'start' ? 'starting' : 'restarting'}`);
+    }
+
     setInterval(refreshAll, 5000);
     // Traffic parses the Caddy access log, so poll it less often
     setInterval(refreshTraffic, 15000);

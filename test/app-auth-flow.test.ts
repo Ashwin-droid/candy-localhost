@@ -454,7 +454,7 @@ describe("the daemon dispatches every route in this module", () => {
     expect(cls("POST", "/auth/passkey/finish")).toBe("public")
     // The old per-portal-host ceremony routes are gone
     for (const [m, p] of [["POST", "/auth/passkey/options"], ["POST", "/auth/passkey"], ["POST", "/passkeys/register/options"], ["POST", "/passkeys/register"]]) expect(cls(m, p)).toBeNull()
-    for (const [m, p] of [["GET", "/app-auth/consent"], ["POST", "/app-auth/decision"], ["POST", "/app-auth/fresh"], ["POST", "/app-auth/rotate"], ["POST", "/sdk/auth/keys"],
+    for (const [m, p] of [["GET", "/app-auth/consent"], ["POST", "/app-auth/decision"], ["POST", "/app-auth/fresh"], ["POST", "/app-auth/rotate"], ["POST", "/app-auth/drop"], ["GET", "/settings"], ["POST", "/sdk/auth/keys"],
       ["POST", "/auth/reauth"], ["GET", "/passkeys"], ["POST", "/passkeys/enroll/start"], ["POST", "/passkeys/delete"]]) {
       expect(cls(m, p)).toBe("user")
     }
@@ -739,6 +739,33 @@ describe("site keys: fetch and rotation", () => {
     expect(portal.status).toBe(401)
     // Never audited with the key
     expect(JSON.stringify(audits)).not.toContain(got.keys.split(":")[1])
+  })
+
+  it("revoking: the key and every approval of the site go, only for its owner, and a site that still asks gets a new key", async () => {
+    const b = new Browser()
+    b.pamLogin("ashwin")
+    const first = await startAppLogin(b)
+    expect((await b.submitForm((await decide(b, first.request)).body)).status).toBe(303)
+    const oldKid = appKeys.info("notes")!.kid
+    const post = (key: string, name: unknown) => daemon(new Request("http://localhost:9999/app-auth/drop", {
+      method: "POST", headers: { host: "localhost:9999", "X-Candy-API-Key": key, "content-type": "application/json" }, body: JSON.stringify({ name }),
+    }))
+    expect((await post("key-mallory", "notes")).status).toBe(403)
+    expect(appKeys.info("notes")!.kid).toBe(oldKid)
+    expect((await post("key-claude", "nothing-here")).status).toBe(404)
+
+    const res = await post("key-claude", "notes")
+    expect(res.status).toBe(200)
+    const out = await res.json() as any
+    expect(out).toMatchObject({ site: "notes", revoked: true, enabled: true })
+    expect(appKeys.info("notes")).toBeNull()
+    expect(audits.some(a => JSON.stringify(a).includes("APP_AUTH_KEY_REVOKE") && JSON.stringify(a).includes(oldKid))).toBe(true)
+    // A second revoke has nothing to revoke
+    expect((await post("key-claude", "notes")).status).toBe(404)
+    // The listing says whether a key's site still asks for sign-in
+    await startAppLogin(b)
+    const list = await (await daemon(new Request("http://localhost:9999/app-auth/sites", { headers: { host: "localhost:9999", "X-Candy-API-Key": "key-claude" } }))).json() as any
+    for (const s of list.sites) expect(typeof s.enabled).toBe("boolean")
   })
 
   it("rotation: the app's old ring meets a new kid, refetches once, and still verifies", async () => {

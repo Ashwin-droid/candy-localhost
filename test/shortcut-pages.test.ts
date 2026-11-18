@@ -108,15 +108,15 @@ describe("site-host pages", () => {
 })
 
 describe("superuser settings", () => {
-  it("the portal has forms for the zone and AdGuard Home, for superusers only", async () => {
-    const html = await page("portal.html")
+  it("the settings page has forms for the zone and AdGuard Home, for superusers only", async () => {
+    const html = await page("portal-settings.html")
     for (const id of ["zone-domain", "zone-tunnel", "zone-tunnel-id", "zone-credentials", "adguard-url", "adguard-username", "adguard-password", "adguard-client", "adguard-dns"]) {
       expect(html).toContain(`id="${id}"`)
     }
-    expect(html).toContain('<section id="settings-card" hidden>')
-    expect(block(html, "async function refreshSettings()")).toContain("if (!SUPER) return")
-    expect(html).toContain("apiCall('/domains/config'")
-    expect(html).toContain("apiCall('/lan/adguard'")
+    expect(html).toContain('<section class="sheet" id="daemon" hidden>')
+    expect(block(html, "async function loadAdguard()")).toContain("if (!SUPER) return")
+    expect(html).toContain("act('/domains/config'")
+    expect(html).toContain("act('/lan/adguard'")
   })
 })
 

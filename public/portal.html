@@ -231,6 +231,13 @@
     .rail-head .n { color: var(--ink-3); font-size: 13px; }
     .rail-head .btn { margin-left: auto; }
     .rail-list { max-height: 420px; overflow-y: auto; }
+    .rail-links { display: flex; flex-direction: column; }
+    .rail-links a { display: flex; align-items: baseline; gap: 8px; padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 13px; color: var(--ink-2); text-decoration: none; }
+    .rail-links a:hover { color: var(--ink); }
+    .rail-links a[hidden] { display: none; }
+    .rail-links .n { color: var(--ink-3); }
+    .chip.warn { border-color: var(--cherry); color: var(--cherry); cursor: default; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    span.chip:not(.on) { cursor: default; }
     .rail-item { padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
     .rail-item .fqdn { font-family: var(--font-host); font-stretch: 87.5%; font-size: 13px; font-weight: 500; text-decoration: none; overflow-wrap: anywhere; }
     .rail-item .fqdn:hover { color: var(--cherry); }
@@ -534,12 +541,12 @@
     <div class="who" aria-label="Logged in">
       <span class="who-name" id="who-name"></span>
       <span class="badge-su" id="who-su" hidden title="You see and manage every user's sites and the daemon's settings">superuser</span>
-      <a class="btn quiet small" href="/passkeys" title="Log in to the portal with a passkey instead of your password">Passkeys</a>
+      <a class="btn quiet small" href="/settings" title="Passkeys, sign-in keys, public domains and the daemon's settings">Settings</a>
       <button class="btn quiet small" onclick="logout()">Log out</button>
     </div>
     <div class="top-actions">
       <button class="btn quiet" id="system-btn" hidden onclick="showSystem()" title="CPU, memory, disks and every process on this machine">System</button>
-      <button class="btn quiet" onclick="appAuthLoadedAt = 0; refreshAll(); refreshTraffic();">Refresh</button>
+      <button class="btn quiet" onclick="refreshAll(); refreshTraffic();">Refresh</button>
       <button class="btn primary" onclick="showAddRoute()">Add site</button>
     </div>
   </header>
@@ -556,25 +563,15 @@
     </section>
 
     <aside class="rail">
-      <section id="domains-card">
-        <div class="rail-head">
-          <h2>Public domains</h2>
-          <span class="n" id="count-domains"></span>
-          <button class="btn small" id="bind-domain-btn" onclick="showBindDomain()" style="display: none;">Bind domain</button>
-        </div>
-        <div class="rail-list" id="domains-list"><div class="empty">Loading…</div></div>
-      </section>
-
-      <!-- Sign in with candy: your sites' keys, and the sites you approved (candy app-auth) -->
-      <section id="appauth-card">
-        <div class="rail-head"><h2>Sign in with candy</h2><span class="n" id="count-appauth"></span></div>
-        <div class="rail-list" id="appauth-list"><div class="empty">Loading…</div></div>
-      </section>
-
-      <!-- Daemon-wide settings: the API takes them only from a superuser's portal login -->
-      <section id="settings-card" hidden>
-        <div class="rail-head"><h2>Daemon settings</h2><span class="n">superuser</span></div>
-        <div class="rail-list" id="settings-list"><div class="empty">Loading…</div></div>
+      <!-- Everything that isn't running sites lives on the settings page (portal-settings.html) -->
+      <section id="settings-link-card">
+        <div class="rail-head"><h2>Settings</h2><a class="btn small" href="/settings">Open settings</a></div>
+        <nav class="rail-links" aria-label="Settings">
+          <a href="/settings#passkeys">Passkeys</a>
+          <a href="/settings#signin">Sign in with candy</a>
+          <a href="/settings#domains">Public domains <span class="n" id="count-domains"></span></a>
+          <a href="/settings#daemon" id="settings-daemon-link" hidden>Cloudflare, MCP and AdGuard Home</a>
+        </nav>
       </section>
 
       <section>
@@ -759,108 +756,6 @@
           <div class="dialog-actions">
             <button type="button" class="btn" onclick="hideBindDomain()">Cancel</button>
             <button type="submit" class="btn primary">Bind domain</button>
-          </div>
-        </form>
-      </div>
-    </div>
-  </div>
-
-  <!-- Domain password -->
-  <div id="domain-auth-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
-    <div class="dialog">
-      <div class="dialog-head">
-        <h2 id="auth-title">Set a password</h2>
-        <button class="btn quiet dots" onclick="hideDomainPasswordForm()" aria-label="Close">&times;</button>
-      </div>
-      <div class="dialog-body">
-        <form id="domain-auth-form" onsubmit="submitDomainPassword(event)">
-          <div class="auth-domain-pill" id="domain-auth-target">-</div>
-          <div class="field">
-            <label for="domain-auth-password">Password</label>
-            <input type="password" id="domain-auth-password" class="input-field" autocomplete="new-password" required>
-          </div>
-          <div class="field">
-            <label for="domain-auth-password-confirm">Confirm password</label>
-            <input type="password" id="domain-auth-password-confirm" class="input-field" autocomplete="new-password" required>
-          </div>
-          <div class="dialog-actions">
-            <button type="button" class="btn" onclick="hideDomainPasswordForm()">Cancel</button>
-            <button type="submit" class="btn primary">Set password</button>
-          </div>
-        </form>
-      </div>
-    </div>
-  </div>
-
-  <!-- Cloudflare zone and tunnel (superuser): the fields of `candy domain config` -->
-  <div id="zone-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="zone-title">
-    <div class="dialog">
-      <div class="dialog-head">
-        <h2 id="zone-title">Cloudflare zone</h2>
-        <button class="btn quiet dots" onclick="hideZoneConfig()" aria-label="Close">&times;</button>
-      </div>
-      <div class="dialog-body">
-        <form id="zone-form" onsubmit="submitZoneConfig(event)">
-          <div class="field">
-            <label for="zone-domain">Zone</label>
-            <input type="text" id="zone-domain" class="input-field code" placeholder="example.com" autocomplete="off" spellcheck="false">
-            <div class="hint">Public domains are bound as <code>name.zone</code>. Its zone id is looked up with the Cloudflare token.</div>
-          </div>
-          <div class="field">
-            <label for="zone-tunnel">Tunnel name</label>
-            <input type="text" id="zone-tunnel" class="input-field code" placeholder="candy" autocomplete="off" spellcheck="false">
-          </div>
-          <div class="field">
-            <label for="zone-tunnel-id">Tunnel id</label>
-            <input type="text" id="zone-tunnel-id" class="input-field code" placeholder="optional" autocomplete="off" spellcheck="false">
-          </div>
-          <div class="field">
-            <label for="zone-credentials">Credentials file</label>
-            <input type="text" id="zone-credentials" class="input-field code" placeholder="~/.cloudflared/&lt;tunnel id&gt;.json" autocomplete="off" spellcheck="false">
-          </div>
-          <div class="dialog-actions">
-            <button type="button" class="btn" onclick="hideZoneConfig()">Cancel</button>
-            <button type="submit" class="btn primary" id="zone-submit">Save</button>
-          </div>
-        </form>
-      </div>
-    </div>
-  </div>
-
-  <!-- AdGuard Home link (superuser): the fields of `candy lan adguard setup` -->
-  <div id="adguard-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="adguard-title">
-    <div class="dialog">
-      <div class="dialog-head">
-        <h2 id="adguard-title">AdGuard Home</h2>
-        <button class="btn quiet dots" onclick="hideAdguard()" aria-label="Close">&times;</button>
-      </div>
-      <div class="dialog-body">
-        <form id="adguard-form" onsubmit="submitAdguard(event)">
-          <div class="field">
-            <label for="adguard-url">Address</label>
-            <input type="text" id="adguard-url" class="input-field code" placeholder="http://127.0.0.1:3000" autocomplete="off" spellcheck="false">
-          </div>
-          <div class="field">
-            <label for="adguard-username">Username</label>
-            <input type="text" id="adguard-username" class="input-field" required autocomplete="off" spellcheck="false">
-          </div>
-          <div class="field">
-            <label for="adguard-password">Password</label>
-            <input type="password" id="adguard-password" class="input-field" autocomplete="new-password">
-            <div class="hint" id="adguard-password-hint">Kept by the daemon, never shown again.</div>
-          </div>
-          <div class="field">
-            <label for="adguard-client">Persistent client</label>
-            <input type="text" id="adguard-client" class="input-field" required autocomplete="off" spellcheck="false">
-            <div class="hint">The AdGuard Home client that covers the LAN. candy keeps its upstreams for LAN-published names in sync.</div>
-          </div>
-          <div class="field">
-            <label for="adguard-dns">candy-dns LAN listener</label>
-            <input type="text" id="adguard-dns" class="input-field code" placeholder="127.0.0.1:5336" autocomplete="off" spellcheck="false">
-          </div>
-          <div class="dialog-actions">
-            <button type="button" class="btn" onclick="hideAdguard()">Cancel</button>
-            <button type="submit" class="btn primary" id="adguard-submit">Link</button>
           </div>
         </form>
       </div>
@@ -1648,9 +1543,6 @@
       if (document.getElementById('prompt-modal').style.display === 'flex') hidePrompt();
       else if (document.getElementById('add-route-modal').style.display === 'flex') hideAddRoute();
       else if (document.getElementById('bind-domain-modal').style.display === 'flex') hideBindDomain();
-      else if (document.getElementById('domain-auth-modal').style.display === 'flex') hideDomainPasswordForm();
-      else if (document.getElementById('zone-modal').style.display === 'flex') hideZoneConfig();
-      else if (document.getElementById('adguard-modal').style.display === 'flex') hideAdguard();
     });
 
     document.getElementById('prompt-modal').addEventListener('click', (e) => {
@@ -2049,75 +1941,18 @@
     let domainZone = null;
     let pendingBindSubdomain = null;
     let pendingBindServer = null;
-    let pendingAuthDomain = null;
 
-    async function refreshDomains() {
-      const list = document.getElementById('domains-list');
-      const btn = document.getElementById('bind-domain-btn');
+    // The zone, for Bind public domain… in each site's menu. The bindings and
+    // everything about them are on the settings page (portal-settings.html).
+    async function refreshZone() {
       try {
         const data = await getJSON('/domains');
-        zoneConfig = data.configured ? { zone: data.zone || {}, tunnel: data.tunnel || {} } : null;
-        if (!data.configured) {
-          setCount('count-domains', '');
-          btn.style.display = 'none';
-          list.innerHTML = SUPER
-            ? '<div class="empty">Put a site on your own domain through a Cloudflare tunnel. No zone is set up yet: set one under Daemon settings.</div>'
-            : '<div class="empty">Put a site on your own domain through a Cloudflare tunnel. No zone is set up yet; a superuser sets one up.</div>';
-          return;
-        }
-
-        domainZone = data.zone;
+        domainZone = data.configured ? data.zone || null : null;
         const suffix = document.getElementById('bind-domain-suffix');
         if (suffix && domainZone) suffix.textContent = '.' + domainZone.domain;
-        btn.style.display = '';
-
-        const bindings = Object.values(data.bindings || {});
-        setCount('count-domains', bindings.length || '');
-        const mcpHtml = await publicMcpItem();
-        if (bindings.length === 0) {
-          list.innerHTML = `<div class="empty">No public domains yet. Bind one to serve a site at <code>name.${escapeHtml(domainZone?.domain || 'your domain')}</code>.</div>` + mcpHtml;
-          return;
-        }
-        list.innerHTML = bindings.map(b => {
-          const hasPw = !!(b.hasPassword || (b.auth && b.auth.password));
-          const hasJwt = !!b.hasJwtSecret;
-          const fqdn = escapeJsSingle(b.fqdn);
-          const al = b.allowlist || { enabled: false, ips: [] };
-          const act = (label, onclick, danger = false) => `<button class="${danger ? 'danger' : ''}" onclick="${onclick}">${label}</button>`;
-          const row = (label, value, on, actions, title = '') => `
-                <div class="setting">
-                  <span class="setting-label">${label}</span>
-                  <span class="setting-value ${on ? 'on' : ''}" ${title ? `title="${escapeHtml(title)}"` : ''}>${escapeHtml(value)}</span>
-                  <span class="setting-actions">${actions.join('')}</span>
-                </div>`;
-          const rows = [];
-          rows.push(row('Password',
-            hasPw ? (b.apiMode ? 'Every request' : 'Login page') : 'Not set', hasPw,
-            hasPw ? [act('Remove', `clearDomainPassword('${fqdn}', ${hasJwt ? "'password'" : "'all'"})`)]
-                  : [act('Add', `showDomainPasswordForm('${fqdn}')`)]));
-          if (b.apiMode || hasJwt) rows.push(row('JWT',
-            hasJwt ? (b.apiMode ? 'Set' : 'Needs API mode') : 'Not set', hasJwt && b.apiMode,
-            hasJwt ? [act('Token', `mintTestToken('${fqdn}')`), act('Rotate', `newJwtSecret('${fqdn}', true)`), act('Remove', `clearDomainPassword('${fqdn}', ${hasPw ? "'jwt'" : "'all'"})`)]
-                   : [act('Add', `newJwtSecret('${fqdn}', false)`)]));
-          rows.push(row('Allowed',
-            al.enabled ? `${al.ips.length ? `${al.ips.length} IP${al.ips.length === 1 ? '' : 's'} + ` : ''}Tailscale` : 'Anyone', al.enabled,
-            al.enabled ? [act('Edit', `editAllowlist('${fqdn}', '${escapeJsSingle(al.ips.join(', '))}')`), act('Allow all', `allowEveryone('${fqdn}')`)]
-                       : [act('Limit', `editAllowlist('${fqdn}', '')`)],
-            al.ips.join(', ')));
-          return `
-            <div class="rail-item domain-item">
-              <div class="domain-head">
-                <a class="fqdn" href="https://${escapeHtml(b.fqdn)}" target="_blank">${escapeHtml(b.fqdn)}</a>
-                <button class="unbind" onclick="unbindDomain('${escapeJsSingle(b.subdomain)}')">Unbind</button>
-              </div>
-              <div class="sub-line"><span>Serves ${escapeHtml(b.serverName)}${b.apiMode ? ' · API mode' : ''}</span></div>
-              <div class="settings">${rows.join('')}
-              </div>
-            </div>`;
-        }).join('') + mcpHtml;
-      } catch {
-        list.innerHTML = '<div class="empty">Couldn’t load domains.</div>';
-      }
+        setCount('count-domains', data.configured ? Object.keys(data.bindings || {}).length || '' : '');
+      } catch {}
+      document.getElementById('settings-daemon-link').hidden = !SUPER;
     }
 
     async function showBindDomain(preselect = '') {
@@ -2225,427 +2060,11 @@
       }
     }
 
-    async function unbindDomain(subdomain) {
-      if (!confirm(`Unbind ${subdomain}?`)) return;
-
-      try {
-        toast('Unbinding domain...', 'info');
-        const res = await apiCall('/domains/unbind/' + subdomain, { method: 'DELETE' });
-        const data = await res.json();
-        if (data.error) {
-          toast(data.error, 'error');
-        } else {
-          toast(data.message || 'Domain unbound', 'success');
-          refreshAll();
-        }
-      } catch (e) {
-        toast('Failed to unbind domain', 'error');
-      }
-    }
-
-    function showDomainPasswordForm(fqdn) {
-      pendingAuthDomain = fqdn;
-      document.getElementById('domain-auth-target').textContent = fqdn;
-      document.getElementById('domain-auth-password').value = '';
-      document.getElementById('domain-auth-password-confirm').value = '';
-      document.getElementById('domain-auth-modal').style.display = 'flex';
-      document.getElementById('domain-auth-password').focus();
-    }
-
-    function hideDomainPasswordForm() {
-      document.getElementById('domain-auth-modal').style.display = 'none';
-      document.getElementById('domain-auth-target').textContent = '-';
-      document.getElementById('domain-auth-password').value = '';
-      document.getElementById('domain-auth-password-confirm').value = '';
-      pendingAuthDomain = null;
-    }
-
-    async function submitDomainPassword(e) {
-      e.preventDefault();
-      if (!pendingAuthDomain) {
-        toast('No domain selected', 'error');
-        return;
-      }
-
-      const password = document.getElementById('domain-auth-password').value;
-      const confirmPassword = document.getElementById('domain-auth-password-confirm').value;
-
-      if (!password) {
-        toast('Password cannot be empty', 'error');
-        return;
-      }
-      if (password !== confirmPassword) {
-        toast('Passwords do not match', 'error');
-        return;
-      }
-
-      try {
-        toast('Setting password...', 'info');
-        const res = await apiCall('/auth/set', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ domain: pendingAuthDomain, password })
-        });
-        const data = await res.json();
-        if (data.error) {
-          toast(data.error, 'error');
-        } else {
-          toast(data.message || 'Password set', 'success');
-          hideDomainPasswordForm();
-          refreshAll();
-        }
-      } catch (e) {
-        toast('Failed to set password', 'error');
-      }
-    }
-
-    // =========================================
-    // DAEMON SETTINGS (superuser only)
-    // The API refuses these to everyone else; the CLI can't change them at all.
-    // =========================================
-
-    let zoneConfig = null;    // { zone, tunnel } from /domains, set by refreshDomains
-    let adguardState = null;  // GET /lan/adguard
-
-    async function refreshSettings() {
-      const card = document.getElementById('settings-card');
-      card.hidden = !SUPER;
-      if (!SUPER) return;
-      const list = document.getElementById('settings-list');
-      try { adguardState = await getJSON('/lan/adguard'); } catch { adguardState = null; }
-      const btn = (label, onclick) => `<button onclick="${onclick}">${label}</button>`;
-      const row = (label, value, on, actions, title = '') => `
-                <div class="setting">
-                  <span class="setting-label">${label}</span>
-                  <span class="setting-value ${on ? 'on' : ''}" ${title ? `title="${escapeHtml(title)}"` : ''}>${escapeHtml(value)}</span>
-                  <span class="setting-actions">${actions.join('')}</span>
-                </div>`;
-
-      const zone = zoneConfig?.zone?.domain || '';
-      const tunnel = zoneConfig?.tunnel?.name || '';
-      const zoneRows = [
-        row('Zone', zone || 'Not set', !!zone, [btn(zone || tunnel ? 'Edit' : 'Set up', 'showZoneConfig()')], zoneConfig?.zone?.id ? `zone id ${zoneConfig.zone.id}` : ''),
-        row('Tunnel', tunnel || 'Not set', !!tunnel, [], zoneConfig?.tunnel?.id || ''),
-      ];
-
-      const ag = adguardState;
-      const linked = !!ag?.configured;
-      const agRows = [row('Status', linked ? 'Linked' : ag ? 'Not linked' : 'Couldn’t load', linked,
-        linked ? [btn('Edit', 'showAdguard()'), btn('Unlink', 'unlinkAdguard()')] : [btn('Set up', 'showAdguard()')], linked ? `${ag.url} as ${ag.username}` : '')];
-      if (linked) {
-        agRows.push(row('Client', ag.client, false, [], ag.url));
-        const rules = Array.isArray(ag.rules) ? ag.rules : [];
-        agRows.push(row('Names', rules.length ? `${rules.length} to ${ag.dnsTarget}` : 'None right now', rules.length > 0, [], rules.join('  ')));
-        if (ag.error) agRows.push(row('Sync', `Failed: ${ag.error}`, false, [], ag.error));
-      }
-
-      list.innerHTML = `
-            <div class="rail-item domain-item">
-              <div class="domain-head"><span class="fqdn">Cloudflare</span></div>
-              <div class="sub-line"><span>The zone public domains live under, and the tunnel that serves them.</span></div>
-              <div class="settings">${zoneRows.join('')}
-              </div>
-            </div>
-            <div class="rail-item domain-item">
-              <div class="domain-head"><span class="fqdn">AdGuard Home</span></div>
-              <div class="sub-line"><span>Sends LAN-published <code>.candy</code> names to candy-dns.</span></div>
-              <div class="settings">${agRows.join('')}
-              </div>
-            </div>`;
-    }
-
-    function showZoneConfig() {
-      document.getElementById('zone-domain').value = zoneConfig?.zone?.domain || '';
-      document.getElementById('zone-tunnel').value = zoneConfig?.tunnel?.name || '';
-      document.getElementById('zone-tunnel-id').value = zoneConfig?.tunnel?.id || '';
-      document.getElementById('zone-credentials').value = zoneConfig?.tunnel?.credentialsFile || '';
-      document.getElementById('zone-modal').style.display = 'flex';
-      document.getElementById('zone-domain').focus();
-    }
-
-    function hideZoneConfig() {
-      document.getElementById('zone-modal').style.display = 'none';
-    }
-
-    async function submitZoneConfig(e) {
-      e.preventDefault();
-      const domain = document.getElementById('zone-domain').value.trim();
-      const name = document.getElementById('zone-tunnel').value.trim();
-      const id = document.getElementById('zone-tunnel-id').value.trim();
-      const credentialsFile = document.getElementById('zone-credentials').value.trim();
-      if (!domain && !name) { toast('Enter a zone or a tunnel name', 'error'); return; }
-      // Same shape as `candy domain config`. A changed zone gets its id looked up again.
-      const body = {};
-      if (domain) body.zone = { domain, id: domain === zoneConfig?.zone?.domain ? (zoneConfig.zone.id || '') : '' };
-      if (name || id) body.tunnel = { name, id, credentialsFile };
-      const submit = document.getElementById('zone-submit');
-      submit.disabled = true;
-      try {
-        const res = await apiCall('/domains/config', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        const data = await res.json();
-        if (!res.ok || data.error) { toast(data.error || 'Could not save the zone', 'error'); return; }
-        toast(data.message || 'Domain config updated', 'success');
-        hideZoneConfig();
-        refreshAll();
-      } catch {
-        toast('Could not save the zone', 'error');
-      } finally {
-        submit.disabled = false;
-      }
-    }
-
-    function showAdguard() {
-      const ag = adguardState?.configured ? adguardState : null;
-      document.getElementById('adguard-url').value = ag?.url || '';
-      document.getElementById('adguard-username').value = ag?.username || '';
-      document.getElementById('adguard-client').value = ag?.client || '';
-      document.getElementById('adguard-dns').value = ag?.dnsTarget || '';
-      const pw = document.getElementById('adguard-password');
-      pw.value = '';
-      // Linked already: an empty password keeps the one the daemon has
-      pw.required = !ag;
-      pw.placeholder = ag ? 'Unchanged' : '';
-      document.getElementById('adguard-submit').textContent = ag ? 'Save' : 'Link';
-      document.getElementById('adguard-modal').style.display = 'flex';
-      document.getElementById(ag ? 'adguard-password' : 'adguard-url').focus();
-    }
-
-    function hideAdguard() {
-      document.getElementById('adguard-modal').style.display = 'none';
-      document.getElementById('adguard-password').value = '';
-    }
-
-    async function submitAdguard(e) {
-      e.preventDefault();
-      const dnsTarget = document.getElementById('adguard-dns').value.trim();
-      // Same fields as `candy lan adguard setup`
-      const body = {
-        url: document.getElementById('adguard-url').value.trim() || 'http://127.0.0.1:3000',
-        username: document.getElementById('adguard-username').value.trim(),
-        password: document.getElementById('adguard-password').value,
-        client: document.getElementById('adguard-client').value.trim(),
-        ...(dnsTarget ? { dnsTarget } : {}),
-      };
-      const submit = document.getElementById('adguard-submit');
-      submit.disabled = true;
-      try {
-        const res = await apiCall('/lan/adguard', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        const data = await res.json();
-        if (!res.ok || data.error) { toast(data.error || 'Could not link AdGuard Home', 'error'); return; }
-        toast('AdGuard Home linked', 'success');
-        hideAdguard();
-        refreshAll();
-      } catch {
-        toast('Could not link AdGuard Home', 'error');
-      } finally {
-        submit.disabled = false;
-      }
-    }
-
-    async function unlinkAdguard() {
-      if (!confirm('Unlink AdGuard Home? candy takes out the upstream lines it added.')) return;
-      try {
-        const res = await apiCall('/lan/adguard', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ remove: true }),
-        });
-        const data = await res.json();
-        if (!res.ok || data.error) { toast(data.error || 'Could not unlink AdGuard Home', 'error'); return; }
-        toast('AdGuard Home unlinked', 'success');
-        refreshAll();
-      } catch {
-        toast('Could not unlink AdGuard Home', 'error');
-      }
-    }
-
-    // candy's own MCP server on a public address (off unless turned on here)
-    async function publicMcpItem() {
-      if (!SUPER) return '';  // the public MCP address is a superuser setting
-      let st;
-      try { st = await (await apiCall('/domains/mcp')).json(); } catch { return ''; }
-      if (!st || st.error || !st.available) return '';
-      const signedIn = (st.clients || []).filter(c => c.activeGrants > 0);
-      const names = signedIn.map(c => c.clientName).join(', ');
-      const btn = (label, onclick) => `<button onclick="${onclick}">${label}</button>`;
-      const row = (label, value, on, actions, title = '') => `
-                <div class="setting">
-                  <span class="setting-label">${label}</span>
-                  <span class="setting-value ${on ? 'on' : ''}" ${title ? `title="${escapeHtml(title)}"` : ''}>${escapeHtml(value)}</span>
-                  <span class="setting-actions">${actions.join('')}</span>
-                </div>`;
-      const address = (st.url || st.wouldBe || '').replace(/^https:\/\//, '');
-      const rows = [row('Status', st.enabled ? 'On' : 'Off', st.enabled, [btn(st.enabled ? 'Turn off' : 'Turn on', `setPublicMcp(${!st.enabled})`)])];
-      if (st.enabled) rows.push(row('Clients', signedIn.length ? `${signedIn.length} signed in` : 'None', signedIn.length > 0,
-        signedIn.length ? [btn('Sign out all', 'revokePublicMcp()')] : [], names));
-      return `
-            <div class="rail-item domain-item">
-              <div class="domain-head"><span class="fqdn">${escapeHtml(address)}</span></div>
-              <div class="sub-line"><span>candy for AI clients, from anywhere. Each client is approved from your tailnet.</span></div>
-              <div class="settings">${rows.join('')}
-              </div>
-            </div>`;
-    }
-
-    async function setPublicMcp(enabled) {
-      if (!enabled && !confirm('Turn off the public MCP address? Every connected client is signed out.')) return;
-      try {
-        const res = await apiCall('/domains/mcp', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled }),
-        });
-        const data = await res.json();
-        if (data.error) toast(data.error, 'error');
-        else { toast(enabled ? `MCP is public at ${data.url}` : 'Public MCP address is off', 'success'); refreshAll(); }
-      } catch (e) {
-        toast('Could not change the public MCP address', 'error');
-      }
-    }
-
-    async function revokePublicMcp() {
-      if (!confirm('Sign out every MCP client? They will need to be approved again.')) return;
-      try {
-        const res = await apiCall('/domains/mcp/revoke', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-        const data = await res.json();
-        if (data.error) toast(data.error, 'error');
-        else { toast('Every MCP client was signed out', 'success'); refreshAll(); }
-      } catch (e) {
-        toast('Could not sign clients out', 'error');
-      }
-    }
-
-    async function allowEveryone(fqdn) {
-      try {
-        const res = await apiCall('/domains/allowlist', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ domain: fqdn, ips: [], enabled: false }),
-        });
-        const data = await res.json();
-        if (data.error) toast(data.error, 'error');
-        else { toast(data.message, 'success'); refreshAll(); }
-      } catch (e) {
-        toast('Could not turn off the allowlist', 'error');
-      }
-    }
-
-    // Allowlist mode: only these IPs/CIDRs, plus Tailscale and this machine. Empty turns it off.
-    function editAllowlist(fqdn, current) {
-      showPrompt({
-        title: `Who can reach ${fqdn}`,
-        label: 'Allowed IPs or CIDRs, comma separated',
-        value: current,
-        hint: 'Tailscale addresses and this machine always get in. Caddy drops everyone else without a reply, so it never reaches candy or counts as a failed login. Leave empty to allow everyone.',
-        submit: 'Save',
-        required: false,
-        onSubmit: async (value) => {
-          const ips = value.split(/[\s,]+/).map(v => v.trim()).filter(Boolean);
-          const res = await apiCall('/domains/allowlist', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ domain: fqdn, ips, enabled: ips.length > 0 }),
-          });
-          const data = await res.json();
-          if (data.error) { toast(data.error, 'error'); return false; }
-          toast(data.message, 'success');
-          refreshAll();
-          return true;
-        },
-      });
-    }
-
-    // Server-to-server auth for API-mode sites: a generated HMAC secret, shown once
-    async function newJwtSecret(fqdn, replacing) {
-      if (replacing && !confirm(`Replace the JWT secret for ${fqdn}? Tokens signed with the old one stop working.`)) return;
-      try {
-        const res = await apiCall('/auth/set', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ domain: fqdn, jwtSecret: 'generate' })
-        });
-        const data = await res.json();
-        if (data.error) { toast(data.error, 'error'); return; }
-        refreshAll();
-        showPrompt({
-          title: `JWT secret for ${fqdn}`,
-          label: 'Secret (shown once)',
-          value: data.jwtSecret,
-          hint: 'Sign HS256 tokens with it: aud "Candy API Authorization Service", sub "<site>.candy", exp at most an hour away, iat now, and a jti to make a token single-use. Send them in X-Auth-Token.',
-          submit: 'Copy and close',
-          onSubmit: async (value) => {
-            try { await navigator.clipboard.writeText(value); toast('Secret copied', 'success'); }
-            catch { toast('Couldn’t copy. Select it and copy by hand.', 'error'); return false; }
-            return true;
-          },
-        });
-      } catch (e) {
-        toast('Failed to set the JWT secret', 'error');
-      }
-    }
-
-    // `candy auth token <domain>`: a signed token to try the site with, good for 10 minutes
-    async function mintTestToken(fqdn) {
-      try {
-        const data = await postJSON('/auth/token', { domain: fqdn, ttl: 600 });
-        if (data.error) { toast(data.error, 'error'); return; }
-        showPrompt({
-          title: `Test token for ${fqdn}`,
-          label: 'Token (good for 10 minutes)',
-          value: data.token,
-          hint: 'Send it in the X-Auth-Token header to try the site from a script. Made with its JWT secret, which is not shown.',
-          submit: 'Copy and close',
-          onSubmit: async (value) => {
-            try { await navigator.clipboard.writeText(value); toast('Token copied', 'success'); }
-            catch { toast('Couldn’t copy. Select it and copy by hand.', 'error'); return false; }
-            return true;
-          },
-        });
-      } catch {
-        toast('Could not make a token', 'error');
-      }
-    }
-
-    async function clearDomainPassword(fqdn, which = 'all') {
-      const what = which === 'jwt' ? 'the JWT secret' : which === 'password' ? 'the password' : 'protection';
-      if (!confirm(`Remove ${what} for ${fqdn}?`)) return;
-
-      try {
-        toast('Removing...', 'info');
-        const res = await apiCall('/auth/clear', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ domain: fqdn, which })
-        });
-        const data = await res.json();
-        if (data.error) {
-          toast(data.error, 'error');
-        } else {
-          toast(data.message || 'Password removed', 'success');
-          refreshAll();
-        }
-      } catch (e) {
-        toast('Failed to remove password', 'error');
-      }
-    }
-
     // Close bind domain modal on backdrop click
     document.getElementById('bind-domain-modal').addEventListener('click', (e) => {
       if (e.target.id === 'bind-domain-modal') hideBindDomain();
     });
 
-    // Close domain auth modal on backdrop click
-    document.getElementById('domain-auth-modal').addEventListener('click', (e) => {
-      if (e.target.id === 'domain-auth-modal') hideDomainPasswordForm();
-    });
 
     // ----- Sites: routes, processes, configs, portals and traffic merged by name -----
     const state = { status: null, routes: {}, processes: {}, configs: {}, portals: {}, stats: null, entries: {} };
@@ -2706,98 +2125,8 @@
       await refreshProcesses();
       await refreshConfigs();
       await refreshPortals();
-      await refreshDomains();
-      await refreshSettings();
-      await refreshAppAuth();
+      await refreshZone();
       await refreshActivity();
-    }
-
-    // ----- Sign in with candy (candy app-auth): site keys and your approvals -----
-    // Keys change rarely: loaded at most once a minute unless forced (Refresh, or after a change)
-    let appAuthLoadedAt = 0;
-    let appAuthSites = [];
-    let appAuthConsents = [];
-
-    async function refreshAppAuth(force = false) {
-      if (!force && Date.now() - appAuthLoadedAt < 60000) return;
-      const list = document.getElementById('appauth-list');
-      try {
-        const sites = await getJSON('/app-auth/sites');
-        const consents = await getJSON('/app-auth/consents');
-        if (sites.error || consents.error) throw new Error(sites.error || consents.error);
-        appAuthSites = Array.isArray(sites.sites) ? sites.sites : [];
-        appAuthConsents = Array.isArray(consents.consents) ? consents.consents : [];
-        appAuthLoadedAt = Date.now();
-      } catch {
-        list.innerHTML = '<div class="empty">Couldn’t load sign-in keys.</div>';
-        return;
-      }
-      renderAppAuth();
-    }
-
-    function appAuthWhen(ms) {
-      return typeof ms === 'number' ? new Date(ms).toLocaleDateString([], { dateStyle: 'medium' }) : 'never';
-    }
-
-    function renderAppAuth() {
-      const list = document.getElementById('appauth-list');
-      setCount('count-appauth', appAuthSites.length + appAuthConsents.length || '');
-      if (!appAuthSites.length && !appAuthConsents.length) {
-        list.innerHTML = '<div class="empty">Sites that let people sign in with their candy login show up here, with the sites you’ve said yes to.</div>';
-        return;
-      }
-      // Rows point at the lists by index, so no name goes into an onclick
-      const keys = appAuthSites.map((s, i) => `
-            <div class="rail-item">
-              <div class="domain-head">
-                <span class="fqdn">${escapeHtml(s.site)}</span>
-                <button class="unbind" onclick="rotateAppKey(${i})" title="Make a new sign-in key for this site">New key</button>
-              </div>
-              <div class="sub-line"><span>Key ${escapeHtml(s.kid)}, made ${escapeHtml(appAuthWhen(s.created))}${s.rotatedAt ? `, replaced ${escapeHtml(appAuthWhen(s.rotatedAt))}` : ''}${SUPER && s.owner && s.owner !== ME.user ? ` · ${escapeHtml(s.owner)}` : ''}</span></div>
-            </div>`);
-      const approvals = appAuthConsents.map((c, i) => `
-            <div class="rail-item">
-              <div class="domain-head">
-                <span class="fqdn">${escapeHtml(c.site)}</span>
-                <button class="unbind" onclick="revokeAppConsent(${i})" title="It asks you again next time">Forget</button>
-              </div>
-              <div class="sub-line"><span>You said yes ${escapeHtml(appAuthWhen(c.at))}, run by ${escapeHtml(c.owner)}</span></div>
-            </div>`);
-      list.innerHTML = (keys.length ? `<div class="fn-muted" style="padding-top: 10px;">Your sites’ keys</div>${keys.join('')}` : '')
-        + (approvals.length ? `<div class="fn-muted" style="padding-top: 14px;">Sites you said yes to</div>${approvals.join('')}` : '');
-    }
-
-    // `candy app-auth rotate <name>`
-    async function rotateAppKey(i) {
-      const s = appAuthSites[i];
-      if (!s) return;
-      if (!confirm(`Make a new sign-in key for ${s.site}?\n\nSign-ins started with the old key still finish for a few minutes; none after that.`)) return;
-      try {
-        const data = await postJSON('/app-auth/rotate', { name: s.site });
-        if (data.error) { toast(data.error, 'error'); return; }
-        toast(`${data.site} has a new key (${data.kid})`, 'success');
-        if (Array.isArray(data.restartNeeded) && data.restartNeeded.length) {
-          toast(`Restart ${data.restartNeeded.join(', ')} to give it the new key (apps using the SDK pick it up within 5 minutes)`, 'info');
-        }
-      } catch {
-        toast('Could not make a new key', 'error');
-      }
-      refreshAppAuth(true);
-    }
-
-    // `candy app-auth revoke <site>`
-    async function revokeAppConsent(i) {
-      const c = appAuthConsents[i];
-      if (!c) return;
-      if (!confirm(`Forget that you said yes to ${c.site}? It asks you again next time.`)) return;
-      try {
-        const data = await postJSON('/app-auth/consents/revoke', { site: c.site });
-        if (data.error) { toast(data.error, 'error'); return; }
-        toast(data.revoked ? `${c.site} will ask again next time` : `You hadn’t said yes to ${c.site}`, 'success');
-      } catch {
-        toast('Could not forget the approval', 'error');
-      }
-      refreshAppAuth(true);
     }
 
     function variantsOf(config) {
@@ -2913,6 +2242,15 @@
       if (entryPort) chips.push(`<span class="chip on" title="http://127.0.0.1:${entryPort} on the machine candy runs on reaches this site through candy">Local port ${entryPort}</span>`);
       if (lan) chips.push(`<span class="chip on" title="${safe}.candy is reachable from the local network">On LAN</span>`);
       if (lanHttps) chips.push(`<a class="chip-link" href="${escapeHtml(lanHttps)}" target="_blank" title="LAN address with a trusted certificate">${escapeHtml(lanHttps.replace(/^https:\/\//, ''))}</a>`);
+      // candy.json: { auth, depends, publish }, or { error } when it can't be read
+      const manifest = s.config?.manifest;
+      const needs = Array.isArray(manifest?.depends) && manifest.depends.length ? manifest.depends : Array.isArray(s.proc?.depends) ? s.proc.depends : [];
+      const heldBy = Array.isArray(s.proc?.heldBy) ? s.proc.heldBy : [];
+      if (manifest?.error) chips.push(`<span class="chip warn" title="${escapeHtml(manifest.error)}">candy.json: ${escapeHtml(manifest.error)}</span>`);
+      if (manifest?.auth) chips.push('<span class="chip on" title="Its candy.json asks for Sign in with candy. Its key is in Settings.">Sign-in</span>');
+      if (manifest?.publish) chips.push('<span class="chip on" title="Its candy.json lets other users\' sites depend on it">Published</span>');
+      if (needs.length) chips.push(`<span class="chip" title="Started before it, and kept up while it runs">Needs: ${escapeHtml(needs.join(', '))}</span>`);
+      if (heldBy.length) chips.push(`<span class="chip on" title="These sites depend on it, so it isn't stopped for being idle">Kept up by: ${escapeHtml(heldBy.join(', '))}</span>`);
       if (tsServe && tsServe !== lanHttps) chips.push(`<a class="chip-link" href="${escapeHtml(tsServe)}" target="_blank" title="Tailscale address with a trusted certificate. Only your tailnet can open it.">${escapeHtml(tsServe.replace(/^https:\/\//, ''))}</a>`);
 
       let portalLine = '';
@@ -3089,7 +2427,10 @@
     const linkName = (v) => /^[a-z0-9][a-z0-9.-]{0,62}$/i.test(v || '') ? v : null;
     const addName = linkName(deepLink.get('add'));
     const logsName = linkName(deepLink.get('logs'));
-    if (deepLink.has('add') || deepLink.has('logs')) history.replaceState(null, '', location.pathname);
+    // ?bind[=<name>] (from the settings page): Bind a public domain, for that site if given
+    const bindLink = deepLink.has('bind');
+    const bindName = linkName(deepLink.get('bind'));
+    if (deepLink.has('add') || deepLink.has('logs') || bindLink) history.replaceState(null, '', location.pathname);
     if (addName) {
       showAddRoute('port');
       document.getElementById('add-name').value = addName;
@@ -3100,6 +2441,10 @@
 
     // Init
     refreshAll().then(() => {
+      if (bindLink) {
+        if (domainZone) showBindDomain(bindName || '');
+        else toast('No zone is set up yet. Set one up in Settings.', 'error');
+      }
       if (!logsName) return;
       if (collectSites().some(site => site.name === logsName)) showLogs(logsName);
       else toast(`${logsName} isn’t one of your sites`, 'error');
@@ -3272,12 +2617,6 @@
     // Click outside a dialog to close it
     document.getElementById('add-route-modal').addEventListener('click', (e) => {
       if (e.target.id === 'add-route-modal') hideAddRoute();
-    });
-    document.getElementById('zone-modal').addEventListener('click', (e) => {
-      if (e.target.id === 'zone-modal') hideZoneConfig();
-    });
-    document.getElementById('adguard-modal').addEventListener('click', (e) => {
-      if (e.target.id === 'adguard-modal') hideAdguard();
     });
 
 

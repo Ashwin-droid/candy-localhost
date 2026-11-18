@@ -5631,7 +5631,7 @@ const scriptJson = (v: unknown): string => JSON.stringify(v).replace(/</g, "\\u0
 // Portal pages that are served as a shell on navigation (public/portal-shell.html):
 // the real page, with its page token, only comes back to a request that carries
 // the session secret header, which a stolen cookie alone can't add
-const PORTAL_PAGES = new Set(["/", "/oauth/consent", "/go/kill", "/go/portal", "/app-auth/consent", "/passkeys"])
+const PORTAL_PAGES = new Set(["/", "/oauth/consent", "/go/kill", "/go/portal", "/app-auth/consent", "/passkeys", "/settings"])
 
 // Put into every portal page: same-origin fetches carry the session secret,
 // which the login page keeps in this origin's localStorage
@@ -5801,6 +5801,15 @@ const appAuthRoutes = createAuthRoutes({
   issuers: () => issuersFor(appAuthPortalHosts()),
   portalUrl: appAuthPortalUrl,
   keysChanged: appAuthKeysChanged,
+  keysDropped: async site => {
+    await unlink(appAuthCredentialPath(site)).catch(() => {})
+    if (fnConfigOf(site)) {
+      await restartFn(site).catch(e => auditLog('FN_RESTART_FAIL', `${site}: ${fnErrorText(e)}`, 'System'))
+      return []
+    }
+    const proc = processes.get(site)
+    return proc && (proc.status === 'running' || proc.status === 'starting') ? [site] : []
+  },
   page: file => Bun.file(`${import.meta.dir}/public/${file}`).text(),
   pageScript: portalPageScript,
   readSessionCookie,
@@ -5871,6 +5880,8 @@ const ROUTE_TABLE: readonly RouteRule[] = [
   ["POST", "/app-auth/fresh", "user"],
   ["GET", "/app-auth/sites", "user"],
   ["POST", "/app-auth/rotate", "user"],
+  ["POST", "/app-auth/drop", "user"],
+  ["GET", "/settings", "user"],
   ["GET", "/app-auth/consents", "user"],
   ["POST", "/app-auth/consents/revoke", "user"],
   ["POST", "/auth/reauth", "user"],
@@ -6405,7 +6416,7 @@ async function controlFetch(req: Request): Promise<Response> {
     // After the guard: the class, the login, and for state-changing portal
     // requests sameOrigin and the page token (passkey login is TOKENLESS)
     if (url.pathname === "/app-auth/authorize" || url.pathname === "/app-auth/consent" || url.pathname === "/app-auth/decision" || url.pathname === "/app-auth/fresh"
-      || url.pathname === "/app-auth/sites" || url.pathname === "/app-auth/rotate"
+      || url.pathname === "/app-auth/sites" || url.pathname === "/app-auth/rotate" || url.pathname === "/app-auth/drop" || url.pathname === "/settings"
       || url.pathname === "/app-auth/consents" || url.pathname === "/app-auth/consents/revoke"
       || url.pathname === "/auth/passkey/start" || url.pathname === "/auth/passkey/finish" || url.pathname === "/auth/reauth"
       || url.pathname === "/passkeys" || url.pathname === "/passkeys/list" || url.pathname === "/passkeys/enroll/start"

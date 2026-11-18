@@ -11,6 +11,8 @@
 //   POST /app-auth/fresh               user     portal login + page token: a passkey stamp that re-authenticates this login for one request (max_age)
 //   GET  /app-auth/sites               user     sites with keys, the caller's own (mayUse)
 //   POST /app-auth/rotate              user     a new key for one of the caller's sites
+//   POST /app-auth/drop                user     revoke: the site's key and everyone's approvals of it, gone
+//   GET  /settings                     user     the settings page (portal login only)
 //   GET  /app-auth/consents            user     the caller's remembered approvals
 //   POST /app-auth/consents/revoke     user     forget one
 //   POST /sdk/auth/keys                user     the owner's API key only: the site's key ring
@@ -46,7 +48,7 @@ import {
 
 /** Every path `handle` answers; daemon.ts dispatches these after its guard. */
 export const APP_AUTH_ROUTES: readonly string[] = [
-  "/app-auth/authorize", "/app-auth/consent", "/app-auth/decision", "/app-auth/fresh", "/app-auth/sites", "/app-auth/rotate",
+  "/app-auth/authorize", "/app-auth/consent", "/app-auth/decision", "/app-auth/fresh", "/app-auth/sites", "/app-auth/rotate", "/app-auth/drop", "/settings",
   "/app-auth/consents", "/app-auth/consents/revoke", "/sdk/auth/keys",
   "/auth/passkey/start", "/auth/passkey/finish", "/auth/reauth",
   "/passkeys", "/passkeys/list", "/passkeys/enroll/start", "/passkeys/rename", "/passkeys/delete",
@@ -105,6 +107,8 @@ export interface AuthRouteDeps {
   portalUrl(): string
   /** A site's ring changed (rotated, or replaced for a new owner): rewrite its credential file, restart its function. Returns the running servers that still hold the old ring. */
   keysChanged(site: string, ring: JweKey[]): Promise<string[]>
+  /** A site's ring was revoked: remove its credential file, restart its function. Returns the running servers that still hold the old ring. */
+  keysDropped?(site: string): Promise<string[]>
   /** public/<file> as text */
   page(file: string): Promise<string>
   /** The <script> a portal page gets: page token, CANDY_VARS, session fetch patch */
@@ -303,7 +307,8 @@ export const createAuthRoutes = (d: AuthRouteDeps) => {
     for (const site of d.appKeys.sites()) {
       if (!d.mayUse(ctx.auth, site)) continue
       const info = d.appKeys.info(site)
-      if (info) list.push({ site, owner: info.owner, kid: info.kid, created: info.created, rotatedAt: info.rotatedAt })
+      // enabled: the site asks for sign-in right now ("auth": true in its candy.json). A key without that is a leftover.
+      if (info) list.push({ site, owner: info.owner, kid: info.kid, created: info.created, rotatedAt: info.rotatedAt, enabled: d.site.ownerOf(site) !== null })
     }
     return json(ctx, { sites: list })
   }
@@ -324,6 +329,24 @@ export const createAuthRoutes = (d: AuthRouteDeps) => {
     const restartNeeded = await d.keysChanged(name, ring)
     d.audit("APP_AUTH_KEY_ROTATE", `${name}: kid ${ring[0].kid}`, ctx.actor)
     return json(ctx, { site: name, kid: ring[0].kid, restartNeeded })
+  }
+
+  // Revoke: the ring and every approval of the site are deleted, with no overlap.
+  // Nothing signed with the old key is accepted by candy again, and no new token
+  // can be made until the site gets a new ring (which only happens while its
+  // candy.json says "auth": true). Works for a site that no longer asks for
+  // sign-in, or no longer exists: that is what it is for.
+  const drop = async (req: Request, ctx: AuthRouteContext): Promise<Response> => {
+    const body = await readJsonBody(req)
+    const name = typeof body.name === "string" ? lowerName(body.name) : ""
+    const had = name ? d.appKeys.info(name) : null
+    if (!had) return json(ctx, { error: `${logSafe(name) || "(none)"} has no sign-in key.` }, 404)
+    if (!d.mayUse(ctx.auth, name)) return json(ctx, { error: `${name} belongs to ${had.owner}. Only they can revoke its key.` }, 403)
+    d.appKeys.drop(name)
+    const approvals = d.consents.dropSite(name)
+    const restartNeeded = d.keysDropped ? await d.keysDropped(name).catch(() => []) : []
+    d.audit("APP_AUTH_KEY_REVOKE", `${name}: kid ${had.kid} and ${approvals} approval(s) removed`, ctx.actor)
+    return json(ctx, { site: name, revoked: true, approvals, restartNeeded, enabled: d.site.ownerOf(name) !== null })
   }
 
   const consentList = (ctx: AuthRouteContext): Response => json(ctx, { consents: d.consents.list(ctx.auth!.user) })
@@ -498,6 +521,15 @@ export const createAuthRoutes = (d: AuthRouteDeps) => {
     })
   }
 
+  // Everything about the account and the daemon that isn't a site: passkeys, sign-in keys, approvals...
+  const settingsPage = async (ctx: AuthRouteContext): Promise<Response> => {
+    const auth = portalLogin(ctx)
+    if (!auth) return notFound(ctx)
+    return htmlPage("portal-settings.html", d.pageTokens.mint(auth.sessionId!), {
+      user: auth.user, superuser: auth.superuser, candyHost: d.candyHost(), pamUntil: pamUntil(auth),
+    })
+  }
+
   const passkeyList = (url: URL, ctx: AuthRouteContext): Response => {
     const auth = ctx.auth!
     const asked = url.searchParams.get("user")
@@ -568,6 +600,8 @@ export const createAuthRoutes = (d: AuthRouteDeps) => {
       case "POST /app-auth/fresh": return freshStart(req, ctx)
       case "GET /app-auth/sites": return ctx.auth ? sites(ctx) : null
       case "POST /app-auth/rotate": return ctx.auth ? rotate(req, ctx) : null
+      case "POST /app-auth/drop": return ctx.auth ? drop(req, ctx) : null
+      case "GET /settings": return settingsPage(ctx)
       case "GET /app-auth/consents": return ctx.auth ? consentList(ctx) : null
       case "POST /app-auth/consents/revoke": return ctx.auth ? revoke(req, ctx) : null
       case "POST /sdk/auth/keys": return keyFetch(req, ctx)

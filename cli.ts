@@ -1753,7 +1753,7 @@ function printHelp() {
   console.log(`  ${c.cyan}candy auth${c.reset} [set|clear|status] Manage bound domain authentication`)
   console.log(`      ${c.dim}set <domain> --jwt [secret]  JWT secret for API-mode sites (generated if omitted)${c.reset}`)
   console.log(`      ${c.dim}token <domain> [--ttl s] [--once]  mint a JWT to test with${c.reset}`)
-  console.log(`  ${c.cyan}candy app-auth${c.reset} [list|rotate <name>|consents|revoke <site>]  Sign in with candy: site keys, your approvals`)
+  console.log(`  ${c.cyan}candy app-auth${c.reset} [list|rotate <name>|drop <name>|consents|revoke <site>]  Sign in with candy: site keys, your approvals`)
   console.log(`  ${c.cyan}candy passkeys${c.reset}                 Your portal passkeys (add and remove them in the portal)`)
   console.log(`  ${c.cyan}candy domain allow${c.reset} <sub> [ip|cidr...] [--rm ip...] [--on|--off]  Allowlist mode (Tailscale always allowed)`)
   console.log(`  ${c.cyan}candy domain mcp${c.reset} [on|off|status|revoke]  Public MCP endpoint, approved over Tailscale (off by default)`)
@@ -2029,7 +2029,7 @@ switch (command) {
       const res = await apiGet('/app-auth/sites'); fail(res)
       if (!res.sites?.length) console.log(`${c.dim}No site has a sign-in key yet (one is made when a site starts, or the SDK asks)${c.reset}`)
       for (const s of res.sites ?? []) {
-        console.log(`  ${c.green}${s.site}${c.reset} ${c.dim}owner ${s.owner}, key ${s.kid}, made ${when(s.created)}${s.rotatedAt ? `, rotated ${when(s.rotatedAt)}` : ''}${c.reset}`)
+        console.log(`  ${c.green}${s.site}${c.reset} ${c.dim}owner ${s.owner}, key ${s.kid}, made ${when(s.created)}${s.rotatedAt ? `, rotated ${when(s.rotatedAt)}` : ''}${c.reset}${s.enabled === false ? ` ${c.yellow}not asked for (no "auth": true): candy app-auth drop ${s.site}${c.reset}` : ''}`)
       }
     } else if (sub === 'rotate') {
       if (!target) { console.error(`${c.red}Usage: candy app-auth rotate <name>${c.reset}`); process.exit(1) }
@@ -2039,6 +2039,14 @@ switch (command) {
         const names = res.restartNeeded.join(', ')
         console.log(`${c.yellow}${names} still run with the old key: candy restart ${res.restartNeeded.join(' ')}${c.reset} ${c.dim}(an app using the SDK's appAuth() picks up the new ring within 5 minutes on its own; anything else keeps the old key until it restarts)${c.reset}`)
       }
+    } else if (sub === 'drop') {
+      if (!target) { console.error(`${c.red}Usage: candy app-auth drop <name>${c.reset}`); process.exit(1) }
+      const res = await apiPost('/app-auth/drop', { name: target }); fail(res)
+      console.log(`${c.red}- ${res.site}'s sign-in key is revoked${c.reset} ${c.dim}${res.approvals} approval(s) removed with it${c.reset}`)
+      console.log(res.enabled
+        ? `${c.dim}Its candy.json still says "auth": true, so it gets a new key the next time it starts or someone signs in.${c.reset}`
+        : `${c.dim}It doesn't ask for sign-in, so it stays without a key.${c.reset}`)
+      if (res.restartNeeded?.length) console.log(`${c.yellow}${res.restartNeeded.join(', ')} still hold the old key in memory: candy restart ${res.restartNeeded.join(' ')}${c.reset}`)
     } else if (sub === 'consents') {
       const res = await apiGet('/app-auth/consents'); fail(res)
       if (!res.consents?.length) console.log(`${c.dim}You haven't approved any site${c.reset}`)
@@ -2048,7 +2056,7 @@ switch (command) {
       const res = await apiPost('/app-auth/consents/revoke', { site: target }); fail(res)
       console.log(res.revoked ? `${c.red}- ${target} will ask again next time${c.reset}` : `${c.dim}You hadn't approved ${target}${c.reset}`)
     } else {
-      console.error(`${c.red}Usage: candy app-auth [list|rotate <name>|consents|revoke <site>]${c.reset}`)
+      console.error(`${c.red}Usage: candy app-auth [list|rotate <name>|drop <name>|consents|revoke <site>]${c.reset}`)
       process.exit(1)
     }
     break

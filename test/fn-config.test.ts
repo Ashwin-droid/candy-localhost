@@ -39,17 +39,17 @@ describe("jsonc", () => {
 })
 
 describe("loadFnProjectConfig", () => {
-  it("reads the sample function's candy.fn.json", async () => {
+  it("reads the sample function's candy.json", async () => {
     const cfg = await loadFnProjectConfig(FIXTURE)
     expect(cfg.main).toBe("index.ts")
     expect(cfg.vars).toEqual({ GREETING: "hello from candy" })
     expect(cfg.kv).toEqual([])
-    expect(cfg.source).toBe(join(FIXTURE, "candy.fn.json"))
+    expect(cfg.source).toBe(join(FIXTURE, "candy.json"))
     expect(cfg.warnings).toEqual([])
     expect(cfg.assets).toBeNull()
   })
 
-  it("reads the wrangler.jsonc subset and warns about the rest", async () => {
+  it("reads the wrangler key subset and warns about the rest", async () => {
     const cfg = await loadFnProjectConfig(join(FIXTURE, "bindings"))
     expect(cfg.main).toBe("src/index.ts")
     expect(cfg.vars).toEqual({ GREETING: "hi", LIMITS: '{"max":3}' })
@@ -62,57 +62,20 @@ describe("loadFnProjectConfig", () => {
     expect(cfg.warnings.some(w => w.includes('"name"') || w.includes("compatibility_date"))).toBe(false)
   })
 
-  it("takes the first match and says which files it ignored", async () => {
-    const dir = project({
-      "candy.fn.json": `{ "main": "a.ts" }`,
-      "wrangler.toml": `main = "b.ts"`,
-      "a.ts": "",
-      "b.ts": "",
-    })
+  it("reads candy.json only, and says so when an older config file is lying around", async () => {
+    const dir = project({ "candy.json": `{ "main": "a.ts" }`, "wrangler.toml": `main = "b.ts"`, "candy.fn.json": `{ "main": "b.ts" }`, "a.ts": "", "b.ts": "" })
     const cfg = await loadFnProjectConfig(dir)
     expect(cfg.main).toBe("a.ts")
-    expect(cfg.warnings).toContain("candy.fn.json takes precedence; ignoring wrangler.toml")
+    expect(cfg.warnings).toContain("candy.fn.json, wrangler.toml are not read: put the config in candy.json")
+    // Without a candy.json the old files are not a config at all
+    const none = await loadFnProjectConfig(project({ "wrangler.toml": `main = "b.ts"`, "b.ts": "", "index.ts": "" }))
+    expect(none.main).toBe("index.ts")
+    expect(none.source).toBeNull()
   })
 
-  it("reads wrangler.json and wrangler.toml", async () => {
-    const json = await loadFnProjectConfig(project({ "wrangler.json": `{ "main": "w.ts", "kv_namespaces": [{ "binding": "CACHE" }] }`, "w.ts": "" }))
-    expect(json.main).toBe("w.ts")
-    expect(json.kv).toEqual(["CACHE"])
-
-    const toml = await loadFnProjectConfig(project({
-      "wrangler.toml": `
-main = "src/worker.ts"
-name = "demo"
-[vars]
-GREETING = "hey"
-PORT = 8080
-[[kv_namespaces]]
-binding = "KV"
-id = "abc"
-[[d1_databases]]
-binding = "DB"
-[triggers]
-crons = ["0 * * * *"]
-[env.staging]
-vars = { A = "1" }
-`,
-      "src/worker.ts": "",
-    }))
-    expect(toml.main).toBe("src/worker.ts")
-    expect(toml.vars).toEqual({ GREETING: "hey", PORT: "8080" })
-    expect(toml.kv).toEqual(["KV"])
-    expect(toml.d1).toEqual(["DB"])
-    expect(toml.crons).toEqual(["0 * * * *"])
-    expect(toml.warnings.some(w => w.includes('"env"'))).toBe(true)
-  })
-
-  it("accepts short forms in candy.fn.json only", async () => {
-    const cfg = await loadFnProjectConfig(project({ "candy.fn.json": `{ "main": "i.ts", "kv": ["KV"], "d1": [{ "binding": "DB" }], "crons": ["@daily"] }`, "i.ts": "" }))
-    expect([cfg.kv, cfg.d1, cfg.crons]).toEqual([["KV"], ["DB"], ["@daily"]])
-
-    const w = await loadFnProjectConfig(project({ "wrangler.json": `{ "main": "i.ts", "kv": ["KV"] }`, "i.ts": "" }))
-    expect(w.kv).toEqual([])
-    expect(w.warnings.some(x => x.includes('"kv"'))).toBe(true)
+  it("accepts the wrangler key shapes and the short forms", async () => {
+    const cfg = await loadFnProjectConfig(project({ "candy.json": `{ "main": "i.ts", "kv": ["KV"], "d1": [{ "binding": "DB" }], "crons": ["@daily"], "kv_namespaces": [{ "binding": "CACHE" }] }`, "i.ts": "" }))
+    expect([cfg.kv, cfg.d1, cfg.crons]).toEqual([["CACHE", "KV"], ["DB"], ["@daily"]])
   })
 
   it("finds a default entry when there is no config", async () => {
@@ -125,7 +88,7 @@ vars = { A = "1" }
   })
 
   it("warns when main does not exist yet", async () => {
-    const cfg = await loadFnProjectConfig(project({ "candy.fn.json": `{ "main": "./src/../later.ts" }` }))
+    const cfg = await loadFnProjectConfig(project({ "candy.json": `{ "main": "./src/../later.ts" }` }))
     expect(cfg.main).toBe("later.ts")
     expect(cfg.warnings).toContain('main "later.ts" does not exist yet')
   })
@@ -146,18 +109,17 @@ vars = { A = "1" }
       [`{ "crons": [5] }`, "must be a string"],
       [`{ "vars": { "bad name": "x" } }`, "invalid name"],
       [`[1, 2]`, "top level must be an object"],
-      [`{ "main": `, "candy.fn.json:"],
+      [`{ "main": `, "candy.json:"],
     ]
     for (const [text, msg] of bad) {
-      const dir = project({ "candy.fn.json": text })
+      const dir = project({ "candy.json": text })
       await expect(loadFnProjectConfig(dir)).rejects.toThrow(msg)
     }
-    await expect(loadFnProjectConfig(project({ "wrangler.toml": `main = ` }))).rejects.toThrow("wrangler.toml:")
   })
 
   it("rejects a main that symlinks out of the folder", async () => {
     const outside = project({ "secret.ts": "" })
-    const dir = project({ "candy.fn.json": `{ "main": "link.ts" }` })
+    const dir = project({ "candy.json": `{ "main": "link.ts" }` })
     symlinkSync(join(outside, "secret.ts"), join(dir, "link.ts"))
     await expect(loadFnProjectConfig(dir)).rejects.toThrow("symlink")
     expect(() => resolveMainInside(dir, "a\0b")).toThrow("NUL")
@@ -168,7 +130,7 @@ const SPA = join(import.meta.dir, "fixtures", "fn-spa")
 const STATIC = join(import.meta.dir, "fixtures", "fn-static")
 
 describe("assets", () => {
-  it("reads the SPA fixture's wrangler assets block", async () => {
+  it("reads the SPA fixture's assets block", async () => {
     const cfg = await loadFnProjectConfig(SPA)
     expect(cfg.main).toBe("src/index.ts")
     expect(cfg.assets).toEqual({
@@ -185,20 +147,20 @@ describe("assets", () => {
     expect(cfg.warnings).toEqual([])
 
     // A stray index.js next to an assets-only config stays a file, not a worker
-    const dir = project({ "candy.fn.json": `{ "assets": { "directory": "site" } }`, "site/index.html": "", "index.js": "" })
+    const dir = project({ "candy.json": `{ "assets": { "directory": "site" } }`, "site/index.html": "", "index.js": "" })
     expect((await loadFnProjectConfig(dir)).main).toBeNull()
   })
 
   it("keeps the error for a project with neither main nor assets", async () => {
-    const cfg = await loadFnProjectConfig(project({ "candy.fn.json": `{ "vars": { "A": "1" } }` }))
+    const cfg = await loadFnProjectConfig(project({ "candy.json": `{ "vars": { "A": "1" } }` }))
     expect(cfg.main).toBe("")
     expect(cfg.assets).toBeNull()
     expect(cfg.warnings[0]).toContain("no main set")
   })
 
-  it("reads assets from wrangler.toml and passes fn-assets warnings through", async () => {
+  it("passes fn-assets warnings through", async () => {
     const cfg = await loadFnProjectConfig(project({
-      "wrangler.toml": `main = "w.ts"\n[assets]\ndirectory = "./out"\nhtml_handling = "none"\ncolor = "red"\n`,
+      "candy.json": `{ "main": "w.ts", "assets": { "directory": "./out", "html_handling": "none", "color": "red" } }`,
       "w.ts": "",
     }))
     expect(cfg.assets).toMatchObject({ directory: expect.stringMatching(/\/out$/), html: "none" })
@@ -226,24 +188,24 @@ describe("assets", () => {
       [`{ "assets": { "directory": "p" }, "crons": ["@daily"] }`, "crons need a main"],
     ]
     for (const [text, msg] of bad) {
-      const dir = project({ "candy.fn.json": text, "i.ts": "", "p/index.html": "" })
+      const dir = project({ "candy.json": text, "i.ts": "", "p/index.html": "" })
       await expect(loadFnProjectConfig(dir)).rejects.toThrow(msg)
     }
   })
 
   it("allows exclusion-only run_worker_first and warns about a binding without a main", async () => {
-    const cfg = await loadFnProjectConfig(project({ "candy.fn.json": `{ "assets": { "directory": "p", "binding": "ASSETS", "run_worker_first": ["!/x/*"] } }`, "p/a.txt": "" }))
+    const cfg = await loadFnProjectConfig(project({ "candy.json": `{ "assets": { "directory": "p", "binding": "ASSETS", "run_worker_first": ["!/x/*"] } }`, "p/a.txt": "" }))
     expect(cfg.main).toBeNull()
     expect(cfg.warnings.some(w => w.includes("no effect without a main"))).toBe(true)
   })
 
   it("rejects an assets directory that symlinks out of the folder", async () => {
     const outside = project({ "site/index.html": "" })
-    const dir = project({ "candy.fn.json": `{ "assets": { "directory": "pub" } }` })
+    const dir = project({ "candy.json": `{ "assets": { "directory": "pub" } }` })
     symlinkSync(join(outside, "site"), join(dir, "pub"))
     await expect(loadFnProjectConfig(dir)).rejects.toThrow("symlink")
     // A symlink that stays inside is fine
-    const ok = project({ "candy.fn.json": `{ "assets": { "directory": "pub" } }`, "real/index.html": "" })
+    const ok = project({ "candy.json": `{ "assets": { "directory": "pub" } }`, "real/index.html": "" })
     symlinkSync(join(realpathSync(ok), "real"), join(ok, "pub"))
     expect((await loadFnProjectConfig(ok)).assets?.directory).toBe(join(ok, "pub"))
   })

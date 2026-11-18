@@ -9,10 +9,11 @@ import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "no
 import { mkdirSync } from "node:fs"
 import type { DeployInfo } from "./fn-deploy.ts"
 import type { FnProjectConfig } from "./fn-config.ts"
+import { checkSiteManifest } from "./manifest.ts"
 import { validateRunWorkerFirst, type AssetsConfig, type AssetsRouting } from "./fn-assets.ts"
 
-export type FnToolOp = "config" | "deploy" | "deploys" | "resolve" | "prune" | "kv" | "d1"
-export const FN_TOOL_OPS: readonly FnToolOp[] = ["config", "deploy", "deploys", "resolve", "prune", "kv", "d1"]
+export type FnToolOp = "config" | "manifest" | "deploy" | "deploys" | "resolve" | "prune" | "kv" | "d1"
+export const FN_TOOL_OPS: readonly FnToolOp[] = ["config", "manifest", "deploy", "deploys", "resolve", "prune", "kv", "d1"]
 
 // Results of a few ops are capped so a runaway list or query can't flood the daemon
 const KV_LIST_LIMIT = 1000
@@ -144,6 +145,7 @@ export const checkToolResult = (op: FnToolOp, v: unknown, args?: Record<string, 
   const stateDir = typeof args?.stateDir === "string" ? args.stateDir : undefined
   switch (op) {
     case "config": return checkProjectConfig(v, typeof args?.dir === "string" ? args.dir : undefined)
+    case "manifest": return checkSiteManifest(v)
     case "deploy": {
       const d = checkDeployInfo(v, stateDir)
       if (!d) throw new Error("fn-tool deploy: bad deploy info")
@@ -172,6 +174,11 @@ export const runFnTool = async (op: string, a: Record<string, any>): Promise<unk
       const cfg = await loadFnProjectConfig(dir)
       if (typeof a.entry === "string" && a.entry) cfg.main = resolveMainInside(dir, a.entry)
       return cfg
+    }
+    case "manifest": {
+      // The site's candy.json (auth, depends), for servers and functions alike
+      const { loadSiteManifest } = await import("./manifest.ts")
+      return loadSiteManifest(str(a.dir, "dir"))
     }
     case "deploy": {
       const { bundleDeploy } = await import("./fn-deploy.ts")

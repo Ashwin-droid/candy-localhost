@@ -188,6 +188,34 @@ candy ttl vault off   # back to the default hour
 
 Activity is counted the same way, so an open connection still keeps it up. The check runs every 30 seconds.
 
+### candy.json
+
+A site runs without any config file of its own: register it and candy starts it, routes to it and stops it when idle. A `candy.json` in the folder it runs from (its `cwd`) is where it asks for more. Servers and functions share these keys:
+
+```jsonc
+{
+  "auth": true,              // Sign in with candy: this site gets a key and may ask for tokens
+  "depends": ["db", "queue"], // start these first, and keep them up for as long as this site runs
+  "publish": true             // other users' sites may depend on this one
+}
+```
+
+Without the file a site gets none of it. `appAuth()` has no key and the portal refuses to sign anyone in to it. Nothing keeps another site up for it either: you can still poke the other site awake by hand, but it stops on its own idle limit like any other.
+
+For a function the same file also holds its own keys (`main`, `vars`, `kv`, `d1`, `crons`, `assets`; see [Bindings](#bindings)). Comments and trailing commas are fine.
+
+The file is read when the site starts, as the user the site runs as. A file that doesn't parse, or has a value candy can't use, stops the start with the reason, so a typo never quietly turns a feature off. Changes to `depends` apply at the next start; `auth` going off stops new sign-ins within seconds.
+
+**`depends`** takes the names of other sites candy starts (servers or functions; not plain port routes), at most 16:
+
+- Before this site starts, each one is started and waited for (a server until its port is found, a function until an instance is up). If one can't start, neither does this site, and the error says which.
+- While this site is up, the idle check leaves them alone: no idle limit, `candy ttl` or memory pressure stops them. A function is kept at one instance. When this site stops, they go back to their own rules, with their idle clock starting fresh.
+- A function counts as up while it has an instance, so it holds its dependencies between requests only as long as its instances linger (or it has hot ones).
+- A site may depend on its own user's sites, and on another user's site only when that site says `"publish": true` in its own `candy.json` (a shared database, say). Administrators' sites may depend on anything.
+- Chains are fine and start from the far end: if `a` depends on `b` and `b` on `c`, starting `a` starts `c`, then `b`, then `a`. A circle (`a` depends on `b` depends on `a`) is refused.
+- Stopping a site yourself (`candy stop`, the portal, removing it) first stops every site that depends on it, and theirs. `candy stop` lists them. Idle stops and restarts don't do this. A crash is not restarted on its own.
+- Cron runs start the dependencies first as well, but don't hold them afterwards.
+
 ### Memory limit
 
 Every sandboxed server, function and cron run has a hard memory limit: 2G unless you set another, and never more than 16G. Past its limit the server is killed (it shows as crashed; an API-mode server starts again on the next request). At 90% of the limit the kernel starts pushing back first (`MemoryHigh`): the server is slowed and made to give memory back, so a runtime that watches memory pressure can collect garbage and drop caches before it gets that far.
@@ -344,7 +372,7 @@ Set hot, max, linger and the request log from the function's **Function** panel 
 
 ### Bindings
 
-Project config is read from the function's folder, first match wins: `candy.fn.json`, then `wrangler.jsonc` / `wrangler.json` / `wrangler.toml`. Only this subset is used; anything else is ignored with a warning:
+Project config is read from the function's folder, from [`candy.json`](#candyjson), the only file read (`candy.fn.json` and `wrangler.*` are not; a warning says so if one is lying around). The keys are wrangler's, plus the short forms `kv`, `d1` and `crons`, so a wrangler config pastes in. Only this subset is used; anything else is ignored with a warning:
 
 ```jsonc
 {
@@ -369,7 +397,7 @@ KV and D1 live in the function's state folder (`/var/lib/candy/<name>` in root m
 
 ### Static assets
 
-Same config and behavior as [Cloudflare Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/). Put an `assets` block in `candy.fn.json` or `wrangler.*`:
+Same config and behavior as [Cloudflare Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/). Put an `assets` block in `candy.json`:
 
 ```jsonc
 {
@@ -420,7 +448,7 @@ With a `main`, methods other than GET and HEAD always go to the code. With no `m
 **Assets-only sites.** Leave out `main` and the folder is a static site: no process ever starts, and `hot`, `max` and `linger` don't apply. `candy fn add site ./site` works the same; the portal marks it **assets-only**.
 
 ```bash
-echo '{ "assets": { "directory": "./dist", "not_found_handling": "404-page" } }' > candy.fn.json
+echo '{ "assets": { "directory": "./dist", "not_found_handling": "404-page" } }' > candy.json
 candy fn add docs
 ```
 
@@ -938,6 +966,8 @@ An app on a bound domain (`app.example.com`) still sends the browser to `https:/
 
 **Update the SDK with candy.** Tokens now carry a `superuser` claim and the state cookie is signed, so an older copy of `sdk-auth.ts` / `jwe.ts` refuses every new sign-in ("invalid contents"). Apps that import `candy-localhost` from this checkout pick it up on restart; an app that vendors or bundles its own copy must update it. Functions use the copies in `/usr/lib/candy`, which the daemon (root mode) brings up to date at start (`FN_SHIM_SYNC` in the audit log) and `install-service.sh` installs.
 
+The site has to ask for it: put `"auth": true` in its [`candy.json`](#candyjson). Without that it has no key and the portal won't sign anyone in to it.
+
 A plain Bun server started by candy:
 
 ```ts
@@ -980,7 +1010,7 @@ export default {
 ```
 
 - The token comes back as a form POST (never in a URL), lives 60 seconds, works once (the SDK keeps its `jti`), and is bound to the browser by a `__Host-candy_auth` state cookie. A token minted for one site can't be opened by another: each site has its own key, and the SDK checks the audience and the exact callback URL.
-- `return_to` must be exactly `https://<host>/_candy/auth/callback` (no port, query or fragment) on a host candy routes to that same site: `<name>.localhost`, `<name>.candy` or one of its bound domains. The site must be one candy launches itself (a server or a function); a plain port route (`registerPort`, `candy route`) to a process started by hand can't use sign-in and has no key. Anything else gets an error page, never a redirect. The SDK only accepts a token at the URL it was minted for (the callback it arrived at), never one picked by a cookie.
+- `return_to` must be exactly `https://<host>/_candy/auth/callback` (no port, query or fragment) on a host candy routes to that same site: `<name>.localhost`, `<name>.candy` or one of its bound domains. The site must be one candy launches itself (a server or a function) with `"auth": true` in its `candy.json`; a plain port route (`registerPort`, `candy route`) to a process started by hand can't use sign-in and has no key. Anything else gets an error page, never a redirect. The SDK only accepts a token at the URL it was minted for (the callback it arrived at), never one picked by a cookie.
 - The first time, the portal asks "<site> wants to know who you are" and says who runs the site; "Remember for this site" skips the question for 30 days (per user and site; `candy app-auth revoke <site>` undoes it). Remembered or not, the token is only minted by a POST from the portal page.
 - Keys: one random 256-bit key per site, made when the site first starts (or the SDK first asks), kept by the daemon in a root-only file. Sandboxed servers and functions get it as a systemd credential (`$CREDENTIALS_DIRECTORY/candy-auth-keys`), other launches as `CANDY_AUTH_KEYS`; never on a command line. Anything else (a server you run yourself) fetches it with your API key: `appAuth({ site: "notes" })`. Only the site's owner gets it. `candy app-auth rotate <name>` makes a new key. The ring the SDK gets marks the old key as retired, so it only opens tokens made before the rotation (a token lives a minute at most): a leaked old key can't mint sign-ins afterwards, in any copy of the ring. An app using `appAuth()` refetches the ring every 5 minutes and when it meets a new key; a server holding only the old ring (started before the rotation, no API key to refetch) keeps accepting the old key until it restarts, so `candy restart` the names the command lists. Functions are restarted for you.
 - Passkeys need a bound domain (`candy domain config`): browsers refuse passkeys on a page with a certificate error, and `portal.candy` / `portal.localhost` use Caddy's local CA. So every passkey check runs on `candy.<your domain>` (a real certificate, through the Cloudflare tunnel), and the browser comes back to the portal afterwards. Nothing else is ever served there (the public MCP endpoint too, if you put it on that subdomain), and the name can't be bound. After a password login, open **Passkeys** in the portal (`/passkeys`): "Add a passkey" opens a small `candy.<your domain>` window that makes it and closes. The login page's "Use a passkey" goes there and back; when you're signing in to an app it goes straight there. One passkey works from every portal address. Without a bound domain the portal has password login only and says why. If the domain changes, passkeys made for the old one are removed (audited). Adding or removing one asks for the password again if it wasn't entered in the last 10 minutes, so a passkey login can't add more passkeys. A sudoer who logged in with a passkey is a superuser straight away, as after a password login. Passkey login is rate limited like password login and runs PAM's account checks (an expired password, `pam_access`, `pam_nologin` stop it); an account that can't log in any more can't use its passkeys either. A passkey belongs to the account (name and uid): it's removed when the account is deleted or leaves the `candy` group, and a new account that reuses the name never inherits it.

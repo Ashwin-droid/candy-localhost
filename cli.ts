@@ -497,6 +497,9 @@ async function cmdStop(args: string[]) {
   }
   
   console.log(`${c.green}Stopped ${name}${c.reset}`)
+  if (Array.isArray(result.alsoStopped) && result.alsoStopped.length) {
+    console.log(`${c.dim}Also stopped, because ${result.alsoStopped.length > 1 ? 'they depend' : 'it depends'} on ${name}: ${result.alsoStopped.join(', ')}${c.reset}`)
+  }
 }
 
 async function cmdStatus(args: string[]) {
@@ -1012,10 +1015,10 @@ function printFnHelp() {
   console.log()
   console.log(`  ${c.dim}kv: get <key> | put <key> <value> | list [prefix] [--limit n] | delete <key>${c.reset}`)
   console.log(`  ${c.dim}[name] defaults to the function registered for this folder, then the name in${c.reset}`)
-  console.log(`  ${c.dim}candy.fn.json / wrangler.*, then the folder name.${c.reset}`)
+  console.log(`  ${c.dim}candy.json, then the folder name.${c.reset}`)
   console.log(`  ${c.dim}stop and logs work on functions like any other site.${c.reset}`)
   console.log()
-  console.log(`  ${c.dim}Static assets: set "assets" in candy.fn.json / wrangler.* and the daemon serves the${c.reset}`)
+  console.log(`  ${c.dim}Static assets: set "assets" in candy.json and the daemon serves the${c.reset}`)
   console.log(`  ${c.dim}files itself, no process. "main" is optional (assets-only site). For a SPA with an API:${c.reset}`)
   console.log(`  ${c.dim}  "assets": { "directory": "./dist", "not_found_handling": "single-page-application",${c.reset}`)
   console.log(`  ${c.dim}              "run_worker_first": ["/api/*"] }${c.reset}`)
@@ -1106,7 +1109,7 @@ function stripJsonc(text: string): string {
 // The `name` field from the folder's project config, first file wins (same order
 // as fn-config.ts). Read here directly so the CLI doesn't need the daemon for it.
 async function fnProjectName(dir: string): Promise<string | null> {
-  for (const file of ['candy.fn.json', 'wrangler.jsonc', 'wrangler.json', 'wrangler.toml']) {
+  for (const file of ['candy.json']) {
     const f = Bun.file(`${dir}/${file}`)
     if (!(await f.exists())) continue
     try {

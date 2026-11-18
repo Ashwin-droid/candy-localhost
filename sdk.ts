@@ -196,7 +196,7 @@ export async function registerServer(options: RegisterServerOptions): Promise<Re
 export interface RegisterFunctionOptions {
   /** Absolute path of the function's folder */
   cwd: string
-  /** Module path relative to cwd. Defaults to main from candy.fn.json / wrangler config. */
+  /** Module path relative to cwd. Defaults to main from candy.json. */
   entry?: string
   /** Defaults to the folder's name (e.g. /srv/my-api -> my-api) */
   namespace?: string
@@ -421,7 +421,7 @@ export function appAuth(opts?: AppAuthOptions): AppAuth {
     auth = createAppAuth({ fetchKeys: fetchSiteKeys, ...opts })
   } catch (e) {
     if ((e as Error).message === "candy auth: no site name") {
-      throw new Error("candy auth: no site name. Servers and functions candy starts get CANDY_AUTH_SITE; elsewhere pass appAuth({ site: '<your site>' }).")
+      throw new Error("candy auth: no site name. Servers and functions candy starts get CANDY_AUTH_SITE when their candy.json sets auth to true; elsewhere pass appAuth({ site: '<your site>' }).")
     }
     throw e
   }

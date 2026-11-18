@@ -1059,7 +1059,7 @@ describe("R6. a site page's token and log excerpt", () => {
   })
 
   it("the excerpt starts at this run's offset", () => {
-    const spawnFn = block(daemon, "const spawnProcess = async")
+    const spawnFn = block(daemon, "const spawnProcessNow = async")
     expect(spawnFn.indexOf("logStart = statSync(logFile).size")).toBeLessThan(spawnFn.indexOf("--- PROCESS RESTART"))
     expect(spawnFn).toContain("    logStart,\n")
     const stream = block(daemon, 'if (req.method === "GET" && url.pathname.startsWith("/stream/"))')

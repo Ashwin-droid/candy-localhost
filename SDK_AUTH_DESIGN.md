@@ -500,7 +500,7 @@ export interface AuthorizeRequest {
 }
 export interface FormPost { action: string; fields: Record<string, string> }
 export interface SiteLookup {
-  siteOfHost(host: string): string | null     // canonical site name candy routes this https host to; null for portal, shortcut, tunnel or unknown hosts, and for a plain port route (only sites with a config, i.e. launched by candy, can sign in: `isAuthSite`)
+  siteOfHost(host: string): string | null     // canonical site name candy routes this https host to; null for portal, shortcut, tunnel or unknown hosts, and for a plain port route (only sites with a config, i.e. launched by candy, whose `candy.json` says `"auth": true` can sign in: `isAuthSite`)
   ownerOf(site: string): string | null        // null when the name isn't in use
 }
 export type HostKind = "local" | "tailnet" | "domain"   // .localhost | .candy | bound domain

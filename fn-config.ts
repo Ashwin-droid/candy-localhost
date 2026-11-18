@@ -1,4 +1,5 @@
-// Project config for candy functions: candy.fn.json or the wrangler subset we support.
+// Project config for candy functions: the function keys of candy.json (the site manifest, manifest.ts).
+// Keys are the wrangler subset we support, plus short forms.
 // Pure apart from reading files in the function's folder.
 import { existsSync, realpathSync } from "node:fs"
 import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path"
@@ -17,8 +18,8 @@ export interface FnProjectConfig {
   source: string | null
 }
 
-// First match wins.
-export const CONFIG_FILES = ["candy.fn.json", "wrangler.jsonc", "wrangler.json", "wrangler.toml"] as const
+// The one file read. A list because the daemon stamps every file in it.
+export const CONFIG_FILES = ["candy.json"] as const
 
 // Tried in order when the config has no `main` (or there is no config at all).
 export const DEFAULT_ENTRIES = [
@@ -31,8 +32,10 @@ export const BINDING_NAME = /^[A-Z_][A-Z0-9_]{0,63}$/i
 // Wrangler keys that only matter to Cloudflare's deploy tooling; skipping them is not worth a warning.
 const QUIET_KEYS = new Set(["$schema", "name", "compatibility_date", "compatibility_flags", "account_id", "workers_dev", "preview_urls"])
 const WRANGLER_KEYS = new Set(["main", "vars", "kv_namespaces", "d1_databases", "triggers", "assets"])
-// candy.fn.json also takes short forms.
+// Short forms too.
 const CANDY_KEYS = new Set([...WRANGLER_KEYS, "kv", "d1", "crons"])
+// The manifest's shared keys (MANIFEST_KEYS in manifest.ts): read there, not a function's business
+const SHARED_KEYS = new Set(["auth", "depends", "publish"])
 
 const MAX_VAR_BYTES = 64 * 1024
 
@@ -178,17 +181,17 @@ const findDefaultEntry = (dir: string): string | null => DEFAULT_ENTRIES.find(p 
 export const normalizeFnConfig = (raw: unknown, dir: string, file: string | null): Omit<FnProjectConfig, "source"> => {
   if (raw !== undefined && !isObject(raw)) throw new Error(`${file}: top level must be an object`)
   const obj = (raw ?? {}) as Record<string, unknown>
-  const isCandy = file === "candy.fn.json" || file === null
-  const known = isCandy ? CANDY_KEYS : WRANGLER_KEYS
+  const known = CANDY_KEYS
   const warnings: string[] = []
   for (const key of Object.keys(obj)) {
     if (known.has(key) || QUIET_KEYS.has(key)) continue
+    if (SHARED_KEYS.has(key)) continue
     warnings.push(`${file}: "${key}" is not supported by candy and is ignored`)
   }
 
   const vars = varsOf(obj.vars, warnings)
-  const kv = [...bindingNames(obj.kv_namespaces, "kv_namespaces"), ...(isCandy ? bindingNames(obj.kv, "kv") : [])]
-  const d1 = [...bindingNames(obj.d1_databases, "d1_databases"), ...(isCandy ? bindingNames(obj.d1, "d1") : [])]
+  const kv = [...bindingNames(obj.kv_namespaces, "kv_namespaces"), ...bindingNames(obj.kv, "kv")]
+  const d1 = [...bindingNames(obj.d1_databases, "d1_databases"), ...bindingNames(obj.d1, "d1")]
 
   let crons: string[] = []
   if (obj.triggers !== undefined) {
@@ -196,7 +199,7 @@ export const normalizeFnConfig = (raw: unknown, dir: string, file: string | null
     for (const k of Object.keys(obj.triggers)) if (k !== "crons") warnings.push(`${file}: "triggers.${k}" is not supported and is ignored`)
     crons = cronList(obj.triggers.crons, "triggers.crons")
   }
-  if (isCandy && obj.crons !== undefined) crons = [...crons, ...cronList(obj.crons, "crons")]
+  if (obj.crons !== undefined) crons = [...crons, ...cronList(obj.crons, "crons")]
   crons = [...new Set(crons)]
   if (crons.length > MAX_CRON_JOBS) throw new Error(`at most ${MAX_CRON_JOBS} crons`)
 
@@ -247,6 +250,8 @@ export const normalizeFnConfig = (raw: unknown, dir: string, file: string | null
   return { main, assets, vars, kv, d1, crons, warnings }
 }
 
+const OLD_CONFIG_FILES = ["candy.fn.json", "wrangler.jsonc", "wrangler.json", "wrangler.toml"]
+
 export const loadFnProjectConfig = async (dir: string): Promise<FnProjectConfig> => {
   const root = resolve(dir)
   for (const name of CONFIG_FILES) {
@@ -256,7 +261,7 @@ export const loadFnProjectConfig = async (dir: string): Promise<FnProjectConfig>
     const text = await file.text()
     let raw: unknown
     try {
-      raw = name.endsWith(".toml") ? Bun.TOML.parse(text) : parseJsonc(text)
+      raw = parseJsonc(text)
     } catch (e) {
       throw new Error(`${name}: ${(e as Error).message}`)
     }
@@ -267,9 +272,9 @@ export const loadFnProjectConfig = async (dir: string): Promise<FnProjectConfig>
       const msg = (e as Error).message
       throw new Error(msg.startsWith(name) ? msg : `${name}: ${msg}`)
     }
-    // Later candidates are not read; say so if they exist, since edits there would do nothing.
-    const shadowed = CONFIG_FILES.slice(CONFIG_FILES.indexOf(name) + 1).filter(n => existsSync(join(root, n)))
-    if (shadowed.length) cfg.warnings.push(`${name} takes precedence; ignoring ${shadowed.join(", ")}`)
+    // The names candy used to read: say so, since edits there do nothing.
+    const old = OLD_CONFIG_FILES.filter(n => existsSync(join(root, n)))
+    if (old.length) cfg.warnings.push(`${old.join(", ")} ${old.length > 1 ? "are" : "is"} not read: put the config in candy.json`)
     return { ...cfg, source: path }
   }
   return { ...normalizeFnConfig(undefined, root, null), source: null }

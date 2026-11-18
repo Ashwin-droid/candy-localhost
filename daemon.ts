@@ -30,6 +30,7 @@ import {
 import { AssetServer, userCanRead, type AssetsConfig } from "./fn-assets.ts"
 import { isDeployId, type DeployInfo } from "./fn-deploy.ts"
 import { CONFIG_FILES as FN_CONFIG_FILES, type FnProjectConfig } from "./fn-config.ts"
+import { MANIFEST_FILE, emptyManifest, findDependencyLoop, type SiteManifest } from "./manifest.ts"
 import { apiHoldSeconds, createApiModeGate } from "./api-mode.ts"
 import { SystemMonitor, SIGNALS, isUnitName, killProblem, unitActionProblem } from "./sysmon.ts"
 import { PortalSessions, readSessionCookie, sessionCookieHeader, clearSessionCookieHeader } from "./portal-session.ts"
@@ -114,6 +115,7 @@ interface ManagedProcess {
   terminal: any | null  // Bun.Terminal reference for PTY input
   idling: boolean  // the app said it is only waiting for events (SDK setIdling)
   unit: string | null  // transient systemd unit, when launched sandboxed
+  depends: string[]  // candy.json "depends" as read at this start: sites it keeps up while it runs
   logStart?: number  // size of the log file when this run was spawned: a site page's excerpt starts here
 }
 
@@ -1462,6 +1464,8 @@ const killIdleServers = async () => {
   for (const [name, proc] of processes) {
     if (proc.status !== 'running') continue
     const now = Date.now()
+    // A site that depends on this one is up: it stays, whatever its own idle limit says
+    if (isHeld(name)) { proc.lastActivity = now; continue }
     // The server's own idle limit, if it has one (candy ttl)
     const timeoutMs = proc.config.ttl ? proc.config.ttl * 60 * 1000 : IDLE_TIMEOUT
     if (now - proc.lastActivity <= timeoutMs) continue
@@ -1490,6 +1494,8 @@ const killIdleServers = async () => {
 setInterval(() => { sampleActivity().catch(() => {}) }, ACTIVITY_SAMPLE_INTERVAL)
 setInterval(async () => {
   await sampleActivity().catch(() => {})
+  await refreshManifests().catch(() => {})
+  releaseFnHolds()
   await killIdleServers().catch(e => console.error('[auto-kill]', e))
 }, IDLE_CHECK_INTERVAL)
 
@@ -1507,6 +1513,8 @@ const runCronJob = async (name: string, config: ServerConfig, job: CronJob) => {
     auditLog('CRON_SKIP', `${name}:${job.name} (previous run still going)`, 'System')
     return
   }
+  // A scheduled run needs what the site needs. It doesn't keep them up afterwards.
+  await startDependencies(name, config)
   const launch = await launchSpec(config, { job: job.name, args: job.args }, name)
   await mkdir(CRON_LOG_DIR, { recursive: true }).catch(() => {})
   const logFile = `${CRON_LOG_DIR}/${name.replace(/[^\w.-]/g, '_').replace(/^\.+/, '_')}.log`
@@ -1821,7 +1829,22 @@ const nameInUse = (name: string): boolean => routes.has(name) || serverConfigs.h
 // Sign in with candy is only for sites candy launches itself (a server or a
 // function with a config). A plain port route to a process someone started
 // by hand is not a candy-hosted app: no key, no tokens.
-const isAuthSite = (name: string): boolean => serverConfigs.has(name) && !isReserved(name)
+// And only when the site asks for it: "auth": true in its candy.json.
+const isAuthSite = (name: string): boolean => serverConfigs.has(name) && !isReserved(name) && manifestNow(name)?.auth === true
+
+// candy.json of each config, as last read (siteManifest reads it; refreshManifests keeps it current)
+const siteManifests = new Map<string, { m: SiteManifest; stamp: string; cwd: string; error: string | null }>()
+// The config a name's manifest comes from: the one running, else its first
+const manifestConfig = (name: string): ServerConfig | null => {
+  const up = processes.get(name)
+  if (up && (up.status === 'running' || up.status === 'starting')) return up.config
+  return getConfigsForName(name)[0] ?? null
+}
+const manifestNow = (name: string): SiteManifest | null => {
+  const config = manifestConfig(name)
+  const cached = config ? siteManifests.get(config.id) : null
+  return cached && !cached.error ? cached.m : null
+}
 
 const loadRouteUsers = async () => {
   try {
@@ -2637,6 +2660,7 @@ const removeServerConfig = async (name: string, actor: Actor = 'Portal', configI
   const proc = processes.get(name)
   if (proc && (proc.status === 'running' || proc.status === 'starting')) {
     if (!configId || proc.config.id === configId) {
+      await stopDependents(name, actor)
       await stopProcess(name, actor)
     }
   }
@@ -2859,7 +2883,9 @@ const launchSpec = async (config: ServerConfig, cron?: { job: string; args: stri
   // Sign in with candy: the site's name, portal and issuers for servers and
   // function instances (never cron runs). The key ring itself never goes into
   // `extra`: sandboxed units get it as a credential file, others in the spawn env.
-  const appAuth = !cron && name ? appAuthLaunch(name, configUser(config)) : null
+  // Only for a site whose candy.json says "auth": true. A candy.json that can't be read stops the launch.
+  const manifest = name ? await siteManifest(config).catch(e => { throw new Error(`Refusing to start: ${fnErrorText(e)}`) }) : null
+  const appAuth = !cron && name && manifest?.auth ? appAuthLaunch(name, configUser(config)) : null
   if (appAuth) Object.assign(extra, appAuth.env)
   const authKeysEnv: Record<string, string> = appAuth ? { CANDY_AUTH_KEYS: appAuth.keys } : {}
   const script = fn ? fn.script : cron ? cronScript(config.cmd) : config.cmd
@@ -3095,6 +3121,237 @@ const fnTool = async <T>(config: Pick<ServerConfig, "user">, op: FnToolOp, args:
 // Why the state folder can't be handed to `uid`, or null. A folder still
 // owned by another user holds their KV/D1 data and snapshots (a removed
 // function of theirs); it is never given away.
+// ---- candy.json (manifest.ts): what a site asks for beyond being run ----
+
+const manifestStamp = (dir: string): Promise<string> =>
+  stat(`${dir}/${MANIFEST_FILE}`).then(s => `${s.mtimeMs}:${s.size}:${s.ino}`, () => "")
+
+// The config's candy.json, read as the config's user (fn-tool) and cached until
+// the file changes. No file is the empty manifest. A file that can't be used
+// throws, every time, until it is fixed.
+const siteManifest = async (config: ServerConfig, force = false): Promise<SiteManifest> => {
+  const stamp = await manifestStamp(config.cwd)
+  const cached = siteManifests.get(config.id)
+  if (cached && !force && cached.stamp === stamp && cached.cwd === config.cwd) {
+    if (cached.error) throw new Error(cached.error)
+    return cached.m
+  }
+  let m = emptyManifest()
+  let error: string | null = null
+  if (stamp) {
+    try {
+      m = await fnTool<SiteManifest>(config, 'manifest', { dir: config.cwd })
+    } catch (e) {
+      error = fnErrorText(e)
+    }
+  }
+  const before = cached && !cached.error ? cached.m : emptyManifest()
+  siteManifests.set(config.id, { m, stamp, cwd: config.cwd, error })
+  const name = [...serverConfigs].find(([, list]) => list.includes(config))?.[0] ?? config.id
+  if (error) {
+    if (cached?.error !== error) auditLog('MANIFEST_BAD', `${name}: ${error}`, 'System')
+    throw new Error(error)
+  }
+  if (before.auth !== m.auth || before.publish !== m.publish || before.depends.join() !== m.depends.join()) {
+    auditLog('MANIFEST', `${name}: auth ${m.auth ? 'on' : 'off'}, depends ${m.depends.length ? m.depends.join(', ') : 'nothing'}${m.publish ? ', published' : ''}`, 'System')
+  }
+  return m
+}
+
+// Every config's manifest brought up to date (a stat each; fn-tool only for a
+// file that changed). The sign-in routes ask through isAuthSite, which can't wait.
+let manifestsRefreshedAt = 0
+let manifestsRefreshing: Promise<void> | null = null
+const refreshManifests = (): Promise<void> => {
+  if (manifestsRefreshing) return manifestsRefreshing
+  if (Date.now() - manifestsRefreshedAt < 2000) return Promise.resolve()
+  manifestsRefreshing = (async () => {
+    const live = new Set<string>()
+    for (const configs of [...serverConfigs.values()]) {
+      for (const config of configs) {
+        live.add(config.id)
+        await siteManifest(config).catch(() => {})
+      }
+    }
+    for (const id of [...siteManifests.keys()]) if (!live.has(id)) siteManifests.delete(id)
+    manifestsRefreshedAt = Date.now()
+  })().finally(() => { manifestsRefreshing = null })
+  return manifestsRefreshing
+}
+
+// ---- depends: sites a site needs up before it starts, and for as long as it runs ----
+
+const DEPEND_START_TIMEOUT_MS = 90 * 1000
+// A dependency just started for a site that isn't up yet is held this long regardless
+const DEPEND_GRACE_MS = 2 * 60 * 1000
+const holdGrace = new Map<string, number>()
+// Functions kept at one instance or more because something depends on them
+const fnHeld = new Set<string>()
+// What each function's instances were started with (a server's is on its ManagedProcess)
+const fnDepends = new Map<string, string[]>()
+
+// What a site that is up right now depends on. A function is up while it has an instance.
+const liveDepends = (name: string): string[] => {
+  const proc = processes.get(name)
+  if (proc && (proc.status === 'running' || proc.status === 'starting')) return proc.depends
+  if ((fnRuntimes.get(name)?.pool.instances().length ?? 0) > 0) return fnDepends.get(name) ?? []
+  return []
+}
+// The sites that are up and depend on `dep`
+const heldBy = (dep: string): string[] => {
+  const holders: string[] = []
+  for (const name of new Set([...processes.keys(), ...fnRuntimes.keys()])) {
+    if (name !== dep && liveDepends(name).includes(dep)) holders.push(name)
+  }
+  return holders
+}
+const isHeld = (dep: string): boolean => {
+  if (heldBy(dep).length > 0) return true
+  const grace = holdGrace.get(dep)
+  if (grace && grace > Date.now()) return true
+  holdGrace.delete(dep)
+  return false
+}
+
+// A function's limits, with one instance kept up while something depends on it
+const fnLimitsNow = (name: string, fn: FnSettings) => {
+  const limits = fnLimits(fn)
+  return fnHeld.has(name) ? { ...limits, hot: Math.max(limits.hot, 1) } : limits
+}
+// Functions nobody depends on any more go back to their own settings
+const releaseFnHolds = () => {
+  for (const name of [...fnHeld]) {
+    if (isHeld(name)) continue
+    fnHeld.delete(name)
+    const config = fnConfigOf(name)
+    if (config?.fn) fnRuntimes.get(name)?.setLimits(fnLimits(config.fn))
+    auditLog('DEPEND_RELEASE', `${name}: nothing that depends on it is up`, 'System')
+  }
+}
+
+// A stop someone asked for takes the sites that depend on it down first (and
+// theirs before them): they can't work without it. Returns what was stopped.
+// Idle stops and restarts never come through here.
+const stopSite = async (name: string, actor: Actor): Promise<boolean> => {
+  holdGrace.delete(name)
+  const config = fnConfigOf(name)
+  if (!config) return stopProcess(name, actor)
+  if (fnHeld.delete(name) && config.fn) fnRuntimes.get(name)?.setLimits(fnLimits(config.fn))
+  await fnRuntimes.get(name)?.stop()
+  return true
+}
+const stopDependents = async (name: string, actor: Actor, seen = new Set<string>([name])): Promise<string[]> => {
+  const stopped: string[] = []
+  for (const dependent of heldBy(name)) {
+    if (seen.has(dependent)) continue
+    seen.add(dependent)
+    stopped.push(...await stopDependents(dependent, actor, seen))
+    await stopSite(dependent, actor)
+    auditLog('DEPEND_STOP', `${dependent}: stopped because ${name}, which it depends on, was`, actor)
+    stopped.push(dependent)
+  }
+  return stopped
+}
+
+// name -> its depends, for everything reachable from `name`
+const dependencyGraph = async (name: string, config: ServerConfig): Promise<Map<string, string[]>> => {
+  const graph = new Map<string, string[]>()
+  const todo: [string, ServerConfig][] = [[name, config]]
+  while (todo.length) {
+    const [n, c] = todo.pop()!
+    if (graph.has(n)) continue
+    if (graph.size >= 64) throw new Error(`${MANIFEST_FILE}: too many sites depend on each other`)
+    let depends: string[]
+    try {
+      depends = (await siteManifest(c)).depends
+    } catch (e) {
+      throw new Error(n === name ? fnErrorText(e) : `'${n}' (a dependency): ${fnErrorText(e)}`)
+    }
+    graph.set(n, depends)
+    for (const d of depends) {
+      const dc = manifestConfig(d)
+      if (dc) todo.push([d, dc])
+    }
+  }
+  return graph
+}
+
+// One dependency up: a server running (its port found), a function with an instance kept
+const startDependency = async (dep: string, forName: string): Promise<void> => {
+  holdGrace.set(dep, Date.now() + DEPEND_GRACE_MS)
+  const fnCfg = fnConfigOf(dep)
+  if (fnCfg?.fn) {
+    // Assets-only: served by the daemon, nothing to start
+    if (!(await fnRoutingFor(dep, fnCfg)).hasWorker) return
+    const rt = await fnRuntimeFor(dep)
+    if (!rt) throw new Error(`could not start '${dep}'`)
+    if (!fnHeld.has(dep)) {
+      fnHeld.add(dep)
+      auditLog('DEPEND_HOLD', `${dep}: kept up for ${forName}`, 'System')
+    }
+    rt.setLimits(fnLimitsNow(dep, fnCfg.fn))
+    await rt.pool.ensureHot()
+    // ensureHot only waits for instances it spawned itself: wait for one that is ready
+    const until = Date.now() + DEPEND_START_TIMEOUT_MS
+    while (!rt.pool.instances().some(i => i.ready)) {
+      if (Date.now() > until) throw new Error(`'${dep}' was not ready after ${DEPEND_START_TIMEOUT_MS / 1000}s`)
+      if (fnRuntimes.get(dep) !== rt) throw new Error(`'${dep}' was removed while starting`)
+      await Bun.sleep(100)
+      if (rt.pool.instances().length === 0) await rt.pool.ensureHot()
+    }
+    return
+  }
+  const isUp = (p: ManagedProcess | undefined) => !!p && (p.status === 'running' || p.status === 'starting')
+  if (!isUp(processes.get(dep))) {
+    auditLog('DEPEND_START', `${dep}: started for ${forName}`, 'System')
+    await spawnProcess(dep, 'System')
+  }
+  const deadline = Date.now() + DEPEND_START_TIMEOUT_MS
+  for (;;) {
+    const p = processes.get(dep)
+    if (p?.status === 'running') return
+    if (!isUp(p)) throw new Error(`'${dep}' did not start (see its logs)`)
+    if (Date.now() > deadline) throw new Error(`'${dep}' was not ready after ${DEPEND_START_TIMEOUT_MS / 1000}s`)
+    await Bun.sleep(200)
+  }
+}
+
+// Everything `name` depends on, started and ready, in the order written.
+// Returns the list, which the caller keeps for as long as that start lives.
+// Throws (and so stops the start) when a dependency can't be had.
+const startDependencies = async (name: string, config: ServerConfig): Promise<string[]> => {
+  const fail = (text: string) => new Error(`Refusing to start ${name}: ${text}`)
+  let graph: Map<string, string[]>
+  try {
+    graph = await dependencyGraph(name, config)
+  } catch (e) {
+    throw fail(fnErrorText(e))
+  }
+  const depends = graph.get(name) ?? []
+  if (depends.length === 0) return depends
+  const loop = findDependencyLoop(name, graph)
+  if (loop) throw fail(`${MANIFEST_FILE} "depends" goes in a circle (${loop})`)
+  const owner = configUser(config)
+  const ownerIsSuper = await isSuperuser(owner).catch(() => false)
+  for (const dep of depends) {
+    if (!serverConfigs.has(dep) || isReserved(dep)) throw fail(`it depends on '${dep}', which is not a site candy starts`)
+    // Holding a site up is a claim on its owner's memory: yours, one its owner
+    // published ("publish": true in its candy.json), or you are a superuser
+    if (nameOwner(dep) === owner || ownerIsSuper) continue
+    const depConfig = manifestConfig(dep)
+    const published = depConfig ? (await siteManifest(depConfig).catch(() => null))?.publish === true : false
+    if (!published) throw fail(`it depends on '${dep}', which runs as ${nameOwner(dep)} and is not published (it needs "publish": true in its ${MANIFEST_FILE})`)
+  }
+  for (const dep of depends) {
+    try {
+      await startDependency(dep, name)
+    } catch (e) {
+      throw fail(`it depends on ${fnErrorText(e).replace(/^Refusing to start /, '')}`)
+    }
+  }
+  return depends
+}
+
 const fnStateDirProblem = async (name: string, uid: number): Promise<string | null> => {
   if (!RUNNING_AS_ROOT) return null
   const info = await lstat(fnStateDir(name)).catch(() => null)
@@ -3148,7 +3405,7 @@ const readFnEnvFile = async (config: ServerConfig): Promise<string> => {
   return res.exitCode === 0 ? res.stdout.toString() : ''
 }
 
-// Project config (candy.fn.json / wrangler.*), read as the user and cached
+// Project config (the function keys of candy.json), read as the user and cached
 // until one of those files changes
 const fnProjects = new Map<string, { cfg: FnProjectConfig; stamp: string; cwd: string; entry: string | null }>()
 const fnConfigStamp = async (dir: string): Promise<string> =>
@@ -3203,6 +3460,7 @@ const fnLaunchParts = async (name: string, config: ServerConfig, cron?: { job: s
 const launchFnInstance = async (name: string, instance: FnInstanceLaunch): Promise<FnLaunched> => {
   const config = fnConfigOf(name)
   if (!config) throw new Error(`No function named ${name}`)
+  fnDepends.set(name, await startDependencies(name, config))
   const launch = await launchSpec(config, undefined, name, instance)
   const proc = spawn({ cmd: launch.cmd, cwd: launch.cwd, env: launch.env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' })
   auditLog('FN_INSTANCE_START', `${name}: ${instance.id} (pid ${proc.pid})${launch.unit ? ` [${launch.unit}]` : ''}`, 'System')
@@ -3335,7 +3593,7 @@ const fnRuntimeFor = async (name: string): Promise<FnRuntime | null> => {
   // Another request may have created it while we looked the user up
   const raced = fnRuntimes.get(name)
   if (raced) return raced
-  const { hot, max } = fnLimits(config.fn)
+  const { hot, max } = fnLimitsNow(name, config.fn)
   const rt = new FnRuntime({
     name,
     socketPath: fnSocketPath(name),
@@ -3372,7 +3630,7 @@ const restartFn = async (name: string) => {
     return
   }
   if (rt) {
-    rt.restart(config?.fn ? fnLimits(config.fn) : undefined).catch(e => auditLog('FN_RESTART_FAIL', `${name}: ${fnErrorText(e)}`, 'System'))
+    rt.restart(config?.fn ? fnLimitsNow(name, config.fn) : undefined).catch(e => auditLog('FN_RESTART_FAIL', `${name}: ${fnErrorText(e)}`, 'System'))
     return
   }
   await warmFn(name)
@@ -3392,6 +3650,8 @@ const teardownFn = async (name: string) => {
   const rt = fnRuntimes.get(name)
   fnRuntimes.delete(name)
   fnProjects.delete(name)
+  fnHeld.delete(name)
+  fnDepends.delete(name)
   resetFnRouting(name)
   closeFnLog(name)
   if (rt) await rt.close().catch(() => {})
@@ -3598,7 +3858,7 @@ const handleFnApi = async (req: Request, url: URL, corsHeaders: Record<string, s
     } catch (e) {
       return fail(fnErrorText(e))
     }
-    if (!project.main && !project.assets) return fail(`No entry module: set "main" (or "assets") in candy.fn.json or wrangler, or pass entry. ${project.warnings.join('; ')}`)
+    if (!project.main && !project.assets) return fail(`No entry module: set "main" (or "assets") in candy.json, or pass entry. ${project.warnings.join('; ')}`)
     if (!project.main) {
       // Assets-only: served by the daemon, never an instance. fn-tool refuses most of this first.
       if (body.hot !== undefined && body.hot > 0) return fail("hot needs a main module: an assets-only function never starts an instance")
@@ -3682,7 +3942,7 @@ const handleFnApi = async (req: Request, url: URL, corsHeaders: Record<string, s
     if (logChanged && next.log !== false) fnLogs.get(name)?.setMode(next.log === 'meta' ? 'meta' : 'full')
     resetFnRouting(name)
     const rt = fnRuntimes.get(name)
-    rt?.setLimits(fnLimits(next))
+    rt?.setLimits(fnLimitsNow(name, next))
     if (fnLimits(next).hot > 0) await warmFn(name).catch(() => {})
     auditLog('FN_SETTINGS', `${name}: hot ${fnLimits(next).hot}, max ${fnLimits(next).max}, linger ${next.linger ?? FN_DEFAULT_LINGER_S}s, log ${next.log ?? 'full'}`, actor)
     return ok({ fn: await fnSummary(config, name) })
@@ -3917,12 +4177,25 @@ const stopUnit = async (unit: string) => {
 }
 
 // Spawn a dev server process using Bun.Terminal for proper PTY support
-const spawnProcess = async (name: string, actor: Actor = 'System', configId?: string): Promise<ManagedProcess> => {
+// One start of a name at a time: a start can now wait on its dependencies, and a
+// second request arriving meanwhile must join it, not launch a second copy.
+const spawning = new Map<string, Promise<ManagedProcess>>()
+const spawnProcess = (name: string, actor: Actor = 'System', configId?: string): Promise<ManagedProcess> => {
+  const inFlight = spawning.get(name)
+  if (inFlight) return inFlight
+  const started = spawnProcessNow(name, actor, configId).finally(() => { spawning.delete(name) })
+  spawning.set(name, started)
+  return started
+}
+
+const spawnProcessNow = async (name: string, actor: Actor = 'System', configId?: string): Promise<ManagedProcess> => {
   const config = getConfigById(name, configId)
   if (!config) {
     throw new Error(`No config found for server: ${name}`)
   }
   if (config.fn) throw new Error(`${name} is a function: it starts on its first request`)
+  // candy.json "depends": those first, and ready, before this one is launched
+  const depends = await startDependencies(name, config)
   const launch = await launchSpec(config, undefined, name)
 
   const logFile = getLogFile(name)
@@ -3947,6 +4220,7 @@ const spawnProcess = async (name: string, actor: Actor = 'System', configId?: st
     terminal: null,
     idling: false,
     unit: launch.unit,
+    depends,
     logStart,
   }
 
@@ -6136,6 +6410,7 @@ async function controlFetch(req: Request): Promise<Response> {
       || url.pathname === "/auth/passkey/start" || url.pathname === "/auth/passkey/finish" || url.pathname === "/auth/reauth"
       || url.pathname === "/passkeys" || url.pathname === "/passkeys/list" || url.pathname === "/passkeys/enroll/start"
       || url.pathname === "/passkeys/rename" || url.pathname === "/passkeys/delete") {
+      await refreshManifests()   // which sites have "auth": true right now
       const answer = await appAuthRoutes.handle(req, url, appAuthContext(req, auth, portalHost, corsHeaders, requestActor))
       return answer ?? Response.json({ error: "not found" }, { status: 404, headers: corsHeaders })
     }
@@ -6162,6 +6437,7 @@ async function controlFetch(req: Request): Promise<Response> {
       if (shortcut === "kill") {
         const up = proc?.status === "running" || proc?.status === "starting"
         if (isPost) {
+          if (up) await stopDependents(name, requestActor)
           const stopped = up ? await stopProcess(name, requestActor) : true
           return Response.json(stopped ? { success: true } : { success: false, error: `${name} didn't stop.` }, { status: stopped ? 200 : 500, headers: corsHeaders })
         }
@@ -6423,6 +6699,7 @@ async function controlFetch(req: Request): Promise<Response> {
 
     // The site's auth key ring, for its owner's own process (sdk.ts appAuth): app-auth-routes.ts
     if (req.method === "POST" && url.pathname === "/sdk/auth/keys") {
+      await refreshManifests()   // which sites have "auth": true right now
       const answer = await appAuthRoutes.handle(req, url, appAuthContext(req, auth, portalHost, corsHeaders, requestActor))
       return answer ?? Response.json({ error: "not found" }, { status: 404, headers: corsHeaders })
     }
@@ -6667,6 +6944,7 @@ async function controlFetch(req: Request): Promise<Response> {
       const actor = requestActor
       const proc = processes.get(name)
       if (proc && (proc.status === 'running' || proc.status === 'starting')) {
+        await stopDependents(name, actor)
         await stopProcess(name, actor)
       }
 
@@ -7327,7 +7605,8 @@ async function controlFetch(req: Request): Promise<Response> {
         // A candy server's unit: through candy, so its state, route and audit trail stay right
         const candyName = [...processes].find(([, p]) => p.unit === unit)?.[0]
         if (candyName && action === "stop") {
-          const stopped = await stopProcess(candyName, requestActor)
+          await stopDependents(candyName, requestActor)
+          const stopped = await stopSite(candyName, requestActor)
           return Response.json(stopped ? { success: true, unit, action } : { error: `${candyName} didn't stop.` }, { status: stopped ? 200 : 500, headers: noStore })
         }
         if (candyName) return Response.json({ error: `${unit} is candy's ${candyName}. Restart it from the Sites list.` }, { status: 409, headers: noStore })
@@ -7358,6 +7637,8 @@ async function controlFetch(req: Request): Promise<Response> {
         processList[name] = {
           memoryUsed: up ? await cgroupNumber(proc.unit, "memory.current") : null,
           memoryMax: up ? await cgroupNumber(proc.unit, "memory.max") : null,
+          depends: up ? proc.depends : [],
+          heldBy: up ? heldBy(name) : [],
           status: proc.status,
           port: proc.port,
           pid: proc.pid,
@@ -7382,7 +7663,10 @@ async function controlFetch(req: Request): Promise<Response> {
         return Response.json({ success: false, error: `${name} runs as ${configUser(config)}. Only they can change it.` }, { status: 403, headers: corsHeaders })
       }
       const actor = requestActor
-      if (op === "stop") await fnRuntimes.get(name)?.stop()
+      if (op === "stop") {
+        await stopDependents(name, actor)
+        await stopSite(name, actor)
+      }
       else if (op === "start") await warmFn(name)  // never disturbs instances that are serving
       else await restartFn(name)
       auditLog(`FN_${op.toUpperCase()}`, name, actor)
@@ -7461,8 +7745,9 @@ async function controlFetch(req: Request): Promise<Response> {
       const name = lowerName(url.pathname.split("/")[3])
       if (!mayUse(name)) return notYoursResponse(name, "stop it")
       const actor = requestActor
-      const success = await stopProcess(name, actor)
-      return Response.json({ success }, { headers: corsHeaders })
+      const alsoStopped = await stopDependents(name, actor)
+      const success = await stopSite(name, actor)
+      return Response.json({ success, alsoStopped }, { headers: corsHeaders })
     }
 
     if (req.method === "POST" && url.pathname.startsWith("/process/restart/")) {
@@ -7571,6 +7856,13 @@ async function controlFetch(req: Request): Promise<Response> {
     // === Config Management API ===
 
     if (req.method === "GET" && url.pathname === "/configs") {
+      await refreshManifests()
+      // What the site's candy.json asks for (null: it has none)
+      const manifestOf = (config: ServerConfig) => {
+        const cached = siteManifests.get(config.id)
+        if (!cached || (!cached.stamp && !cached.error)) return null
+        return cached.error ? { error: cached.error } : { auth: cached.m.auth, depends: cached.m.depends, publish: cached.m.publish }
+      }
       const configs: Record<string, any> = {}
       for (const [name, entries] of serverConfigs) {
         if (entries.length === 0 || !mayUse(name)) continue
@@ -7586,6 +7878,7 @@ async function controlFetch(req: Request): Promise<Response> {
           ttl: first.ttl ?? null,
           memory: first.memory ?? null,
           memoryLimit: memoryLimitMb(first.memory),
+          manifest: manifestOf(first),
           rw: first.rw ?? [],
           count: entries.length,
           variants: entries.map(c => ({ id: c.id, cwd: c.cwd, cmd: c.cmd, user: configUser(c), api: !!c.api })),

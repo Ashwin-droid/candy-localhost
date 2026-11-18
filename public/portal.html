@@ -443,6 +443,13 @@
     .fn-kind { display: inline-flex; align-items: center; height: 16px; padding: 0 5px; border-radius: 4px; font-family: var(--font-host); font-stretch: 87.5%; font-size: 10.5px; font-weight: 600; background: var(--sheet-2); color: var(--ink-2); }
     .fn-kind.asset { background: var(--mint-soft); color: var(--mint); }
     .fn-rule { display: inline-block; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+    /* Data tab (KV, D1) and the add-function form */
+    textarea.input-field { height: auto; min-height: 76px; padding: 8px 12px; resize: vertical; line-height: 1.45; }
+    .fn-form .field.grow { flex: 1; width: auto; min-width: 180px; }
+    .dialog form.fn-row { flex-direction: row; gap: 12px; }
+    .fn-scroll { overflow-x: auto; }
+    .fn-scroll .fn-table td { white-space: nowrap; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+    .fn-row-acts { display: flex; gap: 4px; justify-content: flex-end; }
 
     .fn-req { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); gap: 16px; height: 100%; }
     .fn-req-left { display: flex; flex-direction: column; min-height: 0; }
@@ -532,7 +539,7 @@
     </div>
     <div class="top-actions">
       <button class="btn quiet" id="system-btn" hidden onclick="showSystem()" title="CPU, memory, disks and every process on this machine">System</button>
-      <button class="btn quiet" onclick="refreshAll(); refreshTraffic();">Refresh</button>
+      <button class="btn quiet" onclick="appAuthLoadedAt = 0; refreshAll(); refreshTraffic();">Refresh</button>
       <button class="btn primary" onclick="showAddRoute()">Add site</button>
     </div>
   </header>
@@ -556,6 +563,12 @@
           <button class="btn small" id="bind-domain-btn" onclick="showBindDomain()" style="display: none;">Bind domain</button>
         </div>
         <div class="rail-list" id="domains-list"><div class="empty">Loading…</div></div>
+      </section>
+
+      <!-- Sign in with candy: your sites' keys, and the sites you approved (candy app-auth) -->
+      <section id="appauth-card">
+        <div class="rail-head"><h2>Sign in with candy</h2><span class="n" id="count-appauth"></span></div>
+        <div class="rail-list" id="appauth-list"><div class="empty">Loading…</div></div>
       </section>
 
       <!-- Daemon-wide settings: the API takes them only from a superuser's portal login -->
@@ -582,6 +595,7 @@
         <div class="segmented" role="tablist">
           <button type="button" role="tab" id="tab-port" aria-selected="true" onclick="setAddMode('port')">Existing port</button>
           <button type="button" role="tab" id="tab-cmd" aria-selected="false" onclick="setAddMode('cmd')">Run a command</button>
+          <button type="button" role="tab" id="tab-fn" aria-selected="false" onclick="setAddMode('fn')">Function</button>
         </div>
 
         <form id="add-route-form" onsubmit="submitAddRoute(event)">
@@ -640,9 +654,67 @@
             </div>
             <div class="hint">candy starts it the first time the site is opened and finds the port from its output.</div>
           </div>
+          <label class="check"><input type="checkbox" id="config-api"> API mode: the first request waits while it starts, no loading page</label>
           <div class="dialog-actions">
             <button type="button" class="btn" onclick="hideAddRoute()">Cancel</button>
             <button type="submit" class="btn primary">Add site</button>
+          </div>
+        </form>
+
+        <!-- Same fields as `candy fn add`: POST /fn/add -->
+        <form id="add-fn-form" onsubmit="submitAddFn(event)" hidden>
+          <div class="field">
+            <label for="fn-add-name">Name</label>
+            <div class="with-suffix">
+              <input type="text" id="fn-add-name" class="input-field code" placeholder="myfn" required pattern="[a-zA-Z0-9-]+" autocomplete="off" spellcheck="false">
+              <span class="tld-suffix">.localhost</span>
+            </div>
+          </div>
+          <div class="field" id="fn-user-field" hidden>
+            <label id="fn-user-label">Run as</label>
+            <input type="hidden" id="fn-user">
+            <div class="dd" id="fn-user-dd">
+              <button type="button" class="input-field dd-btn" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="fn-user-label fn-user-value" onclick="ddToggle('fn-user')" onkeydown="ddButtonKey(event, 'fn-user')">
+                <span class="dd-value is-placeholder" id="fn-user-value">Choose a user</span>
+                <svg class="dd-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <ul class="dd-list" role="listbox" tabindex="-1" aria-labelledby="fn-user-label" onkeydown="ddListKey(event, 'fn-user')"></ul>
+            </div>
+          </div>
+          <div class="field">
+            <label for="fn-add-cwd">Folder</label>
+            <input type="text" id="fn-add-cwd" class="input-field code" placeholder="~/projects/myfn" required spellcheck="false" autocomplete="off">
+            <div class="hint">The folder with its candy.json. The code (<code>"main"</code>), static files (<code>"assets"</code>), KV, D1 and cron jobs are read from there.</div>
+            <div class="hint" id="fn-add-cwd-hint" hidden></div>
+          </div>
+          <div class="field">
+            <label for="fn-add-entry">Code file</label>
+            <input type="text" id="fn-add-entry" class="input-field code" placeholder="Optional, like src/index.ts" spellcheck="false" autocomplete="off">
+            <div class="hint">Only if candy.json has no <code>"main"</code>, or to run a different file.</div>
+          </div>
+          <div class="fn-form">
+            <div class="field">
+              <label for="fn-add-hot">Hot</label>
+              <input type="number" id="fn-add-hot" class="input-field code" min="0" step="1" placeholder="0">
+            </div>
+            <div class="field">
+              <label for="fn-add-max">Max</label>
+              <input type="number" id="fn-add-max" class="input-field code" min="1" step="1" placeholder="4">
+            </div>
+            <div class="field">
+              <label for="fn-add-linger">Linger (s)</label>
+              <input type="number" id="fn-add-linger" class="input-field code" min="0" max="600" step="1" placeholder="30">
+            </div>
+          </div>
+          <div class="hint" style="margin-top: -8px;">Hot instances stay warm. Max caps how many run at once. Linger is how long an idle one waits before it exits. Empty uses the usual value.</div>
+          <div class="field">
+            <label for="fn-add-env">Env file</label>
+            <input type="text" id="fn-add-env" class="input-field code" placeholder="Optional, like /home/me/myfn/.env" spellcheck="false" autocomplete="off">
+            <div class="hint">A KEY=VALUE file whose values the function gets as its environment. Use the full path.</div>
+          </div>
+          <div class="dialog-actions">
+            <button type="button" class="btn" onclick="hideAddRoute()">Cancel</button>
+            <button type="submit" class="btn primary" id="fn-add-submit">Add function</button>
           </div>
         </form>
       </div>
@@ -877,6 +949,7 @@
       <div class="segmented" role="tablist">
         <button type="button" role="tab" id="fn-tab-overview" aria-selected="true" onclick="setFnTab('overview')">Overview</button>
         <button type="button" role="tab" id="fn-tab-requests" aria-selected="false" onclick="setFnTab('requests')">Requests</button>
+        <button type="button" role="tab" id="fn-tab-data" aria-selected="false" onclick="setFnTab('data')">Data</button>
       </div>
 
       <div class="fn-pane" id="fn-pane-overview">
@@ -949,6 +1022,60 @@
             <div class="empty">Pick a request to see its headers, bodies, logs and timings.</div>
           </div>
         </div>
+      </div>
+
+      <!-- KV and D1, like `candy fn kv` and `candy fn d1`: POST /fn/kv, POST /fn/d1 -->
+      <div class="fn-pane" id="fn-pane-data" hidden>
+        <section class="fn-section">
+          <h3>KV <span class="n">key-value storage</span></h3>
+          <form class="fn-form fn-row" onsubmit="fnKvList(event)">
+            <div class="field">
+              <label for="fn-kv-binding">Binding</label>
+              <input type="text" id="fn-kv-binding" class="input-field code" value="KV" required spellcheck="false" autocomplete="off">
+            </div>
+            <div class="field wide">
+              <label for="fn-kv-prefix">Keys starting with</label>
+              <input type="text" id="fn-kv-prefix" class="input-field code" placeholder="Optional" spellcheck="false" autocomplete="off">
+            </div>
+            <button type="submit" class="btn" style="height: 38px;">List keys</button>
+          </form>
+          <div class="hint">The binding is the name in candy.json under <code>"kv"</code>.</div>
+          <div id="fn-kv-keys" style="margin-top: 12px;"></div>
+          <div id="fn-kv-value"></div>
+          <form class="fn-form fn-row" onsubmit="fnKvPut(event)" style="margin-top: 16px;">
+            <div class="field wide">
+              <label for="fn-kv-key">Key</label>
+              <input type="text" id="fn-kv-key" class="input-field code" required spellcheck="false" autocomplete="off">
+            </div>
+            <div class="field grow">
+              <label for="fn-kv-val">Value</label>
+              <textarea id="fn-kv-val" class="input-field code" rows="3" spellcheck="false"></textarea>
+            </div>
+            <button type="submit" class="btn primary" style="height: 38px;">Save key</button>
+          </form>
+          <div class="hint">Saving a key that exists replaces its value.</div>
+        </section>
+
+        <section class="fn-section">
+          <h3>D1 <span class="n">SQL database</span></h3>
+          <form class="fn-form fn-row" onsubmit="fnD1Run(event)">
+            <div class="field">
+              <label for="fn-d1-binding">Binding</label>
+              <input type="text" id="fn-d1-binding" class="input-field code" value="DB" required spellcheck="false" autocomplete="off">
+            </div>
+            <div class="field grow">
+              <label for="fn-d1-sql">SQL</label>
+              <textarea id="fn-d1-sql" class="input-field code" rows="3" required spellcheck="false" placeholder="SELECT * FROM sqlite_master"></textarea>
+            </div>
+            <div class="field wide">
+              <label for="fn-d1-params">Values for ?</label>
+              <input type="text" id="fn-d1-params" class="input-field code" placeholder='Optional, like [1, "a"]' spellcheck="false" autocomplete="off">
+            </div>
+            <button type="submit" class="btn primary" id="fn-d1-run" style="height: 38px;">Run</button>
+          </form>
+          <div class="hint">Runs on the function's own database, right away. Changes can't be undone.</div>
+          <div id="fn-d1-result" style="margin-top: 12px;"></div>
+        </section>
       </div>
     </div>
   </div>
@@ -1208,6 +1335,97 @@
       });
     }
 
+    async function postJSON(path, body) {
+      const res = await apiCall(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return await res.json();
+    }
+
+    // candy env <name> <path|off>: a KEY=VALUE file the site gets as its environment
+    function setEnvFile(name) {
+      const current = state.configs[name]?.envFile || '';
+      showPrompt({
+        title: `Env file for ${name}`,
+        label: 'File',
+        value: current,
+        required: false,
+        submit: 'Save',
+        hint: `A KEY=VALUE file. ${name} gets its values as environment variables from its next start. Use the full path, like /home/me/app/.env. Leave it empty for none.`,
+        onSubmit: async (value) => {
+          const path = String(value).trim();
+          if (path && !path.startsWith('/')) { toast('Use the full path, starting with /', 'error'); return false; }
+          try {
+            const data = await postJSON('/config/env', { name, envFile: path || null });
+            if (data.error) { toast(data.error, 'error'); return false; }
+            toast(data.envFile ? `${name} gets its environment from ${data.envFile}. ${data.message || ''}` : `${name}: no env file. ${data.message || ''}`, 'success');
+            refreshAll();
+            return true;
+          } catch {
+            toast('Could not save the env file', 'error');
+            return false;
+          }
+        },
+      });
+    }
+
+    // candy sandbox <name> --rw <path>: folders a sandboxed site may write to, besides its own
+    function setWritable(name) {
+      const current = state.configs[name]?.rw || [];
+      showPrompt({
+        title: `Writable folders for ${name}`,
+        label: 'Folders, comma separated',
+        value: current.join(', '),
+        required: false,
+        submit: 'Save',
+        hint: `${name} can always write to its own folder, its state folder and a private /tmp. Add full paths of other folders it needs to write to. Leave it empty for none. Takes effect at its next start.`,
+        onSubmit: async (value) => {
+          const rw = String(value).split(',').map(v => v.trim()).filter(Boolean);
+          try {
+            const data = await postJSON('/config/sandbox', { name, rw });
+            if (data.error) { toast(data.details ? `${data.error} (${data.details})` : data.error, 'error'); return false; }
+            toast(data.rw?.length ? `${name} can also write to ${data.rw.join(', ')}` : `${name}: no extra writable folders`, 'success');
+            refreshAll();
+            return true;
+          } catch {
+            toast('Could not save the writable folders', 'error');
+            return false;
+          }
+        },
+      });
+    }
+
+    // candy route entry <name> <port|off>: a port on this machine that always goes through candy
+    function setEntryPort(name) {
+      const current = state.entries[name];
+      showPrompt({
+        title: `Local port for ${name}`,
+        label: 'Port',
+        value: current ? String(current) : '',
+        type: 'number',
+        required: false,
+        submit: 'Save',
+        hint: `http://127.0.0.1:<port> on the machine candy runs on always reaches ${name} through candy, and starts it when needed. Only that machine can use it. Leave it empty to remove it.`,
+        onSubmit: async (value) => {
+          const text = String(value).trim();
+          const port = text === '' ? null : Number(text);
+          if (port !== null && (!Number.isInteger(port) || port < 1024 || port > 65535)) { toast('Enter a port between 1024 and 65535', 'error'); return false; }
+          try {
+            const data = await postJSON('/routes/entry', { name, port });
+            if (data.error) { toast(data.error, 'error'); return false; }
+            toast(data.port ? `${data.url} now reaches ${name}` : `${name} has no local port`, 'success');
+            refreshAll();
+            return true;
+          } catch {
+            toast('Could not save the local port', 'error');
+            return false;
+          }
+        },
+      });
+    }
+
     // tailscale serve, run by candy: https://<this machine>.ts.net:<port> for the tailnet
     async function setTailscaleServe(name, port) {
       const res = await apiCall('/routes/serve', {
@@ -1321,8 +1539,8 @@
 
     // Who a new site can run as. "~" in the folder means that user's home.
     let runAsInfo = null;
-    function showHomeHint(user) {
-      const hint = document.getElementById('config-cwd-hint');
+    function showHomeHint(user, hintId = 'config-cwd-hint') {
+      const hint = document.getElementById(hintId);
       if (!user) { hint.hidden = true; return; }
       hint.hidden = false;
       hint.innerHTML = `<code>~</code> is ${escapeHtml(user.name)}'s home, <code>${escapeHtml(user.home)}</code>.`;
@@ -1331,20 +1549,22 @@
       try {
         runAsInfo = await getJSON('/users');
       } catch { runAsInfo = null; }
-      const field = document.getElementById('config-user-field');
       const users = runAsInfo?.users || [];
       const owner = users.find(u => u.name === runAsInfo?.owner) || users[0];
-      field.hidden = !(runAsInfo?.multiUser && users.length > 1);
-      ddSetOptions('config-user', users.map(u => ({
-        value: u.name,
-        detail: u.name === runAsInfo.owner ? `${u.home} · owner` : u.home,
-        home: u.home,
-        name: u.name,
-      })), 'Choose a user', owner?.name || '', {
-        empty: 'Nobody is in the candy group yet.',
-        onPick: o => showHomeHint({ name: o.name, home: o.home }),
-      });
-      showHomeHint(owner);
+      // The same choice for a command and for a function
+      for (const [id, hintId] of [['config-user', 'config-cwd-hint'], ['fn-user', 'fn-add-cwd-hint']]) {
+        document.getElementById(id + '-field').hidden = !(runAsInfo?.multiUser && users.length > 1);
+        ddSetOptions(id, users.map(u => ({
+          value: u.name,
+          detail: u.name === runAsInfo.owner ? `${u.home} · owner` : u.home,
+          home: u.home,
+          name: u.name,
+        })), 'Choose a user', owner?.name || '', {
+          empty: 'Nobody is in the candy group yet.',
+          onPick: o => showHomeHint({ name: o.name, home: o.home }, hintId),
+        });
+        showHomeHint(owner, hintId);
+      }
     }
 
     function hideAddRoute() {
@@ -1355,6 +1575,10 @@
       document.getElementById('config-name').value = '';
       document.getElementById('config-cwd').value = '';
       document.getElementById('config-cmd').value = '';
+      document.getElementById('config-api').checked = false;
+      for (const id of ['fn-add-name', 'fn-add-cwd', 'fn-add-entry', 'fn-add-hot', 'fn-add-max', 'fn-add-linger', 'fn-add-env']) {
+        document.getElementById(id).value = '';
+      }
     }
 
     async function submitAddRoute(e) {
@@ -1754,12 +1978,16 @@
       const cwd = document.getElementById('config-cwd').value;
       const cmd = document.getElementById('config-cmd').value;
       const user = document.getElementById('config-user-field').hidden ? '' : document.getElementById('config-user').value;
+      const api = document.getElementById('config-api').checked;
+      const body = { name, cwd, cmd };
+      if (user) body.user = user;
+      if (api) body.api = true;  // like `candy dev <cmd> --api`
 
       try {
         const res = await apiCall('/config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(user ? { name, cwd, cmd, user } : { name, cwd, cmd })
+          body: JSON.stringify(body)
         });
         const data = await res.json();
         if (data.error) {
@@ -1771,6 +1999,46 @@
         }
       } catch (e) {
         toast('Failed to add config', 'error');
+      }
+    }
+
+    // `candy fn add <name> [path] [--entry f] [--hot n] [--max n] [--linger s] [--env-file p]`
+    async function submitAddFn(e) {
+      e.preventDefault();
+      const val = (id) => document.getElementById(id).value.trim();
+      const name = val('fn-add-name');
+      const body = { name, cwd: val('fn-add-cwd') };
+      if (val('fn-add-entry')) body.entry = val('fn-add-entry');
+      // The daemon checks the upper limits for hot and max
+      for (const [key, id, min, label] of [['hot', 'fn-add-hot', 0, 'Hot'], ['max', 'fn-add-max', 1, 'Max'], ['linger', 'fn-add-linger', 0, 'Linger']]) {
+        const text = val(id);
+        if (text === '') continue;
+        const n = Number(text);
+        if (!Number.isInteger(n) || n < min) { toast(`${label} must be a whole number, ${min} or more`, 'error'); return; }
+        if (key === 'linger' && n > 600) { toast('Linger must be 0 to 600 seconds', 'error'); return; }
+        body[key] = n;
+      }
+      if (body.hot !== undefined && body.max !== undefined && body.hot > body.max) { toast('Hot can’t be more than max', 'error'); return; }
+      const envFile = val('fn-add-env');
+      if (envFile) {
+        if (!envFile.startsWith('/')) { toast('Use the full path of the env file, starting with /', 'error'); return; }
+        body.envFile = envFile;
+      }
+      const user = document.getElementById('fn-user-field').hidden ? '' : document.getElementById('fn-user').value;
+      if (user) body.user = user;
+      const submit = document.getElementById('fn-add-submit');
+      submit.disabled = true;
+      try {
+        const data = await fnPost('/fn/add', body);
+        const assetsOnly = data.fn && data.fn.hasWorker === false;
+        toast(`${data.name || name} added. ${assetsOnly ? 'The daemon serves its files; no process starts.' : 'It starts on the first request.'}`, 'success');
+        for (const w of Array.isArray(data.warnings) ? data.warnings : []) toast(String(w), 'info');
+        hideAddRoute();
+        refreshAll();
+      } catch (err) {
+        toast(err.message || 'Could not add the function', 'error');
+      } finally {
+        submit.disabled = false;
       }
     }
 
@@ -1829,7 +2097,7 @@
                   : [act('Add', `showDomainPasswordForm('${fqdn}')`)]));
           if (b.apiMode || hasJwt) rows.push(row('JWT',
             hasJwt ? (b.apiMode ? 'Set' : 'Needs API mode') : 'Not set', hasJwt && b.apiMode,
-            hasJwt ? [act('Rotate', `newJwtSecret('${fqdn}', true)`), act('Remove', `clearDomainPassword('${fqdn}', ${hasPw ? "'jwt'" : "'all'"})`)]
+            hasJwt ? [act('Token', `mintTestToken('${fqdn}')`), act('Rotate', `newJwtSecret('${fqdn}', true)`), act('Remove', `clearDomainPassword('${fqdn}', ${hasPw ? "'jwt'" : "'all'"})`)]
                    : [act('Add', `newJwtSecret('${fqdn}', false)`)]));
           rows.push(row('Allowed',
             al.enabled ? `${al.ips.length ? `${al.ips.length} IP${al.ips.length === 1 ? '' : 's'} + ` : ''}Tailscale` : 'Anyone', al.enabled,
@@ -2324,6 +2592,28 @@
       }
     }
 
+    // `candy auth token <domain>`: a signed token to try the site with, good for 10 minutes
+    async function mintTestToken(fqdn) {
+      try {
+        const data = await postJSON('/auth/token', { domain: fqdn, ttl: 600 });
+        if (data.error) { toast(data.error, 'error'); return; }
+        showPrompt({
+          title: `Test token for ${fqdn}`,
+          label: 'Token (good for 10 minutes)',
+          value: data.token,
+          hint: 'Send it in the X-Auth-Token header to try the site from a script. Made with its JWT secret, which is not shown.',
+          submit: 'Copy and close',
+          onSubmit: async (value) => {
+            try { await navigator.clipboard.writeText(value); toast('Token copied', 'success'); }
+            catch { toast('Couldn’t copy. Select it and copy by hand.', 'error'); return false; }
+            return true;
+          },
+        });
+      } catch {
+        toast('Could not make a token', 'error');
+      }
+    }
+
     async function clearDomainPassword(fqdn, which = 'all') {
       const what = which === 'jwt' ? 'the JWT secret' : which === 'password' ? 'the password' : 'protection';
       if (!confirm(`Remove ${what} for ${fqdn}?`)) return;
@@ -2358,7 +2648,7 @@
     });
 
     // ----- Sites: routes, processes, configs, portals and traffic merged by name -----
-    const state = { status: null, routes: {}, processes: {}, configs: {}, portals: {}, stats: null };
+    const state = { status: null, routes: {}, processes: {}, configs: {}, portals: {}, stats: null, entries: {} };
     let renderPending = false;
 
     async function getJSON(endpoint) {
@@ -2383,6 +2673,8 @@
 
     async function refreshRoutes() {
       try { state.routes = await getJSON('/routes'); } catch {}
+      // Local entry ports (candy route entry): name -> port
+      try { state.entries = (await getJSON('/routes/entry')).entries || {}; } catch {}
       renderSites();
     }
     async function refreshProcesses() {
@@ -2416,7 +2708,96 @@
       await refreshPortals();
       await refreshDomains();
       await refreshSettings();
+      await refreshAppAuth();
       await refreshActivity();
+    }
+
+    // ----- Sign in with candy (candy app-auth): site keys and your approvals -----
+    // Keys change rarely: loaded at most once a minute unless forced (Refresh, or after a change)
+    let appAuthLoadedAt = 0;
+    let appAuthSites = [];
+    let appAuthConsents = [];
+
+    async function refreshAppAuth(force = false) {
+      if (!force && Date.now() - appAuthLoadedAt < 60000) return;
+      const list = document.getElementById('appauth-list');
+      try {
+        const sites = await getJSON('/app-auth/sites');
+        const consents = await getJSON('/app-auth/consents');
+        if (sites.error || consents.error) throw new Error(sites.error || consents.error);
+        appAuthSites = Array.isArray(sites.sites) ? sites.sites : [];
+        appAuthConsents = Array.isArray(consents.consents) ? consents.consents : [];
+        appAuthLoadedAt = Date.now();
+      } catch {
+        list.innerHTML = '<div class="empty">Couldn’t load sign-in keys.</div>';
+        return;
+      }
+      renderAppAuth();
+    }
+
+    function appAuthWhen(ms) {
+      return typeof ms === 'number' ? new Date(ms).toLocaleDateString([], { dateStyle: 'medium' }) : 'never';
+    }
+
+    function renderAppAuth() {
+      const list = document.getElementById('appauth-list');
+      setCount('count-appauth', appAuthSites.length + appAuthConsents.length || '');
+      if (!appAuthSites.length && !appAuthConsents.length) {
+        list.innerHTML = '<div class="empty">Sites that let people sign in with their candy login show up here, with the sites you’ve said yes to.</div>';
+        return;
+      }
+      // Rows point at the lists by index, so no name goes into an onclick
+      const keys = appAuthSites.map((s, i) => `
+            <div class="rail-item">
+              <div class="domain-head">
+                <span class="fqdn">${escapeHtml(s.site)}</span>
+                <button class="unbind" onclick="rotateAppKey(${i})" title="Make a new sign-in key for this site">New key</button>
+              </div>
+              <div class="sub-line"><span>Key ${escapeHtml(s.kid)}, made ${escapeHtml(appAuthWhen(s.created))}${s.rotatedAt ? `, replaced ${escapeHtml(appAuthWhen(s.rotatedAt))}` : ''}${SUPER && s.owner && s.owner !== ME.user ? ` · ${escapeHtml(s.owner)}` : ''}</span></div>
+            </div>`);
+      const approvals = appAuthConsents.map((c, i) => `
+            <div class="rail-item">
+              <div class="domain-head">
+                <span class="fqdn">${escapeHtml(c.site)}</span>
+                <button class="unbind" onclick="revokeAppConsent(${i})" title="It asks you again next time">Forget</button>
+              </div>
+              <div class="sub-line"><span>You said yes ${escapeHtml(appAuthWhen(c.at))}, run by ${escapeHtml(c.owner)}</span></div>
+            </div>`);
+      list.innerHTML = (keys.length ? `<div class="fn-muted" style="padding-top: 10px;">Your sites’ keys</div>${keys.join('')}` : '')
+        + (approvals.length ? `<div class="fn-muted" style="padding-top: 14px;">Sites you said yes to</div>${approvals.join('')}` : '');
+    }
+
+    // `candy app-auth rotate <name>`
+    async function rotateAppKey(i) {
+      const s = appAuthSites[i];
+      if (!s) return;
+      if (!confirm(`Make a new sign-in key for ${s.site}?\n\nSign-ins started with the old key still finish for a few minutes; none after that.`)) return;
+      try {
+        const data = await postJSON('/app-auth/rotate', { name: s.site });
+        if (data.error) { toast(data.error, 'error'); return; }
+        toast(`${data.site} has a new key (${data.kid})`, 'success');
+        if (Array.isArray(data.restartNeeded) && data.restartNeeded.length) {
+          toast(`Restart ${data.restartNeeded.join(', ')} to give it the new key (apps using the SDK pick it up within 5 minutes)`, 'info');
+        }
+      } catch {
+        toast('Could not make a new key', 'error');
+      }
+      refreshAppAuth(true);
+    }
+
+    // `candy app-auth revoke <site>`
+    async function revokeAppConsent(i) {
+      const c = appAuthConsents[i];
+      if (!c) return;
+      if (!confirm(`Forget that you said yes to ${c.site}? It asks you again next time.`)) return;
+      try {
+        const data = await postJSON('/app-auth/consents/revoke', { site: c.site });
+        if (data.error) { toast(data.error, 'error'); return; }
+        toast(data.revoked ? `${c.site} will ask again next time` : `You hadn’t said yes to ${c.site}`, 'success');
+      } catch {
+        toast('Could not forget the approval', 'error');
+      }
+      refreshAppAuth(true);
     }
 
     function variantsOf(config) {
@@ -2525,6 +2906,11 @@
       }
       const runsAs = s.config?.user;
       if (state.status?.multiUser && runsAs && runsAs !== state.status.owner) chips.push(`<span class="chip" title="Started as this user">Runs as ${escapeHtml(runsAs)}</span>`);
+      if (s.config?.envFile) chips.push(`<span class="chip on" title="Gets its environment from ${escapeHtml(s.config.envFile)}">Env file</span>`);
+      const rw = Array.isArray(s.config?.rw) ? s.config.rw : [];
+      if (rw.length && s.config.sandbox !== false) chips.push(`<span class="chip on" title="Can also write to: ${escapeHtml(rw.join(', '))}">${plural(rw.length, 'writable folder')}</span>`);
+      const entryPort = Number(state.entries[name]) || null;
+      if (entryPort) chips.push(`<span class="chip on" title="http://127.0.0.1:${entryPort} on the machine candy runs on reaches this site through candy">Local port ${entryPort}</span>`);
       if (lan) chips.push(`<span class="chip on" title="${safe}.candy is reachable from the local network">On LAN</span>`);
       if (lanHttps) chips.push(`<a class="chip-link" href="${escapeHtml(lanHttps)}" target="_blank" title="LAN address with a trusted certificate">${escapeHtml(lanHttps.replace(/^https:\/\//, ''))}</a>`);
       if (tsServe && tsServe !== lanHttps) chips.push(`<a class="chip-link" href="${escapeHtml(tsServe)}" target="_blank" title="Tailscale address with a trusted certificate. Only your tailnet can open it.">${escapeHtml(tsServe.replace(/^https:\/\//, ''))}</a>`);
@@ -2562,6 +2948,9 @@
       if (s.config && state.status?.multiUser && s.config.sandbox !== false) toggles.push(menuItem('Memory limit…', `setMemoryLimit('${js}', '${memoryText}')`));
       if (s.config && !fn) toggles.push(menuItem(s.config.api ? 'Turn off API mode' : 'API mode', `toggleApiMode('${js}', ${!s.config.api})`));
       if (s.config && state.status?.multiUser) toggles.push(menuItem(s.config.sandbox === false ? 'Turn on sandbox' : 'Run without sandbox', `toggleSandbox('${js}', ${s.config.sandbox === false})`));
+      if (s.config && state.status?.multiUser && s.config.sandbox !== false) toggles.push(menuItem('Writable folders…', `setWritable('${js}')`));
+      if (s.config) toggles.push(menuItem('Env file…', `setEnvFile('${js}')`));
+      if (route || s.config) toggles.push(menuItem(entryPort ? 'Change local port…' : 'Local port…', `setEntryPort('${js}')`));
       const danger = [];
       if (route && !fn) danger.push(menuItem('Delete route', `deleteRoute('${js}')`, true));
       if (fn) danger.push(menuItem('Delete function', `deleteConfig('${js}')`, true));
@@ -2650,13 +3039,15 @@
     });
 
     // ----- Add site dialog -----
+    // port: an existing port (/register), cmd: a command (/config), fn: a function (/fn/add)
+    const ADD_MODES = { port: ['add-route-form', 'add-name'], cmd: ['add-config-form', 'config-name'], fn: ['add-fn-form', 'fn-add-name'] };
     function setAddMode(mode) {
-      const port = mode === 'port';
-      document.getElementById('tab-port').setAttribute('aria-selected', String(port));
-      document.getElementById('tab-cmd').setAttribute('aria-selected', String(!port));
-      document.getElementById('add-route-form').hidden = !port;
-      document.getElementById('add-config-form').hidden = port;
-      document.getElementById(port ? 'add-name' : 'config-name').focus();
+      if (!ADD_MODES[mode]) mode = 'port';
+      for (const [m, [form]] of Object.entries(ADD_MODES)) {
+        document.getElementById('tab-' + m).setAttribute('aria-selected', String(m === mode));
+        document.getElementById(form).hidden = m !== mode;
+      }
+      document.getElementById(ADD_MODES[mode][1]).focus();
     }
 
     function setCmd(cmd) {
@@ -2703,6 +3094,7 @@
       showAddRoute('port');
       document.getElementById('add-name').value = addName;
       document.getElementById('config-name').value = addName;
+      document.getElementById('fn-add-name').value = addName;
       document.getElementById('add-port').focus();
     }
 
@@ -2966,6 +3358,8 @@
       replay: null,
       detail: null,
       assetsOnly: false,
+      kvKeys: [],
+      kvValue: null,
     };
 
     function fnConfig(name) {
@@ -3008,7 +3402,7 @@
         ['Binding', a.binding ? `<span class="mono">env.${escapeHtml(a.binding)}</span>` : '<span class="fn-muted">None</span>'],
       ];
       document.getElementById('fn-assets').innerHTML = `<dl class="fn-kv">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
-        <div class="hint">Order: worker-first patterns, then _redirects, then a matching file (with _headers), then ${assetsOnly ? 'the not-found rule' : 'the code'}. Edit "assets" in candy.fn.json or wrangler to change this.</div>`;
+        <div class="hint">Order: worker-first patterns, then _redirects, then a matching file (with _headers), then ${assetsOnly ? 'the not-found rule' : 'the code'}. Edit "assets" in candy.json to change this.</div>`;
     }
 
     function showFn(name, tab = 'overview') {
@@ -3036,6 +3430,11 @@
       document.getElementById('fn-req-status').value = '';
       document.getElementById('fn-req-path').value = '';
       document.getElementById('fn-req-detail').innerHTML = '<div class="empty">Pick a request to see its headers, bodies, logs and timings.</div>';
+      document.getElementById('fn-tab-data').hidden = assetsOnly;
+      fnState.kvKeys = [];
+      fnState.kvValue = null;
+      for (const id of ['fn-kv-keys', 'fn-kv-value', 'fn-d1-result']) document.getElementById(id).innerHTML = '';
+      for (const id of ['fn-kv-prefix', 'fn-kv-key', 'fn-kv-val', 'fn-d1-params']) document.getElementById(id).value = '';
       document.getElementById('fn-modal').style.display = 'flex';
       setFnTab(tab);
       fnLoadDeploys();
@@ -3050,23 +3449,25 @@
     }
 
     function setFnTab(tab) {
+      // Data (KV, D1) is for code: an assets-only function has none
+      if (tab === 'data' && fnState.assetsOnly) tab = 'overview';
       fnState.tab = tab;
-      const overview = tab === 'overview';
-      document.getElementById('fn-tab-overview').setAttribute('aria-selected', String(overview));
-      document.getElementById('fn-tab-requests').setAttribute('aria-selected', String(!overview));
-      document.getElementById('fn-pane-overview').hidden = !overview;
-      document.getElementById('fn-pane-requests').hidden = overview;
+      for (const t of ['overview', 'requests', 'data']) {
+        document.getElementById('fn-tab-' + t).setAttribute('aria-selected', String(t === tab));
+        document.getElementById('fn-pane-' + t).hidden = t !== tab;
+      }
       clearInterval(fnState.instTimer);
       fnState.instTimer = null;
-      if (overview) {
-        fnStopTail();
-        if (fnState.assetsOnly) return;
+      if (tab === 'requests') {
+        fnLoadRequests();
+        fnStartTail();
+        return;
+      }
+      fnStopTail();
+      if (tab === 'overview' && !fnState.assetsOnly) {
         fnLoadInstances();
         // Instances come and go per request, so keep the list current while it's in view
         fnState.instTimer = setInterval(() => { if (fnState.name) fnLoadInstances(true); }, 5000);
-      } else {
-        fnLoadRequests();
-        fnStartTail();
       }
     }
 
@@ -3531,6 +3932,155 @@
       const id = String(s.id ?? '');
       fnState.requests = [s, ...fnState.requests.filter(r => String(r.id) !== id)].slice(0, 500);
       fnRenderRequests(id);
+    }
+
+    // ----- Data: KV (`candy fn kv`) and D1 (`candy fn d1`) -----
+    // Keys and values are whatever the function stored (its visitors' input, often): escaped,
+    // and rows point at fnState.kvKeys by index, so no key goes into an onclick
+    function fnKvBinding() {
+      return document.getElementById('fn-kv-binding').value.trim() || 'KV';
+    }
+
+    async function fnKvList(e) {
+      if (e) e.preventDefault();
+      const name = fnState.name;
+      if (!name) return;
+      const binding = fnKvBinding();
+      const prefix = document.getElementById('fn-kv-prefix').value;
+      const box = document.getElementById('fn-kv-keys');
+      box.innerHTML = '<div class="fn-muted">Loading…</div>';
+      let data;
+      try { data = await fnPost('/fn/kv', prefix ? { name, binding, op: 'list', prefix } : { name, binding, op: 'list' }); }
+      catch (err) { if (fnState.name === name) box.innerHTML = `<div class="fn-muted">Couldn’t list keys: ${escapeHtml(err.message)}</div>`; return; }
+      if (fnState.name !== name) return;
+      const keys = Array.isArray(data.keys) ? data.keys : [];
+      fnState.kvKeys = keys.map(k => ({ name: String(k.name ?? ''), binding }));
+      if (!keys.length) {
+        box.innerHTML = `<div class="fn-muted">No keys in ${escapeHtml(binding)}${prefix ? ` starting with ${escapeHtml(prefix)}` : ''}.</div>`;
+        return;
+      }
+      box.innerHTML = `
+        <div class="fn-scroll"><table class="fn-table">
+          <thead><tr><th>Key</th><th>Expires</th><th>Metadata</th><th class="right"></th></tr></thead>
+          <tbody>${keys.map((k, i) => `<tr>
+            <td class="mono" title="${escapeHtml(k.name)}">${escapeHtml(k.name)}</td>
+            <td>${k.expiration ? escapeHtml(new Date(Number(k.expiration) * (Number(k.expiration) < 1e12 ? 1000 : 1)).toLocaleString()) : '<span class="fn-muted">—</span>'}</td>
+            <td class="mono">${k.metadata === undefined || k.metadata === null ? '<span class="fn-muted">—</span>' : escapeHtml(JSON.stringify(k.metadata))}</td>
+            <td class="right"><div class="fn-row-acts"><button class="btn small" onclick="fnKvGet(${i})">Show</button><button class="btn small stop" onclick="fnKvDelete(${i})">Delete</button></div></td>
+          </tr>`).join('')}</tbody>
+        </table></div>
+        ${data.list_complete === false ? '<div class="hint">There are more keys. Narrow it down with the start of a key.</div>' : ''}`;
+    }
+
+    async function fnKvGet(i) {
+      const name = fnState.name;
+      const k = fnState.kvKeys[i];
+      if (!name || !k) return;
+      const box = document.getElementById('fn-kv-value');
+      try {
+        const data = await fnPost('/fn/kv', { name, binding: k.binding, op: 'get', key: k.name });
+        if (fnState.name !== name) return;
+        const v = data && typeof data === 'object' && 'value' in data ? data.value : data;
+        fnState.kvValue = { key: k.name, value: v === null || v === undefined ? null : typeof v === 'string' ? v : JSON.stringify(v, null, 2) };
+        box.innerHTML = `<div class="fn-block"><h4><span class="mono">${escapeHtml(k.name)}</span> <span>in ${escapeHtml(k.binding)}</span>
+            ${fnState.kvValue.value === null ? '' : '<button class="btn small" style="margin-left: auto;" onclick="fnKvEdit()">Edit</button>'}</h4>
+          ${fnState.kvValue.value === null ? '<div class="fn-muted">Not found. It may have expired.</div>' : `<pre class="fn-pre">${escapeHtml(fnState.kvValue.value)}</pre>`}</div>`;
+      } catch (err) {
+        toast(`Couldn’t read ${k.name}: ${err.message}`, 'error');
+      }
+    }
+
+    // Put the shown value in the form below, to change it
+    function fnKvEdit() {
+      if (!fnState.kvValue || fnState.kvValue.value === null) return;
+      document.getElementById('fn-kv-key').value = fnState.kvValue.key;
+      document.getElementById('fn-kv-val').value = fnState.kvValue.value;
+      document.getElementById('fn-kv-val').focus();
+    }
+
+    async function fnKvPut(e) {
+      e.preventDefault();
+      const name = fnState.name;
+      if (!name) return;
+      const binding = fnKvBinding();
+      const key = document.getElementById('fn-kv-key').value;
+      const value = document.getElementById('fn-kv-val').value;
+      if (!key) { toast('Enter a key', 'error'); return; }
+      try {
+        await fnPost('/fn/kv', { name, binding, op: 'put', key, value });
+        toast(`Saved ${key} in ${binding}`, 'success');
+        document.getElementById('fn-kv-val').value = '';
+        fnKvList();
+      } catch (err) {
+        toast(`Couldn’t save: ${err.message}`, 'error');
+      }
+    }
+
+    async function fnKvDelete(i) {
+      const name = fnState.name;
+      const k = fnState.kvKeys[i];
+      if (!name || !k) return;
+      if (!confirm(`Delete ${k.name} from ${k.binding}?`)) return;
+      try {
+        await fnPost('/fn/kv', { name, binding: k.binding, op: 'delete', key: k.name });
+        toast(`Deleted ${k.name}`, 'success');
+        if (fnState.kvValue?.key === k.name) document.getElementById('fn-kv-value').innerHTML = '';
+        fnKvList();
+      } catch (err) {
+        toast(`Couldn’t delete: ${err.message}`, 'error');
+      }
+    }
+
+    function fnD1Cell(v) {
+      if (v === null || v === undefined) return '<span class="fn-muted">NULL</span>';
+      const text = typeof v === 'object' ? JSON.stringify(v) : String(v);
+      return `<span title="${escapeHtml(text)}">${escapeHtml(text)}</span>`;
+    }
+
+    async function fnD1Run(e) {
+      e.preventDefault();
+      const name = fnState.name;
+      if (!name) return;
+      const binding = document.getElementById('fn-d1-binding').value.trim() || 'DB';
+      const sql = document.getElementById('fn-d1-sql').value;
+      if (!sql.trim()) { toast('Enter some SQL', 'error'); return; }
+      const body = { name, binding, sql };
+      const paramText = document.getElementById('fn-d1-params').value.trim();
+      if (paramText) {
+        let params;
+        try { params = JSON.parse(paramText); } catch { params = null; }
+        if (!Array.isArray(params)) { toast('Values for ? go in a list, like [1, "a"]', 'error'); return; }
+        body.params = params;
+      }
+      const box = document.getElementById('fn-d1-result');
+      const btn = document.getElementById('fn-d1-run');
+      btn.disabled = true;
+      box.innerHTML = '<div class="fn-muted">Running…</div>';
+      try {
+        const res = await fnPost('/fn/d1', body);
+        if (fnState.name !== name) return;
+        const rows = Array.isArray(res.results) ? res.results : [];
+        const cols = [...new Set(rows.flatMap(r => r && typeof r === 'object' ? Object.keys(r) : []))];
+        const m = res.meta || {};
+        const facts = [
+          `${plural(rows.length, 'row')}`,
+          m.changes ? `${Number(m.changes)} changed` : '',
+          m.last_row_id ? `last row id ${Number(m.last_row_id)}` : '',
+          typeof m.duration === 'number' ? fmtMs(m.duration) : '',
+          res.truncated ? 'only the first rows are shown' : '',
+        ].filter(Boolean).join(' · ');
+        box.innerHTML = (rows.length && cols.length
+          ? `<div class="fn-scroll"><table class="fn-table">
+              <thead><tr>${cols.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr></thead>
+              <tbody>${rows.map(r => `<tr>${cols.map(c => `<td class="mono">${fnD1Cell(r?.[c])}</td>`).join('')}</tr>`).join('')}</tbody>
+            </table></div>`
+          : '<div class="fn-muted">No rows.</div>')
+          + `<div class="hint">${escapeHtml(facts)}</div>`;
+      } catch (err) {
+        if (fnState.name === name) box.innerHTML = `<div class="fn-block"><pre class="fn-pre"><span class="lv-error">${escapeHtml(err.message)}</span></pre></div>`;
+      } finally {
+        btn.disabled = false;
+      }
     }
 
     document.getElementById('fn-modal').addEventListener('click', (e) => {

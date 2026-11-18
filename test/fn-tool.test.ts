@@ -99,8 +99,8 @@ describe("checking fn-tool results", () => {
   })
 
   it("checks project configs", () => {
-    const cfg = { main: "src/index.ts", vars: { A: "1" }, kv: ["KV"], d1: ["DB"], crons: ["*/5 * * * *"], warnings: ["odd\u001b[31m key"], source: "/srv/f/candy.fn.json", extra: 1 }
-    expect(checkProjectConfig(cfg)).toEqual({ main: "src/index.ts", assets: null, vars: { A: "1" }, kv: ["KV"], d1: ["DB"], crons: ["*/5 * * * *"], warnings: ["odd [31m key"], source: "/srv/f/candy.fn.json" })
+    const cfg = { main: "src/index.ts", vars: { A: "1" }, kv: ["KV"], d1: ["DB"], crons: ["*/5 * * * *"], warnings: ["odd\u001b[31m key"], source: "/srv/f/candy.json", extra: 1 }
+    expect(checkProjectConfig(cfg)).toEqual({ main: "src/index.ts", assets: null, vars: { A: "1" }, kv: ["KV"], d1: ["DB"], crons: ["*/5 * * * *"], warnings: ["odd [31m key"], source: "/srv/f/candy.json" })
     expect(() => checkProjectConfig({ ...cfg, main: "a\nb" })).toThrow("bad main")
     expect(() => checkProjectConfig({ ...cfg, kv: ["bad name"] })).toThrow("bad kv")
     expect(() => checkProjectConfig({ ...cfg, vars: { A: 1 } })).toThrow("bad var")
@@ -119,7 +119,7 @@ describe("fn-tool with assets", () => {
   const dir = "/var/lib/candy/f/deploys/20260101120000-0123abcd"
   const deploy = { id: "20260101120000-0123abcd", createdAt: 1, entry: `${dir}/worker.js`, dir, source: "/home/u/f", gitRev: null, size: 10, main: "src/index.ts", assets: `${dir}/assets` }
   const assets = { directory: "/home/u/f/dist", binding: "ASSETS", notFound: "single-page-application", html: "auto-trailing-slash", runWorkerFirst: ["/api/*", "!/api/docs/*"] }
-  const cfg = { main: "src/index.ts", assets, vars: {}, kv: [], d1: [], crons: [], warnings: [], source: "/home/u/f/wrangler.jsonc" }
+  const cfg = { main: "src/index.ts", assets, vars: {}, kv: [], d1: [], crons: [], warnings: [], source: "/home/u/f/candy.json" }
 
   it("checks the recorded assets routing like the live config", () => {
     const assetsConfig = { binding: "ASSETS", notFound: "single-page-application", html: "none", runWorkerFirst: ["/api/*"] }

@@ -789,7 +789,7 @@ USE THIS TOOL when:
 - User says "add this as a function" or "run this worker with candy"
 
 Functions are portless: they open no port. A request starts an instance and it exits when idle, unless hot instances are kept warm.
-Project config (vars, KV and D1 bindings, crons, main, assets) is read from candy.fn.json or wrangler.jsonc/json/toml in cwd.
+Project config (vars, KV and D1 bindings, crons, main, assets) is read from candy.json in cwd (wrangler key names). candy.json also takes "auth": true (Sign in with candy), "depends": [site names] and "publish": true (other users may depend on it) for any site.
 
 Static assets (Cloudflare Workers Static Assets): "assets": {directory, binding?, not_found_handling?, html_handling?, run_worker_first?} in the project config. The daemon serves the files itself, no process. Routing: run_worker_first patterns -> _redirects -> asset -> the function (or not_found_handling when there is no main). "main" is optional: without it the site is assets-only and no process ever starts (hot/max/linger don't apply).
 For a SPA with an API, set "not_found_handling": "single-page-application" and "run_worker_first": ["/api/*"] so /api/* always reaches the code instead of index.html. _headers, _redirects and .assetsignore in the asset folder are honored.
@@ -806,7 +806,7 @@ This CREATES CONFIGURATION - confirm with user if they haven't asked.`,
       properties: {
         name: { type: "string", description: "Function name; served at <name>.localhost" },
         cwd: { type: "string", description: "Absolute path of the function's folder" },
-        entry: { type: "string", description: "Module path relative to cwd (default: main from candy.fn.json / wrangler config)" },
+        entry: { type: "string", description: "Module path relative to cwd (default: main from candy.json / wrangler config)" },
         user: { type: "string", description: "Run-as account (owner only). Defaults to the caller" },
         envFile: { type: "string", description: "Absolute path of a KEY=VALUE secrets file" },
         hot: { type: "number", description: "Warm instances kept alive (default 0)" },

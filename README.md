@@ -190,7 +190,7 @@ Activity is counted the same way, so an open connection still keeps it up. The c
 
 ### Memory limit
 
-Every sandboxed server, function and cron run has a hard memory limit: 2G unless you set another, and never more than 16G. Past its limit the server is killed (it shows as crashed; an API-mode server starts again on the next request).
+Every sandboxed server, function and cron run has a hard memory limit: 2G unless you set another, and never more than 16G. Past its limit the server is killed (it shows as crashed; an API-mode server starts again on the next request). At 90% of the limit the kernel starts pushing back first (`MemoryHigh`): the server is slowed and made to give memory back, so a runtime that watches memory pressure can collect garbage and drop caches before it gets that far.
 
 ```bash
 candy mem vault 4G     # 64M to 16G; a bare number is MB

@@ -37,8 +37,16 @@ export const memoryLimitMb = (configured: unknown): number =>
 /** "2G", "512M", "1.5G" */
 export const formatMemory = (mb: number): string => mb >= 1024 && mb % 512 === 0 ? `${mb / 1024}G` : `${mb}M`
 
-/** systemd properties for a limit: RAM capped, and no swap to spill into */
-export const memoryProperties = (mb: number): string[] => [`MemoryMax=${mb}M`, "MemorySwapMax=0"]
+/** Where the kernel starts pushing back: 90% of the limit */
+export const memoryHighMb = (mb: number): number => Math.floor(mb * 0.9)
+
+/**
+ * systemd properties for a limit: RAM capped, and no swap to spill into.
+ * MemoryHigh sits at 90% so the app is throttled and made to reclaim before
+ * it is killed: a runtime that watches memory pressure (or its cgroup's
+ * memory.high) gets the chance to collect garbage and drop caches first.
+ */
+export const memoryProperties = (mb: number): string[] => [`MemoryMax=${mb}M`, `MemoryHigh=${memoryHighMb(mb)}M`, "MemorySwapMax=0"]
 
 // "wa" -> "candy-wa-3f9a1c.service". Names are DNS-safe labels already; the
 // suffix keeps a restart from colliding with a unit that is still stopping.

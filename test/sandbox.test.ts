@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { parseEnvFile, validateEnvFilePath, userEnvDir } from "../sandbox.ts"
 import { listeningPortsOf, tailscaleServeTargets } from "../activity.ts"
-import { DEFAULT_MEMORY_MB, MAX_MEMORY_MB, formatMemory, memoryLimitMb, validateMemoryMb, findCodeDir, sandboxProperties, stateDirPath, systemdRunCommand, unitName, unitOfCgroup, validateRwPath, type SandboxSpec } from "../sandbox.ts"
+import { DEFAULT_MEMORY_MB, MAX_MEMORY_MB, formatMemory, memoryLimitMb, memoryHighMb, memoryProperties, validateMemoryMb, findCodeDir, sandboxProperties, stateDirPath, systemdRunCommand, unitName, unitOfCgroup, validateRwPath, type SandboxSpec } from "../sandbox.ts"
 
 const spec = (over: Partial<SandboxSpec> = {}): SandboxSpec => ({
   name: "wa", unit: "candy-wa-abc123.service", uid: 1001, gid: 1001,
@@ -138,6 +138,14 @@ describe("memory limit", () => {
     expect(systemdRunCommand(spec())).toContain("--property=MemoryMax=2048M")
     expect(sandboxProperties(spec({ memoryMb: 4096 }))).toContain("MemoryMax=4096M")
     expect(sandboxProperties(spec({ memoryMb: 512 }))).toContain("MemoryMax=512M")
+  })
+
+  it("pushes back at 90% of the limit, before the kill", () => {
+    expect(sandboxProperties(spec())).toContain("MemoryHigh=1843M")
+    expect(sandboxProperties(spec({ memoryMb: 4096 }))).toContain("MemoryHigh=3686M")
+    expect(sandboxProperties(spec({ memoryMb: 64 }))).toContain("MemoryHigh=57M")
+    expect(memoryProperties(1000)).toEqual(["MemoryMax=1000M", "MemoryHigh=900M", "MemorySwapMax=0"])
+    for (const mb of [64, 100, 2048, 16384]) expect(memoryHighMb(mb)).toBeLessThan(mb)
   })
 
   it("never more than 16G, whatever the config says", () => {

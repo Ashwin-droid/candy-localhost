@@ -7716,8 +7716,7 @@ async function controlFetch(req: Request): Promise<Response> {
       const managed = processes.get(name)
       let live = false
       if (managed?.unit && (managed.status === 'running' || managed.status === 'starting') && targets.some(cfg => cfg.id === managed.config.id)) {
-        const [max, swap] = memoryProperties(limit)
-        live = (await $`systemctl set-property --runtime ${managed.unit} ${max} ${swap}`.quiet().nothrow()).exitCode === 0
+        live = (await $`systemctl set-property --runtime ${managed.unit} ${memoryProperties(limit)}`.quiet().nothrow()).exitCode === 0
       }
       auditLog('CONFIG_MEMORY', `${name}: memory limit ${formatMemory(limit)}${mb ? '' : ' (default)'}${live ? ', applied to the running unit' : ''}`, requestActor)
       return Response.json({

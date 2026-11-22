@@ -118,7 +118,7 @@ export interface SandboxSpec {
 }
 
 /** Env names that hold key material: never put on a systemd-run command line. */
-export const SECRET_ENV_NAMES: readonly string[] = ["CANDY_AUTH_KEYS"]
+export const SECRET_ENV_NAMES: readonly string[] = ["CANDY_AUTH_KEYS", "CANDY_RUNTIME"]
 const CREDENTIAL_NAME_RE = /^[a-z0-9-]{1,64}$/
 /** A LoadCredential= entry: a plain name, and an absolute, normal path with nothing systemd would read as syntax. */
 export const validCredential = (c: { name: unknown; path: unknown }): boolean =>

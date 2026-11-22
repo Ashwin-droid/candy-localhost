@@ -123,7 +123,7 @@ if (cronJob() === "sync") {
 }
 ```
 
-- `setIdling(on = true)` marks the running server as idling until it stops or calls `setIdling(false)`. Open connections and recent requests still count as activity as usual.
+- `setIdling(on = true)` marks the running server as idling until it stops or calls `setIdling(false)`. The site needs `"idle": true` in its [candy.json](#candyjson). Open connections and recent requests still count as activity as usual.
 - `setCron({ name, schedule, args?, timeoutSec? })` adds or replaces a job; `removeCron(name)` and `listCrons()` manage them. Schedules are 5-field cron or `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`.
 - A cron run is the server's command plus `args`, as the server's user, in its directory, whether or not the server is running. The base command can't be changed, and `args` are passed as separate argv entries (`"$@"`), so `;`, `&&`, `|` or `$(...)` in them are plain text. A run that is still going when the next one is due is skipped, and runs are stopped after `timeoutSec` (default 1 hour). Output goes to `<logs>/cron/<name>.log`, and runs are recorded in the audit log (`CRON_RUN`, `CRON_EXIT`).
 
@@ -196,11 +196,15 @@ A site runs without any config file of its own: register it and candy starts it,
 {
   "auth": true,              // Sign in with candy: this site gets a key and may ask for tokens
   "depends": ["db", "queue"], // start these first, and keep them up for as long as this site runs
-  "publish": true             // other users' sites may depend on this one
+  "publish": true,            // other users' sites may depend on this one, or subscribe to its events
+  "idle": true,               // may call setIdling() to stay up past its idle limit
+  "events": ["built"],        // events this site may publish
+  "subscribe": ["ci:built"],  // events of other sites it gets: "<site>:<event>"
+  "service": true             // takes server-to-server tokens (which app is calling)
 }
 ```
 
-Without the file a site gets none of it. `appAuth()` has no key and the portal refuses to sign anyone in to it. Nothing keeps another site up for it either: you can still poke the other site awake by hand, but it stops on its own idle limit like any other.
+Without the file a site gets none of it. `appAuth()` has no key and the portal refuses to sign anyone in to it. `setIdling()` is refused, it can't publish or receive events, and it can't check who is calling it. Nothing keeps another site up for it either: you can still poke the other site awake by hand, but it stops on its own idle limit like any other.
 
 For a function the same file also holds its own keys (`main`, `vars`, `kv`, `d1`, `crons`, `assets`; see [Bindings](#bindings)). Comments and trailing commas are fine.
 
@@ -215,6 +219,52 @@ The file is read when the site starts, as the user the site runs as. A file that
 - Chains are fine and start from the far end: if `a` depends on `b` and `b` on `c`, starting `a` starts `c`, then `b`, then `a`. A circle (`a` depends on `b` depends on `a`) is refused.
 - Stopping a site yourself (`candy stop`, the portal, removing it) first stops every site that depends on it, and theirs. `candy stop` lists them. Idle stops and restarts don't do this. A crash is not restarted on its own.
 - Cron runs start the dependencies first as well, but don't hold them afterwards.
+
+**`idle`** lets the site call `setIdling()` (see the SDK). Without it the call is refused and the site stops on its idle limit like any other.
+
+**`events` and `subscribe`** are candy's pub/sub. A site lists the events it may publish; another lists `"<site>:<event>"` for each one it wants. Names are lower-case letters, digits, dots, dashes and underscores; at most 32 of each.
+
+```ts
+// ci (candy.json: { "events": ["built"] })
+import { publish } from "candy-localhost"
+await publish("built", { commit: "abc123" })   // JSON, up to 64 KB
+
+// web, a server (candy.json: { "subscribe": ["ci:built"] })
+import { subscribe } from "candy-localhost"
+subscribe(event => {
+  // { id, from: "ci", event: "built", data: { commit: "abc123" }, time }
+})
+
+// a function (same candy.json key): one run of event() per event
+export default {
+  async event(event, env, ctx) { /* ... */ },
+}
+```
+
+- **A publish wakes its subscribers.** A stopped server is started, and gets what was published once it calls `subscribe()` (up to 1000 events, for 10 minutes). A function gets one run of its `event()` handler per event, up to 4 at a time, 60 seconds each.
+- **A failed function run is tried again** after 1 and then 5 seconds. After the third failure the event is dropped, with a line in the function's log. Events are held in memory: a daemon restart loses the ones not yet delivered.
+- **A subscriber keeps its publishers up**, the way `depends` does: a publisher that is a server is started when the subscriber starts, and isn't stopped for being idle while the subscriber runs. Unlike `depends`, it isn't waited for, circles are fine, and stopping the publisher yourself leaves the subscriber running.
+- **Other users' events** need `"publish": true` on the publishing site, the same rule as `depends`.
+- **A start is refused** when the site subscribes to a site candy doesn't start, to one it may not reach, or to an event that site doesn't list.
+- A server gets events over a connection to the daemon that the SDK keeps open; `subscribe()` returns `{ close() }`. Inside a function, publishing is `env.CANDY.publish(name, data)`.
+
+**`service`** is server-to-server auth. A token tells the receiving site "the app named `web`, running as unix user `ashwin`, asks". It never says a person signed in: that is `auth`, with its own key and header, so a site that only knows one kind is never handed the other.
+
+```ts
+// web: any site candy started can ask for a token addressed to another site
+import { serviceHeaders } from "candy-localhost"
+await fetch("https://db-api.localhost/rows", { headers: await serviceHeaders("db-api") })
+
+// db-api (candy.json: { "service": true })
+import { verifyService } from "candy-localhost"
+const caller = await verifyService(request)   // { app: "web", user: "ashwin", issuedAt, expiresAt } or null
+if (caller?.app !== "web") return new Response("no", { status: 403 })
+```
+
+- The token travels in the `Candy-Service-Token` header, is good for 5 minutes and for the one site it was asked for. The SDK caches it until it is nearly over.
+- The daemon knows the caller because it launched it: every launch gets a private runtime record (a credential file in the sandbox, never a command line). Nothing the caller says about itself is believed.
+- The receiver decides whom to trust from `app` and `user`. Any candy-run site can ask for a token to a site that takes them, including another user's.
+- The receiver gets its key at start: after adding `"service": true`, restart it. Inside a function: `env.CANDY.serviceHeaders(target)` and `env.CANDY.verifyService(request)`.
 
 ### Memory limit
 

@@ -2250,7 +2250,11 @@
       if (manifest?.auth) chips.push('<span class="chip on" title="Its candy.json asks for Sign in with candy. Its key is in Settings.">Sign-in</span>');
       if (manifest?.publish) chips.push('<span class="chip on" title="Its candy.json lets other users\' sites depend on it">Published</span>');
       if (needs.length) chips.push(`<span class="chip" title="Started before it, and kept up while it runs">Needs: ${escapeHtml(needs.join(', '))}</span>`);
-      if (heldBy.length) chips.push(`<span class="chip on" title="These sites depend on it, so it isn't stopped for being idle">Kept up by: ${escapeHtml(heldBy.join(', '))}</span>`);
+      if (manifest?.idle) chips.push('<span class="chip" title="Its candy.json lets it ask to stay up past its idle limit">May idle</span>');
+      if (manifest?.service) chips.push('<span class="chip on" title="Its candy.json takes server-to-server tokens: other sites can prove which app is calling">Service tokens</span>');
+      if (manifest?.events?.length) chips.push(`<span class="chip" title="Events it may publish">Publishes: ${escapeHtml(manifest.events.join(', '))}</span>`);
+      if (manifest?.subscribe?.length) chips.push(`<span class="chip" title="A publish of these starts it, and it keeps their sites up while it runs">Subscribes: ${escapeHtml(manifest.subscribe.join(', '))}</span>`);
+      if (heldBy.length) chips.push(`<span class="chip on" title="These sites depend on it or subscribe to its events, so it isn't stopped for being idle">Kept up by: ${escapeHtml(heldBy.join(', '))}</span>`);
       if (tsServe && tsServe !== lanHttps) chips.push(`<a class="chip-link" href="${escapeHtml(tsServe)}" target="_blank" title="Tailscale address with a trusted certificate. Only your tailnet can open it.">${escapeHtml(tsServe.replace(/^https:\/\//, ''))}</a>`);
 
       let portalLine = '';

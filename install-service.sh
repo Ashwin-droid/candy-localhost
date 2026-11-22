@@ -52,6 +52,7 @@ if [ "$kind" = daemon ]; then
     "$dir/fn-host.ts" "$dir/fn-protocol.ts" "$dir/fn-bindings.ts" "$dir/fn-cron.ts" "$dir/fn-console.ts" \
     "$dir/fn-config.ts" "$dir/fn-deploy.ts" "$dir/fn-tool.ts" "$dir/fn-assets.ts" "$dir/cron.ts" \
     "$dir/sdk-auth.ts" "$dir/jwe.ts" "$dir/manifest.ts" \
+    "$dir/events.ts" "$dir/service-auth.ts" "$dir/sdk-runtime.ts" \
     "$fn_dir/"
   echo "Installed the function shim in $fn_dir"
   # Portal login checks passwords through this PAM service (pam.ts)

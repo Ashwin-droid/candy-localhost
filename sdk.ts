@@ -340,12 +340,53 @@ export interface IdlingResult {
  * only waiting for events to arrive. An idling server is not stopped for
  * inactivity until memory gets tight (80% of RAM in use, or high memory
  * pressure). Call `setIdling(false)` to go back to the normal 1-hour rule.
- * The flag lasts until the server stops.
+ * The flag lasts until the server stops. The site has to ask for it:
+ * `"idle": true` in its candy.json, or this throws.
  */
 export async function setIdling(idling = true): Promise<IdlingResult> {
   const res = await runtimeCall<IdlingResult>("/sdk/idle", { idling })
   return { name: res.name, idling: res.idling }
 }
+
+// --- Events and server-to-server tokens (sdk-runtime.ts) ---
+// These act as the site candy started this process for. Inside a candy
+// function the same object is env.CANDY.
+import { createRuntime, readRuntime, type CandyRuntime, type CandyEvent, type ServiceCaller, type Subscription, type SubscribeOptions } from "./sdk-runtime.ts"
+export type { CandyRuntime, CandyEvent, ServiceCaller, Subscription, SubscribeOptions } from "./sdk-runtime.ts"
+export { SERVICE_HEADER } from "./sdk-runtime.ts"
+
+let cachedRuntime: CandyRuntime | null = null
+/** This process as its candy site: `publish`, `subscribe`, `serviceToken`, `serviceHeaders`, `verifyService`. */
+export function runtime(): CandyRuntime {
+  const shared = (globalThis as Record<symbol, unknown>)[Symbol.for("candy.runtime")] as CandyRuntime | undefined
+  return shared ?? (cachedRuntime ??= createRuntime(readRuntime()))
+}
+
+/**
+ * Publish an event. It must be listed in "events" in this site's candy.json.
+ * Every site whose candy.json subscribes to "<this site>:<event>" gets it;
+ * the ones that are stopped are started first. `data` is JSON, up to 64 KB.
+ */
+export const publish = (event: string, data?: unknown) => runtime().publish(event, data)
+
+/**
+ * Receive the events this site's candy.json subscribes to ("subscribe":
+ * ["<site>:<event>"]), one at a time: `{ id, from, event, data, time }`.
+ * A server calls this once at start; events published while it was stopped
+ * (which is what started it) arrive first. A function exports `event()` instead.
+ */
+export const subscribe = (handler: (event: CandyEvent) => unknown, opts?: SubscribeOptions): Subscription => runtime().subscribe(handler, opts)
+
+/**
+ * A short-lived token for a request to another candy site. It tells that site
+ * "the app named <this site>, running as <its unix user>, asks": not that any
+ * person signed in. The target needs "service": true in its candy.json.
+ */
+export const serviceToken = (target: string) => runtime().serviceToken(target)
+/** `{ "Candy-Service-Token": <token> }`, to spread into a fetch to `target` */
+export const serviceHeaders = (target: string) => runtime().serviceHeaders(target)
+/** Which app a request is from (`{ app, user }`), or null. Needs "service": true in this site's candy.json. */
+export const verifyService = (from: Request | Headers | string | null | undefined): Promise<ServiceCaller | null> => runtime().verifyService(from)
 
 export interface CronJobInput {
   /** Unique per server: setting a job with an existing name replaces it. */
@@ -443,6 +484,12 @@ const candySdk = {
   cronJob,
   appAuth,
   createAppAuth,
+  runtime,
+  publish,
+  subscribe,
+  serviceToken,
+  serviceHeaders,
+  verifyService,
 }
 
 export default candySdk

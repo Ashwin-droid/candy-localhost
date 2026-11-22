@@ -124,8 +124,11 @@ describe("ROUTE_TABLE", () => {
     const pub = table.filter(([, , c]) => c === "public").map(([m, p]) => `${m} ${p}`).sort()
     expect(pub).toEqual([
       "* /candy-auth/check", "GET /app-auth/authorize", "GET /auth/passkey/start", "GET /auth/users", "GET /candy/registry", "GET /favicon.svg", "GET /login",
+      // /runtime/*: no login, but a launched process's runtime token, on loopback and never through Caddy
+      "GET /runtime/events",
       "POST /auth/login", "POST /auth/logout", "POST /auth/passkey/finish",
       "POST /candy-auth/login", "POST /candy/advertise", "POST /mcp/auth",
+      "POST /runtime/publish", "POST /runtime/service-token",
     ])
   })
 

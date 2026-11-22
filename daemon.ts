@@ -9,7 +9,7 @@ import { $, spawn, type Subprocess } from "bun"
 import { chmodSync, closeSync, existsSync, openSync, readFileSync, statSync, watch, type FSWatcher } from "node:fs"
 import { appendFile, chmod, chown, lchown, lstat, mkdir, rename, stat, unlink, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
-import { timingSafeEqual } from "node:crypto"
+import { randomBytes, timingSafeEqual } from "node:crypto"
 import { networkInterfaces, userInfo } from "node:os"
 import { SHARED_GROUP, SHARED_SECRET_FILE } from "./secret.ts"
 import { AccessLogTail, activityFromAccessLog, countEstablished, idleVerdict, IDLE_TIMEOUT_MS, listeningPortsOf, localNameCandidates, readMemoryState, tailscaleServeTargets, validateTtlMinutes, type MemoryState } from "./activity.ts"
@@ -31,6 +31,9 @@ import { AssetServer, userCanRead, type AssetsConfig } from "./fn-assets.ts"
 import { isDeployId, type DeployInfo } from "./fn-deploy.ts"
 import { CONFIG_FILES as FN_CONFIG_FILES, type FnProjectConfig } from "./fn-config.ts"
 import { MANIFEST_FILE, emptyManifest, findDependencyLoop, type SiteManifest } from "./manifest.ts"
+import { EventQueue, eventData, parseSubscription, subscriptionKey, EVENT_NAME, EVENT_RETRY_DELAYS_MS, MAX_QUEUED, type CandyEvent } from "./events.ts"
+import { mintServiceToken } from "./service-auth.ts"
+import { RUNTIME_CREDENTIAL, RUNTIME_HEADER, type RuntimeRecord } from "./sdk-runtime.ts"
 import { apiHoldSeconds, createApiModeGate } from "./api-mode.ts"
 import { SystemMonitor, SIGNALS, isUnitName, killProblem, unitActionProblem } from "./sysmon.ts"
 import { PortalSessions, readSessionCookie, sessionCookieHeader, clearSessionCookieHeader } from "./portal-session.ts"
@@ -116,6 +119,7 @@ interface ManagedProcess {
   idling: boolean  // the app said it is only waiting for events (SDK setIdling)
   unit: string | null  // transient systemd unit, when launched sandboxed
   depends: string[]  // candy.json "depends" as read at this start: sites it keeps up while it runs
+  subscribes: string[]  // sites whose events it subscribed to at this start: kept up too, but their stop doesn't stop it
   logStart?: number  // size of the log file when this run was spawned: a site page's excerpt starts here
 }
 
@@ -172,6 +176,9 @@ const APP_AUTH_CONSENT_FILE = `${AUTH_STATE_DIR}/app-auth-consent.json`
 const PASSKEYS_FILE = `${AUTH_STATE_DIR}/passkeys.json`
 // Root mode: what LoadCredential= copies into a sandboxed unit (dir 0700, files 0600, root's)
 const APP_AUTH_CRED_DIR = "/run/candy/app-auth"
+// Server-to-server keys (candy.json "service": true): apart from the sign-in keys
+const SERVICE_KEYS_FILE = `${AUTH_STATE_DIR}/service-keys.json`
+const RUNTIME_CRED_DIR = "/run/candy/runtime"
 const CLOUDFLARED_SYSTEM_CONFIG = `/etc/cloudflared/config.yml`
 const CLOUDFLARED_USER_CONFIG = `${process.env.HOME}/.cloudflared/config.yml`
 const CANDY_RUNTIME_MAGIC_ENV = "X_CANDY_RUNTIME_MAGIC_STRING"
@@ -1395,6 +1402,7 @@ const siteTokens = new SiteTokens()
 // Sign in with candy: site key rings, remembered approvals, parked requests.
 // Passkeys: credentials and their single-use challenges.
 const appKeys = new AppKeyStore(APP_AUTH_KEYS_FILE)
+const serviceKeys = new AppKeyStore(SERVICE_KEYS_FILE)
 const appConsents = new ConsentStore(APP_AUTH_CONSENT_FILE)
 const appPending = new PendingRequests()
 const passkeys = new PasskeyStore(PASSKEYS_FILE)
@@ -1536,6 +1544,7 @@ const runCronJob = async (name: string, config: ServerConfig, job: CronJob) => {
   await Promise.all([pump(proc.stdout), pump(proc.stderr)]).catch(() => {})
   const code = await proc.exited
   clearTimeout(timer)
+  launch.release()
   cronRunning.delete(key)
   await write(`--- exit ${code}${timedOut ? ` (stopped after ${timeoutS}s)` : ''} ---\n`)
   auditLog('CRON_EXIT', `${name}:${job.name} code ${code}${timedOut ? ' (timeout)' : ''}`, 'System')
@@ -2858,9 +2867,71 @@ const appAuthKeysChanged = async (site: string, ring: JweKey[]): Promise<string[
 // whoever uses the name next starts from nothing
 const dropAppAuth = async (name: string, actor: Actor = 'System') => {
   const hadKeys = appKeys.drop(name)
+  if (serviceKeys.drop(name)) auditLog('SERVICE_KEY_DROP', `${name}: service key removed`, actor)
+  eventQueue.drop(name)
   const n = appConsents.dropSite(name)
   await unlink(appAuthCredentialPath(name)).catch(() => {})
   if (hadKeys || n) auditLog('APP_AUTH_DROP', `${name}: key and ${n} approval(s) removed`, actor)
+}
+
+// ---- runtime records: who a launched process is to the daemon ----
+// Every named launch gets a random token (sdk-runtime.ts). It names the site,
+// config and unix user to /runtime/*: events and server-to-server tokens. It is
+// not an API key and opens nothing else. A server's lasts until its next
+// start; a function instance's, a cron run's and an event run's until it exits.
+type RuntimeKind = 'srv' | 'fn' | 'cron' | 'event'
+interface RuntimeGrant { name: string; configId: string; user: string; kind: RuntimeKind }
+const runtimeGrants = new Map<string, RuntimeGrant>()
+const srvRuntimeTokens = new Map<string, string>()   // server name -> its current token
+const runtimeGrantFor = (token: string | null): RuntimeGrant | null => {
+  if (!token || token.length > 128) return null
+  const grant = runtimeGrants.get(token)
+  if (!grant) return null
+  if (grant.kind === 'srv') {
+    const proc = processes.get(grant.name)
+    const up = proc && (proc.status === 'running' || proc.status === 'starting')
+    if (!up || srvRuntimeTokens.get(grant.name) !== token) return null
+  }
+  return grant
+}
+// The record for one launch, and how to end it. `file` is the LoadCredential= source when sandboxed.
+const runtimeLaunch = async (name: string, config: ServerConfig, kind: RuntimeKind, manifest: SiteManifest, sandboxed: boolean, event?: CandyEvent): Promise<{ json: string; file: string | null; release: () => void }> => {
+  const token = randomBytes(32).toString('base64url')
+  const user = configUser(config)
+  const record: RuntimeRecord = { token, site: name, url: `http://localhost:${controlServer.port}` }
+  if (manifest.service) {
+    try {
+      record.serviceKeys = formatKeyRing(serviceKeys.ensure(name, user).ring)
+    } catch (e) {
+      console.error(`\x1b[33mNo candy service key for ${name}: ${(e as Error).message}\x1b[0m`)
+    }
+  }
+  if (event) record.event = event
+  const json = JSON.stringify(record)
+  let file: string | null = null
+  if (sandboxed) {
+    file = `${RUNTIME_CRED_DIR}/${fnFileName(name)}.${kind === 'srv' ? 'srv' : randomBytes(6).toString('hex')}.json`
+    const tmp = `${file}.${process.pid}.tmp`
+    await mkdir(RUNTIME_CRED_DIR, { recursive: true, mode: 0o700 })
+    await chmod(RUNTIME_CRED_DIR, 0o700)
+    await unlink(tmp).catch(() => {})
+    await writeFile(tmp, json, { mode: 0o600, flag: 'wx' })
+    await rename(tmp, file)
+  }
+  if (kind === 'srv') {
+    const old = srvRuntimeTokens.get(name)
+    if (old) runtimeGrants.delete(old)
+    srvRuntimeTokens.set(name, token)
+  }
+  runtimeGrants.set(token, { name, configId: config.id, user, kind })
+  return {
+    json,
+    file,
+    release: () => {
+      runtimeGrants.delete(token)
+      if (file && kind !== 'srv') unlink(file).catch(() => {})
+    },
+  }
 }
 
 // How to run a config. As root, drop to the config's user with setpriv and
@@ -2870,7 +2941,7 @@ const dropAppAuth = async (name: string, actor: Actor = 'System') => {
 // A function launch (`fnInstance` for one that dials in; a cron run passes
 // `cron`) runs `bun <shim> <entry> [--scheduled <expr>]`, all of it as argv:
 // the script is just `exec "$@"`.
-const launchSpec = async (config: ServerConfig, cron?: { job: string; args: string[] }, name = '', fnInstance?: FnInstanceLaunch): Promise<{ cmd: string[]; cwd: string; env: Record<string, string | undefined>; unit: string | null }> => {
+const launchSpec = async (config: ServerConfig, cron?: { job: string; args: string[] }, name = '', fnInstance?: FnInstanceLaunch, event?: CandyEvent): Promise<{ cmd: string[]; cwd: string; env: Record<string, string | undefined>; unit: string | null; release: () => void }> => {
   const extra: Record<string, string> = cron
     ? { TERM: 'dumb', [CRON_JOB_ENV]: cron.job }
     : { FORCE_COLOR: '1', TERM: 'xterm-256color', [CANDY_RUNTIME_MAGIC_ENV]: config.id }
@@ -2888,6 +2959,11 @@ const launchSpec = async (config: ServerConfig, cron?: { job: string; args: stri
   const appAuth = !cron && name && manifest?.auth ? appAuthLaunch(name, configUser(config)) : null
   if (appAuth) Object.assign(extra, appAuth.env)
   const authKeysEnv: Record<string, string> = appAuth ? { CANDY_AUTH_KEYS: appAuth.keys } : {}
+  // Who this launch is to the daemon (events, service tokens). Like the key ring: a credential file or the spawn env, never argv.
+  const sandboxed = RUNNING_AS_ROOT && SANDBOX_AVAILABLE && config.sandbox !== false && !!name
+  const runtime = name && manifest ? await runtimeLaunch(name, config, event ? 'event' : cron ? 'cron' : config.fn ? 'fn' : 'srv', manifest, sandboxed, event) : null
+  if (runtime && !sandboxed) authKeysEnv.CANDY_RUNTIME = runtime.json
+  const release = () => runtime?.release()
   const script = fn ? fn.script : cron ? cronScript(config.cmd) : config.cmd
   const args = fn ? ['candy', ...fn.args] : cron ? ['candy', ...cron.args] : []
   let fileEnv: Record<string, string> = {}
@@ -2896,7 +2972,7 @@ const launchSpec = async (config: ServerConfig, cron?: { job: string; args: stri
     fileEnv = parseEnvFile(await readFnEnvFile(config))
   }
   if (!RUNNING_AS_ROOT) {
-    return { cmd: ['bash', fn ? '-c' : '-ic', script, ...args], cwd: config.cwd, env: { ...process.env, ...fileEnv, ...extra, ...authKeysEnv }, unit: null }
+    return { cmd: ['bash', fn ? '-c' : '-ic', script, ...args], cwd: config.cwd, env: { ...process.env, ...fileEnv, ...extra, ...authKeysEnv }, unit: null, release }
   }
   const account = await lookupUser(configUser(config))
   if (!account || account.uid === 0) {
@@ -2934,12 +3010,16 @@ const launchSpec = async (config: ServerConfig, cron?: { job: string; args: stri
         mode: cron || fn ? 'pipe' : 'pty',
         bindsTo: OWN_UNIT,
         fn: fn ? { socket: fn.socket } : null,
-        credentials: credential ? [{ name: APP_AUTH_CREDENTIAL, path: credential }] : undefined,
+        credentials: [
+          ...(credential ? [{ name: APP_AUTH_CREDENTIAL, path: credential }] : []),
+          ...(runtime?.file ? [{ name: RUNTIME_CREDENTIAL, path: runtime.file }] : []),
+        ],
         description: fn ? (cron ? 'function cron run' : 'function') : undefined,
       }),
       cwd: '/',
       env: process.env,
       unit,
+      release,
     }
   }
 
@@ -2951,6 +3031,7 @@ const launchSpec = async (config: ServerConfig, cron?: { job: string; args: stri
     cwd: '/',
     env: { ...env, ...fileEnv, ...extra, ...authKeysEnv },
     unit: null,
+    release,
   }
 }
 
@@ -3152,9 +3233,8 @@ const siteManifest = async (config: ServerConfig, force = false): Promise<SiteMa
     if (cached?.error !== error) auditLog('MANIFEST_BAD', `${name}: ${error}`, 'System')
     throw new Error(error)
   }
-  if (before.auth !== m.auth || before.publish !== m.publish || before.depends.join() !== m.depends.join()) {
-    auditLog('MANIFEST', `${name}: auth ${m.auth ? 'on' : 'off'}, depends ${m.depends.length ? m.depends.join(', ') : 'nothing'}${m.publish ? ', published' : ''}`, 'System')
-  }
+  const summary = (x: SiteManifest) => `auth ${x.auth ? 'on' : 'off'}, depends ${x.depends.length ? x.depends.join(', ') : 'nothing'}${x.publish ? ', published' : ''}${x.idle ? ', may idle' : ''}${x.service ? ', takes service tokens' : ''}${x.events.length ? `, publishes ${x.events.join(', ')}` : ''}${x.subscribe.length ? `, subscribes to ${x.subscribe.join(', ')}` : ''}`
+  if (summary(before) !== summary(m)) auditLog('MANIFEST', `${name}: ${summary(m)}`, 'System')
   return m
 }
 
@@ -3197,11 +3277,27 @@ const liveDepends = (name: string): string[] => {
   if ((fnRuntimes.get(name)?.pool.instances().length ?? 0) > 0) return fnDepends.get(name) ?? []
   return []
 }
-// The sites that are up and depend on `dep`
-const heldBy = (dep: string): string[] => {
+// The publishers a site that is up right now subscribed to at its start
+const fnSubscribes = new Map<string, string[]>()
+const liveSubscribes = (name: string): string[] => {
+  const proc = processes.get(name)
+  if (proc && (proc.status === 'running' || proc.status === 'starting')) return proc.subscribes
+  if ((fnRuntimes.get(name)?.pool.instances().length ?? 0) > 0) return fnSubscribes.get(name) ?? []
+  return []
+}
+// The sites that are up and depend on `dep`: a stop of `dep` takes these down too
+const dependentsOf = (dep: string): string[] => {
   const holders: string[] = []
   for (const name of new Set([...processes.keys(), ...fnRuntimes.keys()])) {
     if (name !== dep && liveDepends(name).includes(dep)) holders.push(name)
+  }
+  return holders
+}
+// Everything keeping `dep` up: its dependents, and the subscribers to its events
+const heldBy = (dep: string): string[] => {
+  const holders = dependentsOf(dep)
+  for (const name of new Set([...processes.keys(), ...fnRuntimes.keys()])) {
+    if (name !== dep && !holders.includes(name) && liveSubscribes(name).includes(dep)) holders.push(name)
   }
   return holders
 }
@@ -3242,7 +3338,7 @@ const stopSite = async (name: string, actor: Actor): Promise<boolean> => {
 }
 const stopDependents = async (name: string, actor: Actor, seen = new Set<string>([name])): Promise<string[]> => {
   const stopped: string[] = []
-  for (const dependent of heldBy(name)) {
+  for (const dependent of dependentsOf(name)) {
     if (seen.has(dependent)) continue
     seen.add(dependent)
     stopped.push(...await stopDependents(dependent, actor, seen))
@@ -3314,6 +3410,241 @@ const startDependency = async (dep: string, forName: string): Promise<void> => {
     if (Date.now() > deadline) throw new Error(`'${dep}' was not ready after ${DEPEND_START_TIMEOUT_MS / 1000}s`)
     await Bun.sleep(200)
   }
+}
+
+// ---- events: candy.json "events" (what a site may publish) and "subscribe" ("site:event") ----
+// A subscriber keeps its publishers up the way a dependent does, but a stop of
+// the publisher leaves the subscriber alone, and circles are fine. A publish
+// starts every subscriber that is stopped: a server gets its events over
+// /runtime/events once it connects, a function gets one run per event.
+
+const eventQueue = new EventQueue()
+// Subscriber name -> its open /runtime/events streams
+const eventStreams = new Map<string, Set<(ev: CandyEvent) => void>>()
+const FN_EVENT_CONCURRENCY = 4
+const FN_EVENT_TIMEOUT_S = 60
+const fnEventRunning = new Map<string, number>()
+const fnEventWaiting = new Map<string, CandyEvent[]>()
+
+// May `subscriber` (run by `owner`) hold `publisher` up and get its events? Yours, published, or you are a superuser.
+const mayReach = async (owner: string, publisher: string): Promise<boolean> => {
+  if (nameOwner(publisher) === owner) return true
+  if (await isSuperuser(owner).catch(() => false)) return true
+  const pc = manifestConfig(publisher)
+  return pc ? (await siteManifest(pc).catch(() => null))?.publish === true : false
+}
+
+// The publishers `name` subscribes to, checked. Throws (and so stops the start) on one it can't have.
+const checkSubscriptions = async (name: string, config: ServerConfig): Promise<string[]> => {
+  const fail = (text: string) => new Error(`Refusing to start ${name}: ${text}`)
+  let manifest: SiteManifest
+  try { manifest = await siteManifest(config) } catch (e) { throw fail(fnErrorText(e)) }
+  const publishers: string[] = []
+  const owner = configUser(config)
+  for (const entry of manifest.subscribe) {
+    const sub = parseSubscription(entry)!
+    if (!serverConfigs.has(sub.site) || isReserved(sub.site)) throw fail(`it subscribes to '${entry}', but '${sub.site}' is not a site candy starts`)
+    if (!(await mayReach(owner, sub.site))) throw fail(`it subscribes to '${entry}', but '${sub.site}' runs as ${nameOwner(sub.site)} and is not published (it needs "publish": true in its ${MANIFEST_FILE})`)
+    const pc = manifestConfig(sub.site)
+    const pm = pc ? await siteManifest(pc).catch(() => null) : null
+    if (!pm?.events.includes(sub.event)) throw fail(`it subscribes to '${entry}', but '${sub.site}' doesn't list "${sub.event}" in "events" in its ${MANIFEST_FILE}`)
+    if (sub.site !== name && !publishers.includes(sub.site)) publishers.push(sub.site)
+  }
+  return publishers
+}
+
+// "When someone subscribes, candy runs the service": publishers that are servers
+// are started, not waited for. A function publisher runs when it is asked to.
+const startPublishers = (name: string, publishers: string[]) => {
+  for (const pub of publishers) {
+    if (fnConfigOf(pub)) continue
+    startDependency(pub, name).catch(e => auditLog('EVENT_PUBLISHER_FAIL', `${pub}, for its subscriber ${name}: ${fnErrorText(e)}`, 'System'))
+  }
+}
+
+// Who gets `publisher`'s `event` right now, by the manifests as they are
+const subscribersOf = async (publisher: string, event: string): Promise<string[]> => {
+  const key = subscriptionKey(publisher, event)
+  const out: string[] = []
+  for (const name of serverConfigs.keys()) {
+    if (name === publisher || isReserved(name)) continue
+    const config = manifestConfig(name)
+    if (!config || !manifestNow(name)?.subscribe.includes(key)) continue
+    if (await mayReach(configUser(config), publisher)) out.push(name)
+  }
+  return out
+}
+
+const runFnEventOnce = async (name: string, ev: CandyEvent): Promise<boolean> => {
+  const config = fnConfigOf(name)
+  if (!config) return true   // gone: nothing to retry for
+  await startDependencies(name, config)
+  const launch = await launchSpec(config, { job: 'event', args: ['--event'] }, name, undefined, ev)
+  const proc = spawn({ cmd: launch.cmd, cwd: launch.cwd, env: launch.env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' })
+  const pump = async (stream: ReadableStream<Uint8Array>) => {
+    const decoder = new TextDecoder()
+    let partial = ''
+    for await (const chunk of stream) {
+      const lines = (partial + stripAnsi(decoder.decode(chunk, { stream: true }))).split(/\r?\n/)
+      partial = lines.pop() ?? ''
+      for (const line of lines) if (line.trim()) await processLog(name, `[${new Date().toISOString()}] [event] ${line}\n`)
+    }
+    if (partial.trim()) await processLog(name, `[${new Date().toISOString()}] [event] ${partial}\n`)
+  }
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    ;(launch.unit ? stopUnit(launch.unit) : terminateProcessTree(proc.pid, 5000)).catch(() => {})
+  }, FN_EVENT_TIMEOUT_S * 1000)
+  await Promise.all([pump(proc.stdout), pump(proc.stderr)]).catch(() => {})
+  const code = await proc.exited
+  clearTimeout(timer)
+  launch.release()
+  if (timedOut) await processLog(name, `[${new Date().toISOString()}] [event] ${ev.from}:${ev.event} (${ev.id}) stopped after ${FN_EVENT_TIMEOUT_S}s\n`)
+  return code === 0 && !timedOut
+}
+
+// One event for a function: a run of its event() handler, tried again after a failure, then dropped
+const runFnEvent = async (name: string, ev: CandyEvent) => {
+  for (let attempt = 0; ; attempt++) {
+    let problem = ''
+    const ok = await runFnEventOnce(name, ev).catch(e => { problem = fnErrorText(e); return false })
+    if (ok) return
+    if (attempt >= EVENT_RETRY_DELAYS_MS.length) {
+      auditLog('EVENT_DROP', `${name}: ${ev.from}:${ev.event} (${ev.id}) failed ${attempt + 1} times${problem ? `: ${problem}` : ''}`, 'System')
+      await processLog(name, `[${new Date().toISOString()}] [event] ${ev.from}:${ev.event} (${ev.id}) dropped after ${attempt + 1} tries${problem ? `: ${problem}` : ''}\n`)
+      return
+    }
+    await Bun.sleep(EVENT_RETRY_DELAYS_MS[attempt])
+  }
+}
+const pumpFnEvents = (name: string) => {
+  const waiting = fnEventWaiting.get(name)
+  while (waiting?.length && (fnEventRunning.get(name) ?? 0) < FN_EVENT_CONCURRENCY) {
+    const ev = waiting.shift()!
+    fnEventRunning.set(name, (fnEventRunning.get(name) ?? 0) + 1)
+    runFnEvent(name, ev).catch(() => {}).finally(() => {
+      const left = (fnEventRunning.get(name) ?? 1) - 1
+      if (left > 0) fnEventRunning.set(name, left)
+      else fnEventRunning.delete(name)
+      pumpFnEvents(name)
+    })
+  }
+  if (waiting && waiting.length === 0) fnEventWaiting.delete(name)
+}
+
+const deliverEvent = (subscriber: string, ev: CandyEvent) => {
+  if (fnConfigOf(subscriber)) {
+    const waiting = fnEventWaiting.get(subscriber) ?? []
+    waiting.push(ev)
+    if (waiting.length > MAX_QUEUED) {
+      waiting.shift()
+      auditLog('EVENT_DROP', `${subscriber}: more than ${MAX_QUEUED} events waiting, the oldest was dropped`, 'System')
+    }
+    fnEventWaiting.set(subscriber, waiting)
+    pumpFnEvents(subscriber)
+    return
+  }
+  const proc = processes.get(subscriber)
+  const up = proc && (proc.status === 'running' || proc.status === 'starting')
+  if (up) proc.lastActivity = Date.now()
+  const streams = eventStreams.get(subscriber)
+  if (up && streams?.size) {
+    for (const write of streams) write(ev)
+    return
+  }
+  // Not listening yet: keep it, and start the server if it is stopped
+  if (eventQueue.push(subscriber, ev) > 0) auditLog('EVENT_DROP', `${subscriber}: more than ${MAX_QUEUED} events waiting, the oldest was dropped`, 'System')
+  if (!up) {
+    auditLog('EVENT_WAKE', `${subscriber}: started for ${ev.from}:${ev.event}`, 'System')
+    spawnProcess(subscriber, 'System').catch(e => auditLog('EVENT_WAKE_FAIL', `${subscriber}: ${fnErrorText(e)}`, 'System'))
+  }
+}
+
+const publishEvent = async (from: string, event: string, data: unknown): Promise<{ id: string; delivered: string[] }> => {
+  await refreshManifests()
+  const ev: CandyEvent = { id: crypto.randomUUID(), from, event, data, time: Date.now() }
+  const delivered = await subscribersOf(from, event)
+  for (const sub of delivered) deliverEvent(sub, ev)
+  // Never the data: it is the apps' own
+  auditLog('EVENT', `${from}:${event} (${ev.id}) -> ${delivered.length ? delivered.join(', ') : 'no subscribers'}`, 'System')
+  return { id: ev.id, delivered }
+}
+
+// /runtime/*: a launched process acting as its site. The caller is whoever holds a live runtime token.
+const handleRuntimeApi = async (req: Request, url: URL): Promise<Response> => {
+  const grant = runtimeGrantFor(req.headers.get(RUNTIME_HEADER))
+  if (!grant) return Response.json({ error: "Not a running candy site (unknown or ended runtime token)." }, { status: 401 })
+  const config = getConfigById(grant.name, grant.configId)
+  if (!config || configUser(config) !== grant.user) return Response.json({ error: "That site is gone." }, { status: 401 })
+
+  if (req.method === "POST" && url.pathname === "/runtime/publish") {
+    const body = await req.json().catch(() => null) as { event?: unknown; data?: unknown } | null
+    const event = typeof body?.event === "string" ? body.event.trim().toLowerCase() : ""
+    if (!EVENT_NAME.test(event)) return Response.json({ error: "event must be a name: letters, digits, dots, dashes and underscores." }, { status: 400 })
+    const manifest = await siteManifest(config).catch(() => null)
+    if (!manifest?.events.includes(event)) {
+      return Response.json({ error: `${grant.name} may not publish "${event}": list it in "events" in its ${MANIFEST_FILE}.` }, { status: 403 })
+    }
+    const checked = eventData(body?.data)
+    if ("error" in checked) return Response.json({ error: checked.error }, { status: 413 })
+    return Response.json(await publishEvent(grant.name, event, JSON.parse(checked.json)))
+  }
+
+  if (req.method === "GET" && url.pathname === "/runtime/events") {
+    if (grant.kind !== 'srv') return Response.json({ error: "Only a server holds an event stream open. A function gets each event as a run of its event() handler." }, { status: 400 })
+    const manifest = await siteManifest(config).catch(() => null)
+    if (!manifest?.subscribe.length) return Response.json({ error: `${grant.name} subscribes to nothing: list "<site>:<event>" in "subscribe" in its ${MANIFEST_FILE}.` }, { status: 403 })
+    try { controlServer.timeout(req, 0) } catch {}
+    const name = grant.name
+    const encoder = new TextEncoder()
+    let write: ((ev: CandyEvent) => void) | null = null
+    let beat: ReturnType<typeof setInterval> | null = null
+    const close = () => {
+      if (beat) clearInterval(beat)
+      if (write) eventStreams.get(name)?.delete(write)
+      if (eventStreams.get(name)?.size === 0) eventStreams.delete(name)
+    }
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        write = ev => {
+          try { controller.enqueue(encoder.encode(JSON.stringify(ev) + "\n")) } catch { close() }
+        }
+        // What arrived while it was stopped or starting, oldest first
+        for (const ev of eventQueue.take(name)) write(ev)
+        const set = eventStreams.get(name) ?? new Set()
+        set.add(write)
+        eventStreams.set(name, set)
+        beat = setInterval(() => {
+          if (!runtimeGrantFor(req.headers.get(RUNTIME_HEADER))) { close(); try { controller.close() } catch {} return }
+          try { controller.enqueue(encoder.encode("\n")) } catch { close() }
+        }, 15_000)
+      },
+      cancel() { close() },
+    })
+    req.signal.addEventListener("abort", close)
+    return new Response(stream, { headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" } })
+  }
+
+  if (req.method === "POST" && url.pathname === "/runtime/service-token") {
+    const body = await req.json().catch(() => null) as { target?: unknown } | null
+    const target = typeof body?.target === "string" ? body.target.trim().toLowerCase() : ""
+    const targetConfig = target && !isReserved(target) ? manifestConfig(target) : null
+    const takes = targetConfig ? (await siteManifest(targetConfig).catch(() => null))?.service === true : false
+    if (!targetConfig || !takes) {
+      return Response.json({ error: `'${target.slice(0, 80)}' doesn't take service tokens (it needs "service": true in its ${MANIFEST_FILE}).` }, { status: 404 })
+    }
+    try {
+      const key = serviceKeys.ensure(target, configUser(targetConfig)).ring[0]
+      const minted = await mintServiceToken({ key, target, app: grant.name, user: grant.user })
+      auditLog('SERVICE_TOKEN', `${grant.name} (${grant.user}) -> ${target}`, 'System')
+      return Response.json(minted)
+    } catch (e) {
+      return Response.json({ error: fnErrorText(e) }, { status: 500 })
+    }
+  }
+
+  return Response.json({ error: "not found" }, { status: 404 })
 }
 
 // Everything `name` depends on, started and ready, in the order written.
@@ -3461,8 +3792,11 @@ const launchFnInstance = async (name: string, instance: FnInstanceLaunch): Promi
   const config = fnConfigOf(name)
   if (!config) throw new Error(`No function named ${name}`)
   fnDepends.set(name, await startDependencies(name, config))
+  const subscribes = await checkSubscriptions(name, config)
+  fnSubscribes.set(name, subscribes)
   const launch = await launchSpec(config, undefined, name, instance)
   const proc = spawn({ cmd: launch.cmd, cwd: launch.cwd, env: launch.env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' })
+  startPublishers(name, subscribes)
   auditLog('FN_INSTANCE_START', `${name}: ${instance.id} (pid ${proc.pid})${launch.unit ? ` [${launch.unit}]` : ''}`, 'System')
   const pump = async (stream: ReadableStream<Uint8Array>, tag: string) => {
     const decoder = new TextDecoder()
@@ -3479,6 +3813,7 @@ const launchFnInstance = async (name: string, instance: FnInstanceLaunch): Promi
   Promise.all([pump(proc.stdout, tag), pump(proc.stderr, tag)]).catch(() => {})
   const exited = proc.exited.then(code => {
     auditLog('FN_INSTANCE_EXIT', `${name}: ${instance.id} code ${code}`, 'System')
+    launch.release()
     return code
   })
   return {
@@ -4196,6 +4531,7 @@ const spawnProcessNow = async (name: string, actor: Actor = 'System', configId?:
   if (config.fn) throw new Error(`${name} is a function: it starts on its first request`)
   // candy.json "depends": those first, and ready, before this one is launched
   const depends = await startDependencies(name, config)
+  const subscribes = await checkSubscriptions(name, config)
   const launch = await launchSpec(config, undefined, name)
 
   const logFile = getLogFile(name)
@@ -4221,10 +4557,12 @@ const spawnProcessNow = async (name: string, actor: Actor = 'System', configId?:
     idling: false,
     unit: launch.unit,
     depends,
+    subscribes,
     logStart,
   }
 
   processes.set(name, managed)
+  startPublishers(name, subscribes)
   auditLog('PROCESS_START', `${name}:${config.id} ${JSON.stringify(config.cmd)}${launch.unit ? ` [${launch.unit}]` : ''}`, actor)
 
   // Collected output for port detection
@@ -5895,6 +6233,9 @@ const ROUTE_TABLE: readonly RouteRule[] = [
   ["POST", "/auth/token", "user"],
   ["GET", "/auth/status", "user"],
   ["POST", "/domains/allowlist", "user"],
+  ["POST", "/runtime/publish", "public"],
+  ["GET", "/runtime/events", "public"],
+  ["POST", "/runtime/service-token", "public"],
   ["POST", "/sdk/runtime", "user"],
   ["POST", "/sdk/register-port", "user"],
   ["POST", "/sdk/portal", "user"],
@@ -6702,6 +7043,13 @@ async function controlFetch(req: Request): Promise<Response> {
       return await handleFnApi(req, url, corsHeaders, controlServer, auth!)
     }
 
+    // A launched process acting as its site (sdk-runtime.ts): straight to
+    // localhost:9999 with its runtime token, never through Caddy or from a browser
+    if (url.pathname.startsWith("/runtime/")) {
+      if (!isLoopback(peerIp) || viaOwnCaddy(req) || req.headers.has("origin")) return new Response("Not found", { status: 404 })
+      return await handleRuntimeApi(req, url)
+    }
+
     // === SDK API ===
     // Always an API key (from inside a server candy started), never a portal login
     if (url.pathname.startsWith("/sdk/") && auth?.via !== "apikey") {
@@ -6855,6 +7203,11 @@ async function controlFetch(req: Request): Promise<Response> {
 
       if (url.pathname === "/sdk/idle") {
         const idling = body?.idling !== false
+        // Staying up past the idle limit is asked for in candy.json, like every feature
+        const manifest = await siteManifest(managed.config).catch(() => null)
+        if (idling && !manifest?.idle) {
+          return Response.json({ error: `${managed.name} may not idle: set "idle": true in its ${MANIFEST_FILE}.` }, { status: 403, headers: corsHeaders })
+        }
         if (managed.idling !== idling) {
           managed.idling = idling
           auditLog('IDLING', `${managed.name}: ${idling ? 'on' : 'off'}`, 'SDK')
@@ -7872,7 +8225,7 @@ async function controlFetch(req: Request): Promise<Response> {
       const manifestOf = (config: ServerConfig) => {
         const cached = siteManifests.get(config.id)
         if (!cached || (!cached.stamp && !cached.error)) return null
-        return cached.error ? { error: cached.error } : { auth: cached.m.auth, depends: cached.m.depends, publish: cached.m.publish }
+        return cached.error ? { error: cached.error } : { auth: cached.m.auth, depends: cached.m.depends, publish: cached.m.publish, idle: cached.m.idle, events: cached.m.events, subscribe: cached.m.subscribe, service: cached.m.service }
       }
       const configs: Record<string, any> = {}
       for (const [name, entries] of serverConfigs) {

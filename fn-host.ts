@@ -12,9 +12,12 @@ import type { AssetsConfig, AssetServer } from "./fn-assets.ts"
 
 export type FetchHandler = (req: Request, env: Record<string, unknown>, ctx: unknown) => unknown
 export type ScheduledHandler = (event: unknown, env: Record<string, unknown>, ctx: unknown) => unknown
+// A candy event the function subscribed to (candy.json "subscribe"): `{ id, from, event, data, time }`
+export type EventHandler = (event: unknown, env: Record<string, unknown>, ctx: unknown) => unknown
 export interface FnHandler {
   fetch?: FetchHandler
   scheduled?: ScheduledHandler
+  event?: EventHandler
 }
 
 // Response bodies are cut into frames this big, well under MAX_FRAME_PAYLOAD.
@@ -46,7 +49,8 @@ export const loadHandler = (mod: unknown): FnHandler => {
     const handler: FnHandler = {}
     if (typeof obj.fetch === "function") handler.fetch = (obj.fetch as FetchHandler).bind(obj)
     if (typeof obj.scheduled === "function") handler.scheduled = (obj.scheduled as ScheduledHandler).bind(obj)
-    if (handler.fetch || handler.scheduled) return handler
+    if (typeof obj.event === "function") handler.event = (obj.event as EventHandler).bind(obj)
+    if (handler.fetch || handler.scheduled || handler.event) return handler
     throw new Error(`function module must export default { fetch } (or a Hono app or a function); got an object with keys: ${Object.keys(obj).join(", ") || "(none)"}`)
   }
   throw new Error(`function module must export default { fetch } (or a Hono app or a function); got ${describe(target)}`)
@@ -55,22 +59,27 @@ export const loadHandler = (mod: unknown): FnHandler => {
 export interface HostArgs {
   entry: string
   scheduled: string | null
+  // An event run: the event itself is in the runtime record, never in argv
+  event: boolean
 }
 
 export const parseHostArgs = (argv: string[]): HostArgs => {
   let entry: string | null = null
   let scheduled: string | null = null
+  let event = false
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === "--scheduled") {
       const v = argv[++i]
       if (v === undefined) throw new Error("--scheduled needs a cron expression")
       scheduled = v
-    } else if (entry === null) entry = a
+    } else if (a === "--event") event = true
+    else if (entry === null) entry = a
     else throw new Error(`unexpected argument: ${a}`)
   }
-  if (!entry) throw new Error("usage: fn-host.ts <entry> [--scheduled <cron>]")
-  return { entry, scheduled }
+  if (!entry) throw new Error("usage: fn-host.ts <entry> [--scheduled <cron> | --event]")
+  if (event && scheduled !== null) throw new Error("--event and --scheduled can't be used together")
+  return { entry, scheduled, event }
 }
 
 // `assets` is optional here so this also reads configs from before assets were wired up.
@@ -311,6 +320,10 @@ async function main(): Promise<void> {
   const lingerMs = parseLingerMs(process.env.CANDY_FN_LINGER_MS)
   // Candy auth's ring: read before any of the function's code runs, then out of process.env
   const authSpec = authFromEnv(process.env, readSmallFile)
+  // Who this process is to the daemon (events, service tokens): sdk-runtime.ts
+  const { readRuntime, createRuntime, RUNTIME_ENV } = await import("./sdk-runtime.ts")
+  const runtimeRecord = readRuntime(process.env)
+  delete process.env[RUNTIME_ENV]
   for (const k of ["CANDY_FN_TOKEN", "CANDY_FN_SOCKET", "CANDY_FN_CONFIG", "CANDY_FN_SECRET_KEYS", "CANDY_FN_LINGER_MS", "CANDY_FN_ASSETS_DIR", "CANDY_FN_ASSETS_MODE", "CANDY_AUTH_KEYS"]) delete process.env[k]
 
   const [{ buildEnv, closeBindings }, { ExecutionContext, runScheduled }] = await Promise.all([
@@ -344,6 +357,12 @@ async function main(): Promise<void> {
       log(`candy auth is off: ${(e as Error).message}`)
     }
   }
+  // env.CANDY: publish(event, data), serviceToken(target), serviceHeaders(target), verifyService(request)
+  if (runtimeRecord && !Object.hasOwn(env, "CANDY")) {
+    const runtime = createRuntime(runtimeRecord)
+    env.CANDY = runtime
+    ;(globalThis as Record<symbol, unknown>)[Symbol.for("candy.runtime")] = runtime
+  }
   // Also present in --scheduled runs: a cron handler may read files too.
   const assetsBinding = assets?.config.binding ? createAssetsBinding(assets.config, assets.mode) : null
   if (assetsBinding) env[assets!.config.binding!] = assetsBinding.binding
@@ -360,6 +379,31 @@ async function main(): Promise<void> {
       finish(0)
     } catch (e) {
       log(`scheduled run failed: ${errorInfo(e).stack ?? errorInfo(e).message}`)
+      finish(1)
+    }
+  }
+
+  if (args.event) {
+    if (!handler) finish(1)
+    const ev = runtimeRecord?.event
+    if (!ev) {
+      log("--event without an event in the runtime record; event runs are started by the candy daemon")
+      finish(2)
+    }
+    if (typeof handler!.event !== "function") {
+      log(`event "${ev!.from}:${ev!.event}" arrived but the function has no event() handler in its default export`)
+      finish(1)
+    }
+    const ctx = new ExecutionContext()
+    try {
+      try {
+        await handler!.event!(ev, env, ctx)
+      } finally {
+        await ctx.settled()
+      }
+      finish(0)
+    } catch (e) {
+      log(`event ${ev!.from}:${ev!.event} (${ev!.id}) failed: ${errorInfo(e).stack ?? errorInfo(e).message}`)
       finish(1)
     }
   }

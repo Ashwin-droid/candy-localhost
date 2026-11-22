@@ -31,7 +31,7 @@ import { AssetServer, userCanRead, type AssetsConfig } from "./fn-assets.ts"
 import { isDeployId, type DeployInfo } from "./fn-deploy.ts"
 import { CONFIG_FILES as FN_CONFIG_FILES, type FnProjectConfig } from "./fn-config.ts"
 import { MANIFEST_FILE, emptyManifest, findDependencyLoop, type SiteManifest } from "./manifest.ts"
-import { EventQueue, eventData, parseSubscription, subscriptionKey, EVENT_NAME, EVENT_RETRY_DELAYS_MS, MAX_QUEUED, type CandyEvent } from "./events.ts"
+import { EventQueue, SubClientStore, subAccess, eventData, parseSubscription, subscriptionKey, type SubAccess, type SubClient, EVENT_NAME, EVENT_RETRY_DELAYS_MS, MAX_QUEUED, type CandyEvent } from "./events.ts"
 import { mintServiceToken } from "./service-auth.ts"
 import { RUNTIME_CREDENTIAL, RUNTIME_HEADER, type RuntimeRecord } from "./sdk-runtime.ts"
 import { apiHoldSeconds, createApiModeGate } from "./api-mode.ts"
@@ -2869,6 +2869,8 @@ const dropAppAuth = async (name: string, actor: Actor = 'System') => {
   const hadKeys = appKeys.drop(name)
   if (serviceKeys.drop(name)) auditLog('SERVICE_KEY_DROP', `${name}: service key removed`, actor)
   eventQueue.drop(name)
+  subClients.dropSite(name)
+  await saveSubClients().catch(() => {})
   const n = appConsents.dropSite(name)
   await unlink(appAuthCredentialPath(name)).catch(() => {})
   if (hadKeys || n) auditLog('APP_AUTH_DROP', `${name}: key and ${n} approval(s) removed`, actor)
@@ -3233,7 +3235,7 @@ const siteManifest = async (config: ServerConfig, force = false): Promise<SiteMa
     if (cached?.error !== error) auditLog('MANIFEST_BAD', `${name}: ${error}`, 'System')
     throw new Error(error)
   }
-  const summary = (x: SiteManifest) => `auth ${x.auth ? 'on' : 'off'}, depends ${x.depends.length ? x.depends.join(', ') : 'nothing'}${x.publish ? ', published' : ''}${x.idle ? ', may idle' : ''}${x.service ? ', takes service tokens' : ''}${x.events.length ? `, publishes ${x.events.join(', ')}` : ''}${x.subscribe.length ? `, subscribes to ${x.subscribe.join(', ')}` : ''}`
+  const summary = (x: SiteManifest) => `auth ${x.auth ? 'on' : 'off'}, depends ${x.depends.length ? x.depends.join(', ') : 'nothing'}${x.publish ? ', published' : ''}${x.idle ? ', may idle' : ''}${x.service ? ', takes service tokens' : ''}${x.pub.length ? `, publishes ${x.pub.map(e => `${e.event} (${e.auth}${e.users.length ? `: ${e.users.join(', ')}` : ''})`).join(', ')}` : ''}${x.sub.length ? `, subscribes to ${x.sub.join(', ')}` : ''}`
   if (summary(before) !== summary(m)) auditLog('MANIFEST', `${name}: ${summary(m)}`, 'System')
   return m
 }
@@ -3412,7 +3414,7 @@ const startDependency = async (dep: string, forName: string): Promise<void> => {
   }
 }
 
-// ---- events: candy.json "events" (what a site may publish) and "subscribe" ("site:event") ----
+// ---- events: candy.json "pub" (what a site may publish, and to whom) and "sub" ("site:event") ----
 // A subscriber keeps its publishers up the way a dependent does, but a stop of
 // the publisher leaves the subscriber alone, and circles are fine. A publish
 // starts every subscriber that is stopped: a server gets its events over
@@ -3426,12 +3428,45 @@ const FN_EVENT_TIMEOUT_S = 60
 const fnEventRunning = new Map<string, number>()
 const fnEventWaiting = new Map<string, CandyEvent[]>()
 
-// May `subscriber` (run by `owner`) hold `publisher` up and get its events? Yours, published, or you are a superuser.
-const mayReach = async (owner: string, publisher: string): Promise<boolean> => {
-  if (nameOwner(publisher) === owner) return true
-  if (await isSuperuser(owner).catch(() => false)) return true
+// What publishers decided, event by event, about the apps asking ("auth": "strict" in "pub")
+const SUB_CLIENTS_FILE = `${AUTH_STATE_DIR}/sub-clients.json`
+const subClients = new SubClientStore((() => { try { return JSON.parse(readFileSync(SUB_CLIENTS_FILE, "utf8")) } catch { return null } })())
+const saveSubClients = async () => {
+  const tmp = `${SUB_CLIENTS_FILE}.${process.pid}.tmp`
+  await writeFile(tmp, JSON.stringify(subClients), { mode: 0o600 })
+  await rename(tmp, SUB_CLIENTS_FILE)
+}
+
+// May `subscriber`, run by `user`, get `publisher`'s `event`? That event's entry in
+// the publisher's candy.json "pub" decides (events.ts subAccess). Nobody is above
+// it: not "publish": true, not an administrator's site.
+const eventAccess = async (subscriber: string, user: string, publisher: string, event: string): Promise<SubAccess> => {
   const pc = manifestConfig(publisher)
-  return pc ? (await siteManifest(pc).catch(() => null))?.publish === true : false
+  const rules = pc ? (await siteManifest(pc).catch(() => null))?.pub.find(e => e.event === event) : null
+  if (!pc || !rules) return "user"
+  return subAccess(rules, configUser(pc), user, subClients.decision(publisher, event, subscriber, user))
+}
+// For each "strict" event of `publisher`: the apps that ask for it and run as a user it allows, with what it said
+const subClientsOf = async (publisher: string): Promise<SubClient[]> => {
+  const pc = manifestConfig(publisher)
+  const pm = pc ? await siteManifest(pc).catch(() => null) : null
+  if (!pc || !pm) return []
+  const out = new Map<string, SubClient>()
+  for (const d of subClients.decided(publisher)) out.set(`${d.event} ${d.app}`, { app: d.app, user: d.user, event: d.event, status: d.status, decidedAt: d.at })
+  for (const rules of pm.pub) {
+    if (rules.auth !== "strict") continue
+    const key = subscriptionKey(publisher, rules.event)
+    for (const name of serverConfigs.keys()) {
+      if (name === publisher || isReserved(name)) continue
+      const config = manifestConfig(name)
+      if (!config || !manifestNow(name)?.sub.includes(key)) continue
+      const user = configUser(config)
+      if (subAccess({ ...rules, auth: "lax" }, configUser(pc), user, null) !== "ok") continue
+      const status = subClients.decision(publisher, rules.event, name, user)
+      out.set(`${rules.event} ${name}`, { app: name, user, event: rules.event, status: status ?? "pending", decidedAt: subClients.decidedAt(publisher, rules.event, name, user) })
+    }
+  }
+  return [...out.values()].sort((a, b) => a.event.localeCompare(b.event) || a.app.localeCompare(b.app))
 }
 
 // The publishers `name` subscribes to, checked. Throws (and so stops the start) on one it can't have.
@@ -3441,13 +3476,19 @@ const checkSubscriptions = async (name: string, config: ServerConfig): Promise<s
   try { manifest = await siteManifest(config) } catch (e) { throw fail(fnErrorText(e)) }
   const publishers: string[] = []
   const owner = configUser(config)
-  for (const entry of manifest.subscribe) {
+  for (const entry of manifest.sub) {
     const sub = parseSubscription(entry)!
     if (!serverConfigs.has(sub.site) || isReserved(sub.site)) throw fail(`it subscribes to '${entry}', but '${sub.site}' is not a site candy starts`)
-    if (!(await mayReach(owner, sub.site))) throw fail(`it subscribes to '${entry}', but '${sub.site}' runs as ${nameOwner(sub.site)} and is not published (it needs "publish": true in its ${MANIFEST_FILE})`)
     const pc = manifestConfig(sub.site)
     const pm = pc ? await siteManifest(pc).catch(() => null) : null
-    if (!pm?.events.includes(sub.event)) throw fail(`it subscribes to '${entry}', but '${sub.site}' doesn't list "${sub.event}" in "events" in its ${MANIFEST_FILE}`)
+    if (!pm?.pub.some(e => e.event === sub.event)) throw fail(`it subscribes to '${entry}', but '${sub.site}' doesn't list "${sub.event}" in "pub" in its ${MANIFEST_FILE}`)
+    const access = await eventAccess(name, owner, sub.site, sub.event)
+    // Not allowed (its user, or the publisher's approval): the site still runs, and the SDK
+    // tells it (subscriptions()). It gets none of those events and doesn't start or hold the publisher.
+    if (access !== "ok") {
+      auditLog('EVENT_SUB_DENIED', `${name}: no ${entry} (${sub.site} ${access === "pending" ? "has not approved it" : access === "user" ? `doesn't allow sites run by ${owner}` : access === "rejected" ? "rejected it" : "revoked it"})`, 'System')
+      continue
+    }
     if (sub.site !== name && !publishers.includes(sub.site)) publishers.push(sub.site)
   }
   return publishers
@@ -3462,6 +3503,17 @@ const startPublishers = (name: string, publishers: string[]) => {
   }
 }
 
+// Where each of `name`'s subscriptions stands: "ok", "denied" (its user isn't allowed), "pending", "rejected", "revoked"
+const subscriptionStatus = async (name: string, config: ServerConfig, manifest: SiteManifest) => {
+  const out: { subscription: string; site: string; event: string; status: string }[] = []
+  for (const entry of manifest.sub) {
+    const sub = parseSubscription(entry)!
+    const access = await eventAccess(name, configUser(config), sub.site, sub.event)
+    out.push({ subscription: entry, ...sub, status: access === "user" ? "denied" : access })
+  }
+  return out
+}
+
 // Who gets `publisher`'s `event` right now, by the manifests as they are
 const subscribersOf = async (publisher: string, event: string): Promise<string[]> => {
   const key = subscriptionKey(publisher, event)
@@ -3469,8 +3521,8 @@ const subscribersOf = async (publisher: string, event: string): Promise<string[]
   for (const name of serverConfigs.keys()) {
     if (name === publisher || isReserved(name)) continue
     const config = manifestConfig(name)
-    if (!config || !manifestNow(name)?.subscribe.includes(key)) continue
-    if (await mayReach(configUser(config), publisher)) out.push(name)
+    if (!config || !manifestNow(name)?.sub.includes(key)) continue
+    if (await eventAccess(name, configUser(config), publisher, event) === "ok") out.push(name)
   }
   return out
 }
@@ -3583,8 +3635,8 @@ const handleRuntimeApi = async (req: Request, url: URL): Promise<Response> => {
     const event = typeof body?.event === "string" ? body.event.trim().toLowerCase() : ""
     if (!EVENT_NAME.test(event)) return Response.json({ error: "event must be a name: letters, digits, dots, dashes and underscores." }, { status: 400 })
     const manifest = await siteManifest(config).catch(() => null)
-    if (!manifest?.events.includes(event)) {
-      return Response.json({ error: `${grant.name} may not publish "${event}": list it in "events" in its ${MANIFEST_FILE}.` }, { status: 403 })
+    if (!manifest?.pub.some(e => e.event === event)) {
+      return Response.json({ error: `${grant.name} may not publish "${event}": list it in "pub" in its ${MANIFEST_FILE}.` }, { status: 403 })
     }
     const checked = eventData(body?.data)
     if ("error" in checked) return Response.json({ error: checked.error }, { status: 413 })
@@ -3594,8 +3646,9 @@ const handleRuntimeApi = async (req: Request, url: URL): Promise<Response> => {
   if (req.method === "GET" && url.pathname === "/runtime/events") {
     if (grant.kind !== 'srv') return Response.json({ error: "Only a server holds an event stream open. A function gets each event as a run of its event() handler." }, { status: 400 })
     const manifest = await siteManifest(config).catch(() => null)
-    if (!manifest?.subscribe.length) return Response.json({ error: `${grant.name} subscribes to nothing: list "<site>:<event>" in "subscribe" in its ${MANIFEST_FILE}.` }, { status: 403 })
+    if (!manifest?.sub.length) return Response.json({ error: `${grant.name} subscribes to nothing: list "<site>:<event>" in "sub" in its ${MANIFEST_FILE}.` }, { status: 403 })
     try { controlServer.timeout(req, 0) } catch {}
+    const subscriptions = await subscriptionStatus(grant.name, config, manifest)
     const name = grant.name
     const encoder = new TextEncoder()
     let write: ((ev: CandyEvent) => void) | null = null
@@ -3610,6 +3663,8 @@ const handleRuntimeApi = async (req: Request, url: URL): Promise<Response> => {
         write = ev => {
           try { controller.enqueue(encoder.encode(JSON.stringify(ev) + "\n")) } catch { close() }
         }
+        // First line: where each subscription stands, so the app can act on a denial
+        controller.enqueue(encoder.encode(JSON.stringify({ candy: "subscriptions", subscriptions }) + "\n"))
         // What arrived while it was stopped or starting, oldest first
         for (const ev of eventQueue.take(name)) write(ev)
         const set = eventStreams.get(name) ?? new Set()
@@ -3624,6 +3679,41 @@ const handleRuntimeApi = async (req: Request, url: URL): Promise<Response> => {
     })
     req.signal.addEventListener("abort", close)
     return new Response(stream, { headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" } })
+  }
+
+  if (req.method === "POST" && url.pathname === "/runtime/subscriptions") {
+    await refreshManifests()
+    const manifest = await siteManifest(config).catch(() => null)
+    return Response.json({ subscriptions: manifest ? await subscriptionStatus(grant.name, config, manifest) : [] })
+  }
+
+  // The publisher's say, per strict event, over who gets it: list | approve | reject | revoke.
+  // Without `event`, the decision goes to every strict event that app asks for.
+  if (req.method === "POST" && url.pathname === "/runtime/sub-clients") {
+    const body = await req.json().catch(() => null) as { action?: unknown; app?: unknown; event?: unknown } | null
+    const action = body?.action ?? "list"
+    await refreshManifests()
+    const clients = await subClientsOf(grant.name)
+    if (action === "list") return Response.json({ clients })
+    const status = action === "approve" ? "approved" : action === "reject" ? "rejected" : action === "revoke" ? "revoked" : null
+    if (!status) return Response.json({ error: "action must be list, approve, reject or revoke" }, { status: 400 })
+    const app = typeof body?.app === "string" ? body.app.trim().toLowerCase() : ""
+    const event = typeof body?.event === "string" ? body.event.trim().toLowerCase() : ""
+    const asked = clients.filter(c => c.app === app && (!event || c.event === event))
+    if (asked.length === 0) {
+      return Response.json({ error: `'${app.slice(0, 80)}' doesn't ask for ${event ? `"${event.slice(0, 80)}"` : "a strict event"} of ${grant.name}, or runs as a user that event doesn't allow.` }, { status: 404 })
+    }
+    // revoke takes approvals back; reject turns down what isn't approved
+    const targets = asked.filter(c => status === "approved" ? c.status !== "approved" : status === "revoked" ? c.status === "approved" : c.status !== "approved")
+    if (targets.length === 0 && status !== "approved") {
+      return Response.json({ error: status === "revoked" ? `'${app}' is not approved${event ? ` for "${event}"` : ""}, so there is nothing to revoke.` : `'${app}' is approved${event ? ` for "${event}"` : ""}: revoke it instead.` }, { status: 409 })
+    }
+    for (const c of targets) {
+      subClients.set(grant.name, c.event, app, c.user, status)
+      auditLog('EVENT_SUB_' + status.toUpperCase(), `${grant.name}:${c.event}: ${app} (${c.user})`, 'System')
+    }
+    if (targets.length) await saveSubClients()
+    return Response.json({ clients: await subClientsOf(grant.name) })
   }
 
   if (req.method === "POST" && url.pathname === "/runtime/service-token") {
@@ -6236,6 +6326,8 @@ const ROUTE_TABLE: readonly RouteRule[] = [
   ["POST", "/runtime/publish", "public"],
   ["GET", "/runtime/events", "public"],
   ["POST", "/runtime/service-token", "public"],
+  ["POST", "/runtime/sub-clients", "public"],
+  ["POST", "/runtime/subscriptions", "public"],
   ["POST", "/sdk/runtime", "user"],
   ["POST", "/sdk/register-port", "user"],
   ["POST", "/sdk/portal", "user"],
@@ -8225,7 +8317,7 @@ async function controlFetch(req: Request): Promise<Response> {
       const manifestOf = (config: ServerConfig) => {
         const cached = siteManifests.get(config.id)
         if (!cached || (!cached.stamp && !cached.error)) return null
-        return cached.error ? { error: cached.error } : { auth: cached.m.auth, depends: cached.m.depends, publish: cached.m.publish, idle: cached.m.idle, events: cached.m.events, subscribe: cached.m.subscribe, service: cached.m.service }
+        return cached.error ? { error: cached.error } : { auth: cached.m.auth, depends: cached.m.depends, publish: cached.m.publish, idle: cached.m.idle, pub: cached.m.pub, sub: cached.m.sub, service: cached.m.service }
       }
       const configs: Record<string, any> = {}
       for (const [name, entries] of serverConfigs) {

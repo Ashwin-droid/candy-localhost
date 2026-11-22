@@ -8,9 +8,9 @@
 import { readFileSync } from "node:fs"
 import { parseKeyRing, type JweKey } from "./jwe.ts"
 import { openServiceToken, SERVICE_HEADER, type ServiceCaller } from "./service-auth.ts"
-import type { CandyEvent } from "./events.ts"
+import type { CandyEvent, SubClient } from "./events.ts"
 
-export type { CandyEvent } from "./events.ts"
+export type { CandyEvent, SubClient } from "./events.ts"
 export type { ServiceCaller } from "./service-auth.ts"
 export { SERVICE_HEADER } from "./service-auth.ts"
 
@@ -47,15 +47,31 @@ export const readRuntime = (env: Record<string, string | undefined> = process.en
 }
 
 export interface Subscription { close(): void }
-export interface SubscribeOptions { onError?: (e: Error) => void }
+/** Where one "sub" entry stands: "ok", "denied" (the publisher doesn't allow this site's user), "pending", "rejected" or "revoked" */
+export interface SubscriptionStatus { subscription: string; site: string; event: string; status: "ok" | "denied" | "pending" | "rejected" | "revoked" }
+export interface SubscribeOptions {
+  onError?: (e: Error) => void
+  /** Called on every (re)connect with where each subscription stands. Throw or exit here if a denial is fatal to you. */
+  onStatus?: (subscriptions: SubscriptionStatus[]) => void
+}
 
 export interface CandyRuntime {
   /** This site's name */
   site: string
-  /** Publish one of the events this site's candy.json lists. Stopped subscribers are started. */
+  /** Publish one of the events this site's candy.json lists in "pub". Stopped subscribers are started. */
   publish(event: string, data?: unknown): Promise<{ id: string; delivered: string[] }>
-  /** Every event this site's candy.json subscribes to, one at a time, for as long as the process lives. */
+  /** Every event this site's candy.json "sub" lists, one at a time, for as long as the process lives. */
   subscribe(handler: (event: CandyEvent) => unknown, opts?: SubscribeOptions): Subscription
+  /** Where each of this site's subscriptions stands with its publisher */
+  subscriptions(): Promise<SubscriptionStatus[]>
+  /** For this site's "strict" events: each app asking, per event, with `status` "pending", "approved", "rejected" or "revoked" */
+  listSubClients(): Promise<SubClient[]>
+  /** Let `app` have `event` from now on. Without `event`: every strict event it asks for. */
+  approveSubClient(app: string, event?: string): Promise<SubClient[]>
+  /** Turn down an app that is waiting */
+  rejectSubClient(app: string, event?: string): Promise<SubClient[]>
+  /** Take an approval back: the app gets no more of that event */
+  revokeSubClient(app: string, event?: string): Promise<SubClient[]>
   /** A token that tells `target` which app (and unix user) is calling. Cached until shortly before it expires. */
   serviceToken(target: string): Promise<string>
   /** `{ "Candy-Service-Token": <token> }` for a request to `target` */
@@ -103,8 +119,12 @@ export const createRuntime = (record: RuntimeRecord | null, fetcher: typeof fetc
               partial = lines.pop() ?? ""
               for (const line of lines) {
                 if (!line.trim()) continue   // keep-alive
-                let ev: CandyEvent
+                let ev: CandyEvent & { candy?: string; subscriptions?: SubscriptionStatus[] }
                 try { ev = JSON.parse(line) } catch { continue }
+                if (ev.candy === "subscriptions") {
+                  opts.onStatus?.(ev.subscriptions ?? [])
+                  continue
+                }
                 try { await handler(ev) } catch (e) { fail(e) }
               }
             }
@@ -118,6 +138,11 @@ export const createRuntime = (record: RuntimeRecord | null, fetcher: typeof fetc
       })()
       return { close: () => stop.abort() }
     },
+    subscriptions: async () => (await call<{ subscriptions: SubscriptionStatus[] }>("/runtime/subscriptions", {})).subscriptions,
+    listSubClients: async () => (await call<{ clients: SubClient[] }>("/runtime/sub-clients", { action: "list" })).clients,
+    approveSubClient: async (app, event) => (await call<{ clients: SubClient[] }>("/runtime/sub-clients", { action: "approve", app, event })).clients,
+    rejectSubClient: async (app, event) => (await call<{ clients: SubClient[] }>("/runtime/sub-clients", { action: "reject", app, event })).clients,
+    revokeSubClient: async (app, event) => (await call<{ clients: SubClient[] }>("/runtime/sub-clients", { action: "revoke", app, event })).clients,
     async serviceToken(target) {
       const hit = tokens.get(target)
       if (hit && hit.expiresAt - Date.now() > 30_000) return hit.token

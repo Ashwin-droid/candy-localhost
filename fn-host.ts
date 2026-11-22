@@ -12,7 +12,7 @@ import type { AssetsConfig, AssetServer } from "./fn-assets.ts"
 
 export type FetchHandler = (req: Request, env: Record<string, unknown>, ctx: unknown) => unknown
 export type ScheduledHandler = (event: unknown, env: Record<string, unknown>, ctx: unknown) => unknown
-// A candy event the function subscribed to (candy.json "subscribe"): `{ id, from, event, data, time }`
+// A candy event the function subscribed to (candy.json "sub"): `{ id, from, event, data, time }`
 export type EventHandler = (event: unknown, env: Record<string, unknown>, ctx: unknown) => unknown
 export interface FnHandler {
   fetch?: FetchHandler

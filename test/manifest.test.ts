@@ -15,7 +15,7 @@ const project = (files: Record<string, string>): string => {
 describe("candy.json", () => {
   it("a site without one asks for nothing", async () => {
     expect(await loadSiteManifest(project({}))).toEqual(emptyManifest())
-    expect(emptyManifest()).toEqual({ auth: false, depends: [], publish: false, idle: false, events: [], subscribe: [], service: false, warnings: [], source: null })
+    expect(emptyManifest()).toEqual({ auth: false, depends: [], publish: false, idle: false, pub: [], sub: [], service: false, warnings: [], source: null })
   })
 
   it("reads auth and depends, comments and all", async () => {
@@ -26,7 +26,7 @@ describe("candy.json", () => {
       "publish": true,
     }` })
     const m = await loadSiteManifest(dir)
-    expect(m).toEqual({ auth: true, depends: ["db", "queue"], publish: true, idle: false, events: [], subscribe: [], service: false, warnings: [], source: join(dir, "candy.json") })
+    expect(m).toEqual({ auth: true, depends: ["db", "queue"], publish: true, idle: false, pub: [], sub: [], service: false, warnings: [], source: join(dir, "candy.json") })
     expect(normalizeManifest({}).publish).toBe(false)
     expect(normalizeManifest({ depends: "db" }).depends).toEqual(["db"])
     expect(normalizeManifest({}).auth).toBe(false)
@@ -46,7 +46,7 @@ describe("candy.json", () => {
 
   it("what another process says a manifest is gets checked again", () => {
     expect(checkSiteManifest({ auth: true, depends: ["db"], warnings: ["a\u001b[31mb"], source: "/srv/x/candy.json", extra: 1 }))
-      .toEqual({ auth: true, depends: ["db"], publish: false, idle: false, events: [], subscribe: [], service: false, warnings: ["a [31mb"], source: "/srv/x/candy.json" })
+      .toEqual({ auth: true, depends: ["db"], publish: false, idle: false, pub: [], sub: [], service: false, warnings: ["a [31mb"], source: "/srv/x/candy.json" })
     expect(checkSiteManifest({ auth: false, depends: [], publish: true }).publish).toBe(true)
     expect(() => checkSiteManifest({ auth: false, depends: [], publish: 1 })).toThrow()
     expect(() => checkSiteManifest({ auth: "true", depends: [] })).toThrow()

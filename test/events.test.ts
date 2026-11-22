@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { EventQueue, eventData, parseSubscription, EVENT_NAME, MAX_EVENT_BYTES, type CandyEvent } from "../events.ts"
+import { EventQueue, SubClientStore, subAccess, eventData, parseSubscription, EVENT_NAME, MAX_EVENT_BYTES, type CandyEvent } from "../events.ts"
 import { normalizeManifest, checkSiteManifest } from "../manifest.ts"
 import { generateKey, formatKeyRing, encryptCompact } from "../jwe.ts"
 import { mintServiceToken, openServiceToken, SERVICE_HEADER, SERVICE_TTL_S } from "../service-auth.ts"
@@ -42,17 +42,66 @@ describe("events", () => {
     expect(q.take("web")).toEqual([])
   })
 
-  it("candy.json: idle, events, subscribe, service", () => {
-    const m = normalizeManifest({ idle: true, service: true, events: ["Built", "built", "deploy.done"], subscribe: "ci:built" })
-    expect(m).toMatchObject({ idle: true, service: true, events: ["built", "deploy.done"], subscribe: ["ci:built"] })
+  it("candy.json: idle, service, pub and sub", () => {
+    const m = normalizeManifest({ idle: true, service: true, pub: ["Announce", { event: "built", auth: "strict", "auth-users": ["bob", "bob", "carol"] }, { event: "open", auth: "none" }], sub: "ci:built" })
+    expect(m).toMatchObject({ idle: true, service: true, sub: ["ci:built"] })
+    expect(m.pub).toEqual([
+      { event: "announce", auth: "lax", users: [] },   // a bare name: lax, the owner's own sites
+      { event: "built", auth: "strict", users: ["bob", "carol"] },
+      { event: "open", auth: "none", users: [] },
+    ])
+    expect(normalizeManifest({ pub: { event: "one", "auth-users": "bob" } }).pub).toEqual([{ event: "one", auth: "lax", users: ["bob"] }])
     expect(() => normalizeManifest({ idle: "yes" })).toThrow(`"idle" must be true or false`)
-    expect(() => normalizeManifest({ events: ["a b"] })).toThrow("not an event name")
-    expect(() => normalizeManifest({ subscribe: ["built"] })).toThrow(`must be "<site>:<event>"`)
-    expect(() => normalizeManifest({ subscribe: ["Bad_Site!:built"] })).toThrow(`must be "<site>:<event>"`)
-    expect(() => normalizeManifest({ events: Array.from({ length: 33 }, (_, i) => `e${i}`) })).toThrow("at most 32")
-    // What fn-tool hands back is checked the same way
-    expect(checkSiteManifest({ events: ["built"], subscribe: ["ci:built"], idle: true })).toMatchObject({ events: ["built"], subscribe: ["ci:built"], idle: true, service: false })
-    expect(() => checkSiteManifest({ subscribe: ["nope"] })).toThrow()
+    expect(() => normalizeManifest({ pub: ["a b"] })).toThrow(`"pub"[0] needs an "event" name`)
+    expect(() => normalizeManifest({ pub: ["a", "a"] })).toThrow(`lists "a" twice`)
+    expect(() => normalizeManifest({ pub: [{ event: "a", auth: "open" }] })).toThrow(`"none", "lax" or "strict"`)
+    expect(() => normalizeManifest({ pub: [{ event: "a", auth: "none", "auth-users": ["bob"] }] })).toThrow("does nothing")
+    expect(() => normalizeManifest({ pub: [{ event: "a", "auth-users": ["Bob Smith"] }] })).toThrow("unix user names")
+    expect(() => normalizeManifest({ pub: [{ event: "a", users: ["bob"] }] })).toThrow(`has no "users"`)
+    expect(() => normalizeManifest({ pub: [7] })).toThrow("must be an event name or")
+    expect(() => normalizeManifest({ sub: ["built"] })).toThrow(`must be "<site>:<event>"`)
+    expect(() => normalizeManifest({ sub: ["Bad_Site!:built"] })).toThrow(`must be "<site>:<event>"`)
+    expect(() => normalizeManifest({ pub: Array.from({ length: 33 }, (_, i) => `e${i}`) })).toThrow("at most 32")
+    // What fn-tool hands back is checked the same way, and comes out the same
+    expect(checkSiteManifest({ ...m, source: null })).toMatchObject({ pub: m.pub, sub: m.sub, idle: true, service: true })
+    expect(() => checkSiteManifest({ sub: ["nope"] })).toThrow()
+    expect(() => checkSiteManifest({ pub: [{ event: "a", auth: "king", users: [] }] })).toThrow()
+  })
+})
+
+describe("who may subscribe", () => {
+  it("none: anyone. lax: the owner and the listed users. strict: those, once approved", () => {
+    expect(subAccess({ auth: "none", users: [] }, "alice", "mallory", null)).toBe("ok")
+    const lax = { auth: "lax" as const, users: ["bob"] }
+    expect(subAccess(lax, "alice", "alice", null)).toBe("ok")
+    expect(subAccess(lax, "alice", "bob", null)).toBe("ok")
+    expect(subAccess(lax, "alice", "mallory", null)).toBe("user")
+    expect(subAccess(lax, "alice", "bob", "rejected")).toBe("ok")   // decisions only count in strict
+    const strict = { auth: "strict" as const, users: ["bob"] }
+    expect(subAccess(strict, "alice", "alice", null)).toBe("pending")   // the owner's own apps too
+    expect(subAccess(strict, "alice", "bob", "approved")).toBe("ok")
+    expect(subAccess(strict, "alice", "bob", "rejected")).toBe("rejected")
+    expect(subAccess(strict, "alice", "bob", "revoked")).toBe("revoked")
+    expect(subAccess(strict, "alice", "mallory", "approved")).toBe("user")   // an approval never beats the user list
+  })
+
+  it("a decision is for one event, and for an app as run by one user", () => {
+    const store = new SubClientStore(null, () => 5)
+    store.set("ci", "built", "web", "bob", "approved")
+    expect(store.decision("ci", "built", "web", "bob")).toBe("approved")
+    expect(store.decision("ci", "deployed", "web", "bob")).toBeNull()   // another event of the same publisher
+    expect(store.decision("ci", "built", "web", "mallory")).toBeNull()  // the name in other hands starts over
+    expect(store.decision("other", "built", "web", "bob")).toBeNull()
+    expect(store.decided("ci")).toEqual([{ event: "built", app: "web", user: "bob", status: "approved", at: 5 }])
+    const again = new SubClientStore(JSON.parse(JSON.stringify(store)))
+    expect(again.decision("ci", "built", "web", "bob")).toBe("approved")
+    expect(new SubClientStore({ ci: { "built web": { user: "bob", status: "king", at: 1 } } }).decision("ci", "built", "web", "bob")).toBeNull()
+    store.set("web", "ready", "ci", "alice", "rejected")
+    store.set("ci", "built", "api", "bob", "approved")
+    store.dropSite("web")
+    expect(store.decision("ci", "built", "web", "bob")).toBeNull()
+    expect(store.decision("ci", "built", "api", "bob")).toBe("approved")
+    expect(store.decided("web")).toEqual([])
   })
 })
 
@@ -118,14 +167,16 @@ describe("the runtime client", () => {
     let connects = 0
     const fetcher = (async () => {
       connects++
-      const lines = connects === 1 ? `${JSON.stringify(ev("1"))}\n\n${JSON.stringify(ev("2"))}\n` : `${JSON.stringify(ev("3"))}\n`
+      const lines = connects === 1 ? `${JSON.stringify({ candy: "subscriptions", subscriptions: [{ subscription: "ci:built", site: "ci", event: "built", status: "denied" }] })}\n${JSON.stringify(ev("1"))}\n\n${JSON.stringify(ev("2"))}\n` : `${JSON.stringify(ev("3"))}\n`
       return new Response(lines, { headers: { "Content-Type": "application/x-ndjson" } })
     }) as unknown as typeof fetch
     const got: string[] = []
     const done = Promise.withResolvers<void>()
-    const sub = createRuntime(record, fetcher).subscribe(e => { got.push(e.id); if (e.id === "3") done.resolve() })
+    const statuses: string[] = []
+    const sub = createRuntime(record, fetcher).subscribe(e => { got.push(e.id); if (e.id === "3") done.resolve() }, { onStatus: s => statuses.push(...s.map(x => `${x.subscription} ${x.status}`)) })
     await done.promise
     sub.close()
     expect(got).toEqual(["1", "2", "3"])
+    expect(statuses).toEqual(["ci:built denied"])
   })
 })

@@ -198,8 +198,8 @@ A site runs without any config file of its own: register it and candy starts it,
   "depends": ["db", "queue"], // start these first, and keep them up for as long as this site runs
   "publish": true,            // other users' sites may depend on this one, or subscribe to its events
   "idle": true,               // may call setIdling() to stay up past its idle limit
-  "events": ["built"],        // events this site may publish
-  "subscribe": ["ci:built"],  // events of other sites it gets: "<site>:<event>"
+  "pub": ["built"],           // events this site may publish (each can say who may subscribe)
+  "sub": ["ci:built"],        // events of other sites it gets: "<site>:<event>"
   "service": true             // takes server-to-server tokens (which app is calling)
 }
 ```
@@ -222,14 +222,14 @@ The file is read when the site starts, as the user the site runs as. A file that
 
 **`idle`** lets the site call `setIdling()` (see the SDK). Without it the call is refused and the site stops on its idle limit like any other.
 
-**`events` and `subscribe`** are candy's pub/sub. A site lists the events it may publish; another lists `"<site>:<event>"` for each one it wants. Names are lower-case letters, digits, dots, dashes and underscores; at most 32 of each.
+**`pub` and `sub`** are candy's pub/sub. A site lists the events it may publish in `pub`; another lists `"<site>:<event>"` in `sub` for each one it wants. Names are lower-case letters, digits, dots, dashes and underscores; at most 32 of each.
 
 ```ts
-// ci (candy.json: { "events": ["built"] })
+// ci (candy.json: { "pub": ["built"] })
 import { publish } from "candy-localhost"
 await publish("built", { commit: "abc123" })   // JSON, up to 64 KB
 
-// web, a server (candy.json: { "subscribe": ["ci:built"] })
+// web, a server (candy.json: { "sub": ["ci:built"] })
 import { subscribe } from "candy-localhost"
 subscribe(event => {
   // { id, from: "ci", event: "built", data: { commit: "abc123" }, time }
@@ -244,8 +244,57 @@ export default {
 - **A publish wakes its subscribers.** A stopped server is started, and gets what was published once it calls `subscribe()` (up to 1000 events, for 10 minutes). A function gets one run of its `event()` handler per event, up to 4 at a time, 60 seconds each.
 - **A failed function run is tried again** after 1 and then 5 seconds. After the third failure the event is dropped, with a line in the function's log. Events are held in memory: a daemon restart loses the ones not yet delivered.
 - **A subscriber keeps its publishers up**, the way `depends` does: a publisher that is a server is started when the subscriber starts, and isn't stopped for being idle while the subscriber runs. Unlike `depends`, it isn't waited for, circles are fine, and stopping the publisher yourself leaves the subscriber running.
-- **Other users' events** need `"publish": true` on the publishing site, the same rule as `depends`.
-- **A start is refused** when the site subscribes to a site candy doesn't start, to one it may not reach, or to an event that site doesn't list.
+- **A start is refused** when the site subscribes to a site candy doesn't start, or to an event that site doesn't list.
+
+**Who may subscribe** is the publisher's call, event by event, in the publisher's `candy.json`. The subscriber only ever says which event it wants. One site can publish an announcement anyone may hear next to an event only approved apps get:
+
+```jsonc
+{
+  "pub": [
+    { "event": "announce", "auth": "none" },
+    { "event": "built" },                                             // lax, own user only
+    { "event": "deploy.key", "auth": "strict", "auth-users": ["bob"] }
+  ]
+}
+```
+
+| `auth` | Who gets that event |
+|---|---|
+| `"none"` | Any site candy runs, whoever runs it |
+| `"lax"` (the default) | Sites running as the publisher's own user, or as a user in `auth-users` |
+| `"strict"` | The same users, and only apps the publisher approved for that event |
+
+An entry can be just the name (`"built"`), which is `lax` with no extra users: the publisher's own user's sites only. Nothing overrides the publisher: not `"publish": true` (that is for `depends`), not an administrator's site.
+
+For a strict event the publishing app decides, app by app and event by event, through the SDK (`env.CANDY.*` in a function):
+
+```ts
+import { listSubClients, approveSubClient, rejectSubClient, revokeSubClient } from "candy-localhost"
+
+for (const c of await listSubClients()) {
+  // { app: "web", user: "bob", event: "deploy.key", status: "pending" | "approved" | "rejected" | "revoked", decidedAt }
+  if (c.status === "pending" && c.user === "bob") await approveSubClient(c.app, c.event)
+}
+await revokeSubClient("web", "deploy.key")   // an approved app gets no more of that event
+await approveSubClient("web")                // no event: every strict event web asks for
+```
+
+- A subscriber that isn't allowed (its user isn't listed, or it isn't approved) still starts. The SDK tells it, and what to do is the app's call:
+
+  ```ts
+  import { subscribe, subscriptions } from "candy-localhost"
+  subscribe(handle, {
+    onStatus: list => {   // on every connect: [{ subscription: "ci:built", site, event, status }]
+      if (list.some(s => s.status !== "ok")) process.exit(1)   // "denied", "pending", "rejected", "revoked"
+    },
+  })
+  await subscriptions()   // the same list, any time (env.CANDY.subscriptions() in a function)
+  ```
+- A subscriber that isn't allowed never starts the publisher or keeps it up, and a publish never starts it.
+- An app shows up as `pending` for a strict event once its `candy.json` lists that event in `sub` and it runs as a user the event allows. Its own start is not held up: it runs, without those events, until it is approved.
+- A decision is for one event, and for that app as run by that user. If the name passes to another user it is `pending` again.
+- An app that isn't approved doesn't keep the publisher up and isn't started by a publish. After an approval, events flow from the next publish; the app starts holding the publisher up at its next start.
+- `rejectSubClient` turns down a waiting app, `revokeSubClient` takes an approval back, and `approveSubClient` can undo either. Decisions survive daemon restarts.
 - A server gets events over a connection to the daemon that the SDK keeps open; `subscribe()` returns `{ close() }`. Inside a function, publishing is `env.CANDY.publish(name, data)`.
 
 **`service`** is server-to-server auth. A token tells the receiving site "the app named `web`, running as unix user `ashwin`, asks". It never says a person signed in: that is `auth`, with its own key and header, so a site that only knows one kind is never handed the other.

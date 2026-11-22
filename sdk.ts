@@ -351,8 +351,8 @@ export async function setIdling(idling = true): Promise<IdlingResult> {
 // --- Events and server-to-server tokens (sdk-runtime.ts) ---
 // These act as the site candy started this process for. Inside a candy
 // function the same object is env.CANDY.
-import { createRuntime, readRuntime, type CandyRuntime, type CandyEvent, type ServiceCaller, type Subscription, type SubscribeOptions } from "./sdk-runtime.ts"
-export type { CandyRuntime, CandyEvent, ServiceCaller, Subscription, SubscribeOptions } from "./sdk-runtime.ts"
+import { createRuntime, readRuntime, type CandyRuntime, type CandyEvent, type ServiceCaller, type Subscription, type SubscribeOptions, type SubClient, type SubscriptionStatus } from "./sdk-runtime.ts"
+export type { CandyRuntime, CandyEvent, ServiceCaller, Subscription, SubscribeOptions, SubClient, SubscriptionStatus } from "./sdk-runtime.ts"
 export { SERVICE_HEADER } from "./sdk-runtime.ts"
 
 let cachedRuntime: CandyRuntime | null = null
@@ -363,19 +363,32 @@ export function runtime(): CandyRuntime {
 }
 
 /**
- * Publish an event. It must be listed in "events" in this site's candy.json.
+ * Publish an event. It must be listed in "pub" in this site's candy.json.
  * Every site whose candy.json subscribes to "<this site>:<event>" gets it;
  * the ones that are stopped are started first. `data` is JSON, up to 64 KB.
  */
 export const publish = (event: string, data?: unknown) => runtime().publish(event, data)
 
 /**
- * Receive the events this site's candy.json subscribes to ("subscribe":
+ * Receive the events this site's candy.json asks for ("sub":
  * ["<site>:<event>"]), one at a time: `{ id, from, event, data, time }`.
  * A server calls this once at start; events published while it was stopped
  * (which is what started it) arrive first. A function exports `event()` instead.
  */
 export const subscribe = (handler: (event: CandyEvent) => unknown, opts?: SubscribeOptions): Subscription => runtime().subscribe(handler, opts)
+
+/**
+ * Who may subscribe is the publisher's call, event by event: "pub": [{ "event": "built",
+ * "auth": "none" | "lax" | "strict", "auth-users": [...] }] in its candy.json. For a
+ * "strict" event an app gets nothing until the publisher approves it here. Leave
+ * `event` out to decide every strict event that app asks for. Each returns the list as it now stands.
+ */
+/** Where each of this site's subscriptions stands: "ok", "denied", "pending", "rejected" or "revoked". A denied site still runs; what to do about it is yours. */
+export const subscriptions = () => runtime().subscriptions()
+export const listSubClients = () => runtime().listSubClients()
+export const approveSubClient = (app: string, event?: string) => runtime().approveSubClient(app, event)
+export const rejectSubClient = (app: string, event?: string) => runtime().rejectSubClient(app, event)
+export const revokeSubClient = (app: string, event?: string) => runtime().revokeSubClient(app, event)
 
 /**
  * A short-lived token for a request to another candy site. It tells that site
@@ -487,6 +500,11 @@ const candySdk = {
   runtime,
   publish,
   subscribe,
+  subscriptions,
+  listSubClients,
+  approveSubClient,
+  rejectSubClient,
+  revokeSubClient,
   serviceToken,
   serviceHeaders,
   verifyService,

@@ -3,7 +3,7 @@
 // be unreachable, and a class is a decision someone should make on purpose.
 // Reads daemon.ts as text: importing it would start the daemon.
 import { describe, expect, it } from "bun:test"
-import { classifyRoute, type RouteClass, type RouteRule } from "../portal-auth.ts"
+import { classifyRoute, guardRequest, type RouteClass, type RouteRule } from "../portal-auth.ts"
 
 const source = await Bun.file(new URL("../daemon.ts", import.meta.url)).text()
 
@@ -13,7 +13,7 @@ const parseTable = (): RouteRule[] => {
   if (begin < 0 || end < begin) throw new Error("route-table markers not found in daemon.ts")
   const rules: RouteRule[] = []
   for (const line of source.slice(begin, end).split("\n")) {
-    const m = line.match(/^\s*\["([A-Z]+|\*)", "([^"]+)", "(public|user|superuser)"\],\s*$/)
+    const m = line.match(/^\s*\["([A-Z]+|\*)", "([^"]+)", "(public|user|superuser|app)"\],\s*$/)
     if (m) rules.push([m[1], m[2], m[3] as RouteClass])
     else if (/^\s*\[/.test(line)) throw new Error(`unparsable route-table line: ${line}`)
   }
@@ -88,8 +88,9 @@ describe("ROUTE_TABLE", () => {
     expect(missing).toEqual([])
   })
 
+  // App rules are exempt: the one app branch right after the guard answers all of them
   it("has no rule the router doesn't use", () => {
-    const unused = table.filter(([m, p]) => !literals.some(l => {
+    const unused = table.filter(([m, p, c]) => c !== "app" && !literals.some(l => {
       if (l.method && m !== "*" && l.method !== m) return false
       if (p.endsWith("/*")) return l.path.startsWith(p.slice(0, -1)) || p.slice(0, -1).startsWith(l.path)
       return l.kind === "exact" ? l.path === p : p.startsWith(l.path)
@@ -123,7 +124,7 @@ describe("ROUTE_TABLE", () => {
   it("leaves only the login, discovery and secret exchange public", () => {
     const pub = table.filter(([, , c]) => c === "public").map(([m, p]) => `${m} ${p}`).sort()
     expect(pub).toEqual([
-      "* /candy-auth/check", "GET /app-auth/authorize", "GET /auth/passkey/start", "GET /auth/users", "GET /candy/registry", "GET /favicon.svg", "GET /login",
+      "* /candy-auth/check", "GET /app-auth/authorize", "GET /assets/*", "GET /auth/passkey/start", "GET /auth/users", "GET /candy/registry", "GET /favicon.svg", "GET /login",
       // /runtime/*: no login, but a launched process's runtime token, on loopback and never through Caddy
       "GET /runtime/events",
       "POST /auth/login", "POST /auth/logout", "POST /auth/passkey/finish",
@@ -144,5 +145,75 @@ describe("ROUTE_TABLE", () => {
     for (const lit of extractLiterals(body.slice(0, guardAt))) {
       expect(lit.path.startsWith("/candy-auth/") || lit.path.startsWith("/candy/")).toBe(true)
     }
+  })
+
+  // The portal SPA's pages (portal-app.ts), all of them since the cut-over: the
+  // SPA's APP_ROUTES (web/src/routes.tsx, whose own test compares it with this table)
+  const APP_PATHS = ["/", "/sites", "/sites/*", "/public", "/public/*", "/network", "/network/*", "/activity", "/machine", "/machine/*", "/settings", "/settings/*", "/passkeys"]
+
+  it("lists exactly the SPA's app paths, all GET", () => {
+    const app = table.filter(([, , c]) => c === "app")
+    expect(app.map(([, p]) => p)).toEqual(APP_PATHS)
+    for (const [m] of app) expect(m).toBe("GET")
+    expect(classifyRoute(table, "HEAD", "/sites/api")).toBe("app")
+    expect(classifyRoute(table, "POST", "/sites/api")).toBeNull()
+    for (const p of ["/", "/settings", "/passkeys"]) {
+      expect(classifyRoute(table, "GET", p)).toBe("app")
+      expect(classifyRoute(table, "POST", p)).toBeNull()
+    }
+    expect(classifyRoute(table, "GET", "/passkeys/list")).toBe("user")
+  })
+
+  it("puts no API rule at or under an app path", () => {
+    // "/x/*" owns everything below /x/ (not bare /x); an exact "/x" owns /x and, except
+    // /passkeys (whose /passkeys/* API stays), everything below it. "/" owns only itself
+    const apps = table.filter(([, , c]) => c === "app").map(([, p]) => p)
+    const owns = (app: string, p: string) => app.endsWith("/*") ? p.startsWith(app.slice(0, -1))
+      : app === "/" ? p === "/" : p === app || (app !== "/passkeys" && p.startsWith(app + "/"))
+    const clash = table.filter(([, p, c]) => c !== "app" && apps.some(a => owns(a, p)))
+    expect(clash).toEqual([])
+  })
+
+  it("serves /assets/* publicly and boots with a login", () => {
+    expect(classifyRoute(table, "GET", "/assets/index-ab12.js")).toBe("public")
+    expect(classifyRoute(table, "POST", "/assets/index-ab12.js")).toBeNull()
+    expect(classifyRoute(table, "POST", "/portal/boot")).toBe("user")
+    expect(classifyRoute(table, "GET", "/portal/boot")).toBeNull()
+    expect(literals.some(l => l.kind === "prefix" && l.path === "/assets/")).toBe(true)
+    expect(literals.some(l => l.kind === "exact" && l.path === "/portal/boot" && l.method === "POST")).toBe(true)
+  })
+
+  it("answers app paths right after the guard, before CSRF and every handler, and 404s them off the portal host", () => {
+    const body = section("async function controlFetch(", "\n}\n")
+    const verdict = body.indexOf("if (!verdict.ok) {")
+    const branch = body.indexOf('if (cls === "app" || url.pathname.startsWith("/assets/")) {')
+    const csrf = body.indexOf('if (portalHost && req.method !== "GET" && req.method !== "HEAD") {')
+    expect(verdict).toBeGreaterThan(0)
+    expect(branch).toBeGreaterThan(verdict)
+    expect(csrf).toBeGreaterThan(branch)
+    // Between the verdict and the branch: only the verdict's own answers
+    const between = body.slice(verdict, branch)
+    expect(extractLiterals(between)).toEqual([])
+    expect(between.match(/\breturn\b/g)?.length).toBe(2)
+    // The branch: a 404 off the portal host, then the SPA
+    const block = body.slice(branch, body.indexOf("\n      }\n", branch))
+    expect(block).toContain('if (!portalHost) return Response.json({ error: "not found" }, { status: 404')
+    expect(block).toContain('return portalApp.serve(req, url, cls === "app")')
+    expect(block.indexOf("!portalHost")).toBeLessThan(block.indexOf("portalApp.serve"))
+    // Every handler that matches a path comes after it
+    const guardAt = body.indexOf("classifyRoute(ROUTE_TABLE")
+    for (const lit of extractLiterals(body.slice(guardAt))) {
+      if (lit.path === "/assets/") continue
+      expect(body.indexOf(lit.line, guardAt)).toBeGreaterThan(branch)
+    }
+  })
+
+  it("lets an app path through the guard without a login, for GET and HEAD only", () => {
+    const g = (method: string | undefined, html = false) =>
+      guardRequest({ cls: "app", method, auth: null, portalHost: true, html, path: "/sites/x", search: "" })
+    expect(g("GET")).toEqual({ ok: true })
+    expect(g("HEAD")).toEqual({ ok: true })
+    expect(g("GET", true)).toEqual({ ok: true })
+    for (const m of ["POST", "PUT", "DELETE", "PATCH", undefined]) expect(g(m).ok).toBe(false)
   })
 })

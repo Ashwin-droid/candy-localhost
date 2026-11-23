@@ -1,0 +1,23 @@
+.ui-pagehead { padding: var(--s-7) 0 var(--s-6); display: flex; flex-direction: column; gap: var(--s-2); min-width: 0; }
+.ui-pagehead-back {
+  display: inline-flex; align-items: center; gap: 4px; align-self: flex-start;
+  font: var(--t-small); font-weight: 500; color: var(--ink-2); margin-bottom: 2px;
+}
+.ui-pagehead-back:hover { color: var(--ink); text-decoration: none; }
+.ui-pagehead-row { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-4) var(--s-6); flex-wrap: wrap; }
+.ui-pagehead-main { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1 1 320px; }
+.ui-pagehead-title {
+  display: flex; align-items: center; gap: 12px; min-width: 0;
+  font: var(--t-title); letter-spacing: -0.015em; color: var(--ink);
+}
+.ui-pagehead-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-pagehead-lead { display: inline-flex; align-items: center; }
+.ui-pagehead-ext { display: inline-flex; color: var(--ink-3); padding: 4px; margin-left: -4px; border-radius: var(--r-1); }
+.ui-pagehead-ext:hover { color: var(--ink); background: var(--hover); }
+.ui-pagehead-meta { display: flex; flex-wrap: wrap; gap: 4px var(--s-4); font: var(--t-small); color: var(--ink-2); }
+.ui-pagehead-meta > li { min-width: 0; }
+.ui-pagehead-actions { display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; padding-top: 2px; }
+@media (max-width: 639px) {
+  .ui-pagehead { padding: var(--s-5) 0 var(--s-4); }
+  .ui-pagehead-actions { width: 100%; }
+}

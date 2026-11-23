@@ -1,0 +1,4 @@
+.ui-spark { display: block; max-width: 100%; overflow: visible; }
+.ui-spark-line { fill: none; stroke: var(--ink-2); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.ui-spark-area { fill: var(--sheet-3); stroke: none; }
+.ui-spark-base { stroke: var(--line); stroke-width: 1; }

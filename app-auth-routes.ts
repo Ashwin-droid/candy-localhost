@@ -12,14 +12,12 @@
 //   GET  /app-auth/sites               user     sites with keys, the caller's own (mayUse)
 //   POST /app-auth/rotate              user     a new key for one of the caller's sites
 //   POST /app-auth/drop                user     revoke: the site's key and everyone's approvals of it, gone
-//   GET  /settings                     user     the settings page (portal login only)
 //   GET  /app-auth/consents            user     the caller's remembered approvals
 //   POST /app-auth/consents/revoke     user     forget one
 //   POST /sdk/auth/keys                user     the owner's API key only: the site's key ring
 //   GET  /auth/passkey/start           public   portal only: a login stamp, 302 to the candy host
 //   POST /auth/passkey/finish          public   portal only, Origin = the candy host: redeem the login code, make the session
 //   POST /auth/reauth                  user     portal login + page token: re-enter the password
-//   GET  /passkeys                     user     portal login: the passkeys page (portal shell)
 //   GET  /passkeys/list                user     the caller's passkeys (portal, or an API key)
 //   POST /passkeys/enroll/start        user     portal login + page token + recent password: an enroll stamp (the popup's URL)
 //   POST /passkeys/rename              user     portal login + page token
@@ -28,6 +26,8 @@
 // The WebAuthn ceremonies themselves run on candy's own host, candy.<zone>
 // (candy-host.ts); these routes only send the browser there with a stamp and
 // take it back. No bound domain: no passkeys (the start routes are 404s).
+// The settings and passkeys pages (/settings, /passkeys) are the portal SPA's
+// (portal-app.ts); it gets its page token and who is looking from `boot`.
 //
 // Never logged or audited: a token, a key, a state or nonce, a password, a stamp or a login code.
 import {
@@ -48,10 +48,10 @@ import {
 
 /** Every path `handle` answers; daemon.ts dispatches these after its guard. */
 export const APP_AUTH_ROUTES: readonly string[] = [
-  "/app-auth/authorize", "/app-auth/consent", "/app-auth/decision", "/app-auth/fresh", "/app-auth/sites", "/app-auth/rotate", "/app-auth/drop", "/settings",
+  "/app-auth/authorize", "/app-auth/consent", "/app-auth/decision", "/app-auth/fresh", "/app-auth/sites", "/app-auth/rotate", "/app-auth/drop",
   "/app-auth/consents", "/app-auth/consents/revoke", "/sdk/auth/keys",
   "/auth/passkey/start", "/auth/passkey/finish", "/auth/reauth",
-  "/passkeys", "/passkeys/list", "/passkeys/enroll/start", "/passkeys/rename", "/passkeys/delete",
+  "/passkeys/list", "/passkeys/enroll/start", "/passkeys/rename", "/passkeys/delete",
 ]
 
 /** The one portal route a page on the candy host may POST to (its Origin is the candy host, not the portal). */
@@ -118,7 +118,29 @@ export interface AuthRouteDeps {
   sessionHeader: string
   audit(action: string, details: string, actor: string): void
   now(): number
+  /** POST /portal/boot: the daemon runs as root (RUNNING_AS_ROOT), so sites have users */
+  multiUser: boolean
+  /** POST /portal/boot: CANDY_OWNER */
+  owner: string
+  /** POST /portal/boot: web/src is newer than web/dist (the daemon's cached answer; never walks the disk) */
+  buildStale(): boolean
 }
+
+/** What POST /portal/boot answers: everything the portal SPA needs to start, and its first page token */
+export interface BootResponse {
+  token: string
+  user: string
+  superuser: boolean
+  multiUser: boolean
+  owner: string
+  amr: "pam" | "passkey" | null
+  candyHost: string | null
+  pamUntil: number | null
+  tld: "candy" | "localhost"
+  buildStale: boolean
+}
+
+export const BOOT_NOT_PORTAL = "Only a portal login can open the portal."
 
 const NO_STORE = { "Cache-Control": "no-store" }
 const HTML_HEADERS = { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" }
@@ -513,23 +535,6 @@ export const createAuthRoutes = (d: AuthRouteDeps) => {
     return json(ctx, { pamUntil: at + RECENT_PAM_MS })
   }
 
-  const passkeysPage = async (ctx: AuthRouteContext): Promise<Response> => {
-    const auth = portalLogin(ctx)
-    if (!auth) return notFound(ctx)
-    return htmlPage("portal-passkeys.html", d.pageTokens.mint(auth.sessionId!), {
-      user: auth.user, superuser: auth.superuser, candyHost: d.candyHost(), pamUntil: pamUntil(auth),
-    })
-  }
-
-  // Everything about the account and the daemon that isn't a site: passkeys, sign-in keys, approvals...
-  const settingsPage = async (ctx: AuthRouteContext): Promise<Response> => {
-    const auth = portalLogin(ctx)
-    if (!auth) return notFound(ctx)
-    return htmlPage("portal-settings.html", d.pageTokens.mint(auth.sessionId!), {
-      user: auth.user, superuser: auth.superuser, candyHost: d.candyHost(), pamUntil: pamUntil(auth),
-    })
-  }
-
   const passkeyList = (url: URL, ctx: AuthRouteContext): Response => {
     const auth = ctx.auth!
     const asked = url.searchParams.get("user")
@@ -589,6 +594,30 @@ export const createAuthRoutes = (d: AuthRouteDeps) => {
     return json(ctx, { deleted: true })
   }
 
+  // POST /portal/boot: the SPA's start. index.html is static and holds nothing,
+  // so the page token and who is looking come from here, with X-Candy-Session.
+  // Each call is a new token chain (one per lane per page load)
+  const portalBoot = async (req: Request, ctx: AuthRouteContext): Promise<Response> => {
+    if (req.method !== "POST") return notFound(ctx)
+    req.body?.cancel().catch(() => {})
+    if (!ctx.auth) return json(ctx, { error: "login required" }, 401, { "X-Candy-Login": "required" })
+    const auth = portalLogin(ctx)
+    if (!auth) return json(ctx, { error: BOOT_NOT_PORTAL }, 403)
+    const body: BootResponse = {
+      token: d.pageTokens.mint(auth.sessionId!),
+      user: auth.user,
+      superuser: auth.superuser,
+      multiUser: d.multiUser,
+      owner: d.owner,
+      amr: auth.amr ?? null,
+      candyHost: d.candyHost(),
+      pamUntil: pamUntil(auth),
+      tld: ctx.host.endsWith(".localhost") || ctx.host === "localhost" ? "localhost" : "candy",
+      buildStale: d.buildStale(),
+    }
+    return json(ctx, body)
+  }
+
   /** The answer for one of APP_AUTH_ROUTES, or null when the method doesn't match (the caller 404s). */
   const handle = async (req: Request, url: URL, ctx: AuthRouteContext): Promise<Response | null> => {
     const m = req.method === "HEAD" ? "GET" : req.method
@@ -601,14 +630,12 @@ export const createAuthRoutes = (d: AuthRouteDeps) => {
       case "GET /app-auth/sites": return ctx.auth ? sites(ctx) : null
       case "POST /app-auth/rotate": return ctx.auth ? rotate(req, ctx) : null
       case "POST /app-auth/drop": return ctx.auth ? drop(req, ctx) : null
-      case "GET /settings": return settingsPage(ctx)
       case "GET /app-auth/consents": return ctx.auth ? consentList(ctx) : null
       case "POST /app-auth/consents/revoke": return ctx.auth ? revoke(req, ctx) : null
       case "POST /sdk/auth/keys": return keyFetch(req, ctx)
       case "GET /auth/passkey/start": return passkeyStart(req, url, ctx)
       case "POST /auth/passkey/finish": return passkeyFinish(req, ctx)
       case "POST /auth/reauth": return reauth(req, ctx)
-      case "GET /passkeys": return passkeysPage(ctx)
       case "GET /passkeys/list": return ctx.auth ? passkeyList(url, ctx) : null
       case "POST /passkeys/enroll/start": return enrollStart(req, ctx)
       case "POST /passkeys/rename": return rename(req, ctx)
@@ -617,5 +644,5 @@ export const createAuthRoutes = (d: AuthRouteDeps) => {
     return null
   }
 
-  return { handle }
+  return { handle, boot: portalBoot }
 }

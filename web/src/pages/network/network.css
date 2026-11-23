@@ -1,0 +1,13 @@
+/* Network and Peers (SPEC §5.14). Colours come from tokens.css only. */
+.net-layout { display: flex; align-items: flex-start; gap: var(--s-7); min-width: 0; }
+.net-body { flex: 1; min-width: 0; }
+@media (max-width: 1023px) { .net-layout { flex-direction: column; gap: 0; } .net-layout > .ui-subnav { align-self: stretch; } .net-body { width: 100%; } }
+
+.net-site { font-size: 13px; color: var(--ink); }
+.net-https { display: inline-flex; align-items: baseline; gap: var(--s-3); flex-wrap: wrap; min-width: 0; }
+.net-https .ui-xlink, .ui-td .ui-xlink { overflow-wrap: anywhere; }
+.net-more { font: var(--t-small); font-weight: 500; color: var(--ink-2); white-space: nowrap; padding: 4px 6px; border-radius: var(--r-1); }
+.net-more:hover { color: var(--ink); background: var(--hover); text-decoration: none; }
+.net-role { display: inline-flex; flex-direction: column; gap: 1px; min-width: 0; }
+.net-role .mono { font-size: 12px; overflow-wrap: anywhere; }
+.net-host { font-size: 12.5px; color: var(--ink-2); overflow-wrap: anywhere; }

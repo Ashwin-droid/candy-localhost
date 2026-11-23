@@ -1,0 +1,28 @@
+.ui-kv {
+  display: grid; grid-template-columns: var(--kv-label, 160px) minmax(0, 1fr) auto;
+  background: var(--sheet); border: 1px solid var(--line); border-radius: var(--r-2);
+  overflow: hidden;
+}
+.ui-kv-row { display: contents; }
+.ui-kv-row > * { min-height: var(--kv-row-h); padding: 8px var(--s-4); border-top: 1px solid var(--line); margin: 0; }
+.ui-kv-row:first-child > * { border-top: 0; }
+.ui-kv-label { font: var(--t-small); color: var(--ink-2); padding-top: 9px; display: flex; flex-direction: column; gap: 1px; padding-right: var(--s-2); }
+.ui-kv-raw { display: none; font: var(--t-mono-small); font-size: 11px; font-stretch: 87.5%; color: var(--ink-3); background: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.ui-kv-value { min-width: 0; display: flex; flex-direction: column; justify-content: flex-start; gap: 2px; padding-top: 7px; }
+.ui-kv-v { font: var(--t-body); color: var(--ink); overflow-wrap: anywhere; min-width: 0; }
+.ui-kv-v.mono { font: var(--t-host); font-stretch: 87.5%; font-size: 13px; }
+.ui-kv-empty { color: var(--ink-3); }
+.ui-kv-hint { font: var(--t-small); color: var(--ink-2); max-width: 64ch; }
+/* label, value and action line up on the row's first line: the label and value are top-aligned, the action is
+   centred in a box one row tall at the top, so a multi-line value never pushes them apart */
+.ui-kv-action { display: flex; align-items: center; justify-content: flex-end; gap: var(--s-1); padding-left: 0; padding-top: 0; padding-bottom: 0; align-self: start; height: var(--kv-row-h); min-height: 0; }
+.ui-kv-action:empty { padding: 0; }
+@media (min-width: 1024px) { .ui-kv-raw { display: block; } }
+.ui-kv-label > span:first-child { overflow-wrap: anywhere; }
+.ui-kv-label { min-width: 0; }
+@media (max-width: 639px) {
+  .ui-kv { grid-template-columns: minmax(0, 1fr) auto; }
+  .ui-kv-label { grid-column: 1 / -1; min-height: 0; padding-bottom: 0; }
+  .ui-kv-row > .ui-kv-value, .ui-kv-row > .ui-kv-action { border-top: 0; padding-top: 2px; }
+  .ui-kv-row > .ui-kv-action { height: 25px; }
+}

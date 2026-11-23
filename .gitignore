@@ -1,6 +1,11 @@
 # Dependencies
 node_modules/
 
+# The portal SPA's build output (bun run web:build); never committed
+web/dist/
+web/dist.new/
+web/dist.old/
+
 # Bun
 bun.lockb
 

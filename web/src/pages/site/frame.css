@@ -1,0 +1,19 @@
+/* Site page frame (SPEC §5.3). Tokens only. */
+
+.site-page { display: flex; flex-direction: column; min-width: 0; padding-bottom: var(--s-8); }
+.site-tab { padding-top: var(--s-5); min-width: 0; }
+
+.site-manifest-error, .site-line {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px var(--s-3);
+  margin: calc(-1 * var(--s-3)) 0 var(--s-4); font: var(--t-small);
+}
+.site-manifest-error { color: var(--cherry); }
+.site-manifest-error + .site-line { margin-top: 0; }
+.site-inline-link { font-weight: 500; color: var(--ink); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line-2); }
+.site-inline-link:hover { text-decoration-color: var(--ink); }
+
+.site-line { color: var(--ink-2); }
+.site-line.is-ok { color: var(--ink); }
+.site-line.is-error { color: var(--cherry); }
+.site-line-close { display: inline-flex; padding: 3px; border: 0; background: none; color: var(--ink-3); border-radius: 4px; }
+.site-line-close:hover { color: var(--ink); background: var(--hover); }

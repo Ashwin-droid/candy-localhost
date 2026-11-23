@@ -1,0 +1,29 @@
+.ui-dialog-layer { position: fixed; inset: 0; z-index: 100; display: flex; align-items: flex-start; justify-content: center; padding: 12vh var(--s-4) var(--s-4); overflow-y: auto; }
+.ui-dialog-scrim { position: fixed; inset: 0; background: var(--scrim); animation: ui-fade var(--t-dialog) ease-out; }
+.ui-dialog {
+  position: relative; width: 100%; display: flex; flex-direction: column; max-height: calc(100vh - 12vh - var(--s-4));
+  background: var(--sheet); border-radius: var(--r-3); box-shadow: var(--shadow-pop);
+  animation: ui-rise var(--t-dialog) ease-out;
+}
+.ui-dialog:focus-visible { outline: none; }
+.ui-dialog-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); padding: var(--s-5) var(--s-5) 0 var(--s-6); }
+.ui-dialog-title { font: var(--t-section); font-size: 16px; color: var(--ink); min-width: 0; overflow-wrap: anywhere; }
+.ui-dialog-body { padding: var(--s-4) var(--s-6) var(--s-6); overflow-y: auto; display: flex; flex-direction: column; gap: var(--s-4); color: var(--ink); }
+.ui-dialog-body > p { color: var(--ink-2); }
+.ui-dialog-foot {
+  display: flex; justify-content: flex-end; gap: var(--s-2); flex-wrap: wrap;
+  padding: var(--s-3) var(--s-6); border-top: 1px solid var(--line); background: var(--sheet-2);
+  border-radius: 0 0 var(--r-3) var(--r-3);
+}
+@keyframes ui-fade { from { opacity: 0; } }
+@keyframes ui-rise { from { opacity: 0; transform: translateY(4px); } }
+@media (max-width: 639px) {
+  .ui-dialog-layer { align-items: flex-end; padding: 0; }
+  .ui-dialog { max-width: none !important; max-height: 92vh; border-radius: var(--r-3) var(--r-3) 0 0; }
+  .ui-dialog-head { padding: var(--s-4) var(--s-3) 0 var(--s-4); }
+  .ui-dialog-body { padding: var(--s-3) var(--s-4) var(--s-5); }
+  .ui-dialog-foot { padding: var(--s-3) var(--s-4) calc(var(--s-3) + env(safe-area-inset-bottom)); border-radius: 0; }
+  .ui-dialog-foot .ui-btn { flex: 1 1 0; }
+}
+.ui-confirm-body { display: flex; flex-direction: column; gap: var(--s-2); color: var(--ink-2); }
+.ui-confirm-type { display: flex; flex-direction: column; gap: 6px; }

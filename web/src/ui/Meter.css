@@ -1,0 +1,4 @@
+.ui-meter { display: block; position: relative; width: 100%; min-width: 48px; height: 6px; border-radius: 3px; background: var(--sheet-3); overflow: hidden; }
+.ui-meter-fill { position: absolute; inset: 0 auto 0 0; background: var(--ink-2); border-radius: 3px; transition: width var(--t-fast) ease-out; }
+.ui-meter.is-warn .ui-meter-fill { background: var(--lemon); }
+.ui-meter.is-hot .ui-meter-fill { background: var(--cherry); }

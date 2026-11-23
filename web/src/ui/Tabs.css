@@ -1,0 +1,23 @@
+.ui-tabs { position: relative; border-bottom: 1px solid var(--line); margin-bottom: var(--s-6); }
+.ui-tabs-scroll { display: flex; gap: var(--s-1); overflow-x: auto; scrollbar-width: none; margin: 0 calc(-2 * var(--s-2)); padding: 0 var(--s-2); }
+.ui-tabs-scroll::-webkit-scrollbar { display: none; }
+.ui-tab {
+  position: relative; display: inline-flex; align-items: center; gap: 6px;
+  height: 40px; padding: 0 var(--s-2); white-space: nowrap;
+  font: var(--t-body); font-weight: 500; color: var(--ink-2);
+  border-radius: var(--r-1) var(--r-1) 0 0;
+  transition: color var(--t-fast) ease-out;
+}
+.ui-tab:hover { color: var(--ink); text-decoration: none; }
+.ui-tab.is-active { color: var(--ink); }
+.ui-tab.is-active::after {
+  content: ""; position: absolute; left: var(--s-2); right: var(--s-2); bottom: -1px; height: 2px;
+  background: var(--cherry); border-radius: 2px 2px 0 0;
+}
+.ui-tab:focus-visible { outline-offset: -2px; }
+.ui-tab-count { font: var(--t-mono-small); font-stretch: 87.5%; color: var(--ink-3); }
+@media (max-width: 639px) {
+  .ui-tabs { margin-left: calc(-1 * var(--gutter)); margin-right: calc(-1 * var(--gutter)); }
+  .ui-tabs-scroll { margin: 0; padding: 0 calc(var(--gutter) - var(--s-2));
+    mask-image: linear-gradient(to right, transparent 0, var(--ink) 12px, var(--ink) calc(100% - 12px), transparent 100%); }
+}

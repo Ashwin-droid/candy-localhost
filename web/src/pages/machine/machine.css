@@ -1,0 +1,49 @@
+/* Machine (SPEC §5.15). Colours come from tokens.css only. */
+.m-host { font: var(--t-title); font-family: var(--font-mono); font-stretch: 87.5%; letter-spacing: -0.02em; }
+
+.m-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s-4); margin-bottom: var(--s-7); }
+@media (max-width: 1023px) { .m-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 639px) { .m-tiles { grid-template-columns: minmax(0, 1fr); } }
+.m-tile {
+  display: flex; flex-direction: column; gap: var(--s-2); min-width: 0;
+  padding: var(--s-4) var(--s-5) var(--s-5); background: var(--sheet); border: 1px solid var(--line); border-radius: var(--r-2);
+}
+.m-tile-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-2); }
+.m-tile-title { font: var(--t-small); font-weight: 600; color: var(--ink); }
+.m-tile-aside { font: var(--t-small); color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.m-stat { font: var(--t-stat); font-family: var(--font-mono); font-stretch: 100%; font-variant-numeric: tabular-nums; color: var(--ink); }
+.m-sub { font: var(--t-small); color: var(--ink-2); }
+.m-sub.mono { font: var(--t-mono-small); font-family: var(--font-mono); font-stretch: 87.5%; }
+.m-spark { margin: var(--s-1) 0; }
+.m-spark .ui-spark { width: 100%; height: 36px; }
+.m-cores { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px var(--s-2); margin-top: var(--s-1); }
+.m-cores .ui-meter { min-width: 0; }
+.m-lines { display: flex; flex-direction: column; gap: var(--s-3); }
+.m-disk { display: flex; flex-direction: column; gap: 6px; }
+.m-line { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-2); min-width: 0; font: var(--t-small); }
+.m-name { font-size: 12.5px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.m-val { color: var(--ink-2); white-space: nowrap; }
+.m-val.mono { font-size: 12px; }
+
+.m-toolbar { display: flex; align-items: center; gap: var(--s-3); flex-wrap: wrap; margin-bottom: var(--s-3); }
+.m-filter { width: 300px; }
+.m-count { font: var(--t-small); color: var(--ink-2); margin-left: auto; }
+@media (max-width: 639px) { .m-filter { flex: 1 1 100%; width: auto; } .m-count { margin-left: 0; } }
+
+.m-table .ui-td.is-mono { font-size: 12.5px; }
+.m-user { overflow-wrap: anywhere; }
+.m-unit { display: inline-flex; align-items: baseline; gap: var(--s-2); flex-wrap: wrap; min-width: 0; }
+.m-unit-name { font-size: 12.5px; overflow-wrap: anywhere; }
+.m-tag { font: var(--t-small); color: var(--ink-2); white-space: nowrap; }
+.m-tag.cherry { color: var(--cherry); }
+.m-tag-link { text-decoration: underline; text-decoration-color: var(--line-2); text-underline-offset: 3px; }
+.m-tag-link:hover { color: var(--ink); }
+.m-cmd { display: block; max-width: 52ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.m-cmd b { font-weight: 600; color: var(--ink); }
+@media (max-width: 639px) { .m-cmd { max-width: 100%; } }
+
+/* a cherry Kill on every row is noise: row actions show on hover or focus (always on touch screens) */
+@media (hover: hover) and (min-width: 640px) {
+  .m-table .ui-tr .ui-row-actions { opacity: 0; transition: opacity var(--t-fast) ease-out; }
+  .m-table .ui-tr:hover .ui-row-actions, .m-table .ui-tr:focus-within .ui-row-actions { opacity: 1; }
+}

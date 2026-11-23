@@ -1,0 +1,5 @@
+.ui-xlink { display: inline-flex; align-items: baseline; gap: 3px; max-width: 100%; color: var(--ink); }
+.ui-xlink-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.ui-xlink-icon { color: var(--ink-3); align-self: center; transition: color var(--t-fast) ease-out, transform var(--t-fast) ease-out; }
+.ui-xlink:hover .ui-xlink-icon { color: var(--ink); transform: translate(1px, -1px); }
+.ui-xlink.mono { font-size: 13px; }

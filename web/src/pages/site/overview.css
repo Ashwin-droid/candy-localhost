@@ -1,0 +1,72 @@
+/* Overview tab (SPEC §5.4). Tokens only. */
+
+.ov { display: flex; flex-direction: column; gap: var(--s-7); min-width: 0; }
+.ov-banners { display: flex; flex-direction: column; gap: var(--s-2); }
+.ov-banners p + .ov-warnings { margin-top: var(--s-1); }
+.ov-warnings { display: flex; flex-direction: column; gap: 2px; color: var(--ink-2); }
+.ov-warnings li { padding-left: 14px; position: relative; }
+.ov-warnings li::before { content: ""; position: absolute; left: 3px; top: 9px; width: 4px; height: 4px; border-radius: 50%; background: var(--ink-3); }
+
+.ov-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-7); align-items: start; }
+@media (min-width: 1024px) {
+  .ov-grid { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: var(--s-7) var(--s-6); }
+}
+.ov-col { display: flex; flex-direction: column; min-width: 0; }
+/* Section spaces itself from the previous Section; columns start flush */
+.ov-col > .ui-section + .ui-section { margin-top: var(--s-7); }
+
+.ov-change {
+  font: var(--t-small); font-weight: 500; color: var(--ink-2); white-space: nowrap;
+  padding: 4px 6px; margin: -4px -2px; border-radius: var(--r-1);
+}
+.ov-change:hover { color: var(--ink); background: var(--hover); text-decoration: none; }
+.ov-dim { color: var(--ink-2); font-family: var(--font-ui); font-size: 13px; }
+.ov-memory { display: inline-flex; align-items: center; gap: var(--s-3); flex-wrap: wrap; }
+.ov-memory .ui-meter { width: 120px; }
+
+/* Last run */
+.ov-cause { color: var(--ink); }
+.ov-line { font: var(--t-small); color: var(--ink-2); margin-bottom: var(--s-2); }
+.ov-line.cherry { color: var(--cherry); }
+.ov-log { background: var(--log-bg); border-radius: var(--r-2); overflow: hidden; }
+.ov-log .ui-ansi { max-height: 420px; overflow: auto; margin: 0; }
+.ov-log-empty { padding: var(--s-4); font: var(--t-mono-small); font-stretch: 87.5%; color: var(--log-dim); }
+
+/* Relationships */
+.ov-rels { display: flex; flex-wrap: wrap; gap: 4px var(--s-4); }
+.ov-rel { display: inline-flex; align-items: center; gap: 6px; }
+.ov-rel .mono { font-size: 13px; }
+
+/* From candy.json */
+.ov-lines { display: flex; flex-direction: column; gap: 2px; }
+.ov-mline { align-self: flex-start; }
+.ov-mline:hover { text-decoration-color: var(--ink-2); }
+
+/* Reachable at */
+.ov-addr { max-width: 100%; }
+.ov-note-link { color: var(--ink-2); }
+.ov-note-link:hover { color: var(--ink); }
+.ov-foot { margin-top: var(--s-2); }
+.ov-foot .ov-change { margin-left: -6px; }
+/* The column is narrow, so each way in is a two-line block rather than a four-column row:
+   line 1 "Way in" and its note, line 2 the address and its action. Column headers stay for screen readers. */
+.ov-reach .ui-table, .ov-reach .ui-table tbody { display: block; }
+.ov-reach .ui-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.ov-reach .ui-tr {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--s-3); row-gap: 2px;
+  padding: 10px var(--s-4); border-top: 1px solid var(--line);
+}
+.ov-reach .ui-table tbody tr:first-child { border-top: 0; }
+.ov-reach .ui-tr > .ui-td, .ov-reach .ui-tr > .ui-td.p1, .ov-reach .ui-tr > .ui-td.p2 {
+  display: block; height: auto; padding: 0; border: 0; min-width: 0; width: auto; order: 0; flex: none;
+}
+.ov-reach .ui-tr > .ui-td.p2::before { content: none; }
+.ov-reach .ui-tr > .ui-td:nth-child(1) { grid-column: 1; grid-row: 1; font: var(--t-small); font-weight: 500; color: var(--ink); }
+.ov-reach .ui-tr > .ui-td:nth-child(3) { grid-column: 2; grid-row: 1; display: block; text-align: right; font: var(--t-small); }
+.ov-reach .ui-tr > .ui-td:nth-child(2) { grid-column: 1; grid-row: 2; align-self: center; }
+.ov-reach .ui-tr > .ui-td-actions { grid-column: 2; grid-row: 2; align-self: center; margin: -4px 0; }
+.ov-reach .ui-xlink-text { white-space: normal; overflow-wrap: anywhere; }
+/* one-sentence empty states inside a column stay short */
+.ov .ui-section-body > .ui-empty { padding: var(--s-5) var(--s-6); align-items: flex-start; text-align: left; flex-direction: row; justify-content: space-between; flex-wrap: wrap; }
+.ov-inline { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line-2); }
+.ov-inline:hover { text-decoration-color: var(--ink); }

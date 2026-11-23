@@ -1,0 +1,87 @@
+/* candy portal design tokens (SPEC §4.1-4.3). The only file in web/src with colour literals. */
+
+:root {
+  color-scheme: light;
+  --canvas:#f3f4f7;  --sheet:#ffffff;  --sheet-2:#f7f8fa;  --sheet-3:#eef0f4;
+  --ink:#16192a;     --ink-2:#4d5267;  --ink-3:#878ca1;    --on-ink:#ffffff;
+  --line:#e3e5eb;    --line-2:#cbcfd9;
+  --cherry:#d42a47;  --cherry-hover:#b81f3b;  --cherry-ink:#ffffff;  --cherry-soft:rgba(212,42,71,.08);
+  --mint:#0b8a61;    --mint-soft:rgba(11,138,97,.12);
+  --lemon:#b07d05;   --lemon-soft:rgba(232,177,11,.14);
+  --scrim:rgba(22,25,42,.36);
+  --shadow-pop:0 12px 32px rgba(22,25,42,.16), 0 1px 2px rgba(22,25,42,.08);
+  --log-bg:#12141d;  --log-ink:#d7dbea; --log-dim:#7d849c; --log-warn:#f2c14e; --log-err:#ff7a90;
+  --ansi-black:#4b5068; --ansi-red:#ff7a90; --ansi-green:#5fd7a8; --ansi-yellow:#f2c14e;
+  --ansi-blue:#82aaff;  --ansi-magenta:#c3a6ff; --ansi-cyan:#6fd6e6; --ansi-white:#d7dbea;
+  /* derived, still token-only: a faint wash for hovered rows and the ink-filled button's hover */
+  --hover:rgba(22,25,42,.035);
+  --ink-hover:#2a2e45;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --canvas:#0f1118;  --sheet:#161924;  --sheet-2:#1b1f2c;  --sheet-3:#222738;
+    --ink:#e7e9f1;     --ink-2:#a4a9bf;  --ink-3:#6c7290;    --on-ink:#0f1118;
+    --line:#252a3a;    --line-2:#363c51;
+    --cherry:#ff5d78;  --cherry-hover:#ff7a90;  --cherry-ink:#2a0710;  --cherry-soft:rgba(255,93,120,.12);
+    --mint:#3fd3a1;    --mint-soft:rgba(63,211,161,.14);
+    --lemon:#f2c14e;   --lemon-soft:rgba(242,193,78,.14);
+    --scrim:rgba(4,5,9,.62);
+    --shadow-pop:0 0 0 1px var(--line), 0 12px 32px rgba(0,0,0,.5);
+    --log-bg:#0b0d14;
+    --hover:rgba(231,233,241,.04);
+    --ink-hover:#ffffff;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --canvas:#0f1118;  --sheet:#161924;  --sheet-2:#1b1f2c;  --sheet-3:#222738;
+  --ink:#e7e9f1;     --ink-2:#a4a9bf;  --ink-3:#6c7290;    --on-ink:#0f1118;
+  --line:#252a3a;    --line-2:#363c51;
+  --cherry:#ff5d78;  --cherry-hover:#ff7a90;  --cherry-ink:#2a0710;  --cherry-soft:rgba(255,93,120,.12);
+  --mint:#3fd3a1;    --mint-soft:rgba(63,211,161,.14);
+  --lemon:#f2c14e;   --lemon-soft:rgba(242,193,78,.14);
+  --scrim:rgba(4,5,9,.62);
+  --shadow-pop:0 0 0 1px var(--line), 0 12px 32px rgba(0,0,0,.5);
+  --log-bg:#0b0d14;
+  --hover:rgba(231,233,241,.04);
+  --ink-hover:#ffffff;
+}
+
+:root {
+  /* Type (§4.2). Shorthands are used as `font: var(--t-body)`. */
+  --font-ui: "Schibsted Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Martian Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --t-host-xl: 500 30px/36px var(--font-mono);
+  --t-title: 600 22px/28px var(--font-ui);
+  --t-section: 600 15px/22px var(--font-ui);
+  --t-body: 400 14px/21px var(--font-ui);
+  --t-host: 380 14px/21px var(--font-mono);
+  --t-small: 400 13px/19px var(--font-ui);
+  --t-mono-small: 400 12px/18px var(--font-mono);
+  --t-stat: 500 26px/30px var(--font-mono);
+  --t-wordmark: 700 19px/1 var(--font-mono);
+
+  /* Space, shape, motion (§4.3) */
+  --s-1:4px; --s-2:8px; --s-3:12px; --s-4:16px; --s-5:20px; --s-6:24px; --s-7:32px; --s-8:48px; --s-9:64px;
+  --content-max:1200px;
+  --reading-max:720px;
+  --gutter:32px;
+  --control-h:32px;
+  --control-h-sm:28px;
+  --row-h:48px;
+  --row-h-dense:36px;
+  --kv-row-h:36px;
+  --topbar-h:48px;
+  --r-1:6px; --r-2:10px; --r-3:14px;
+  --ease:cubic-bezier(.2,.7,.3,1);
+  --t-fast:120ms;
+  --t-dialog:160ms;
+}
+@media (max-width: 900px) { :root { --gutter:24px; } }
+@media (max-width: 639px) {
+  :root { --gutter:16px; --control-h:40px; --t-host-xl: 500 24px/30px var(--font-mono); }
+}
+@media (prefers-reduced-motion: reduce) { :root { --t-fast:0ms; --t-dialog:0ms; } }
+
+body { background: var(--canvas); color: var(--ink); }

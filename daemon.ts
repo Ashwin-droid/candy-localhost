@@ -28,6 +28,7 @@ import {
   fnAssetsPlan, fnShimProject, fnSummaryOf, logAssetResponse, routeFunctionRequest, FnRoutingCache, type FnAssetsPlan,
 } from "./fn-daemon.ts"
 import { AssetServer, userCanRead, type AssetsConfig } from "./fn-assets.ts"
+import { buildIsStale, createPortalApp } from "./portal-app.ts"
 import { isDeployId, type DeployInfo } from "./fn-deploy.ts"
 import { CONFIG_FILES as FN_CONFIG_FILES, type FnProjectConfig } from "./fn-config.ts"
 import { MANIFEST_FILE, emptyManifest, findDependencyLoop, type SiteManifest } from "./manifest.ts"
@@ -6259,8 +6260,10 @@ const getCorsHeaders = (origin: string | null) => {
 }
 
 // Token validation response
+// X-Candy-Token: invalid marks the page-token rejection, so the portal client retries only this 401
+// (a handler's own 401, such as a wrong re-auth password, is never sent twice)
 const unauthorizedResponse = (cors: ReturnType<typeof getCorsHeaders>) =>
-  Response.json({ error: "Invalid or expired token. Refresh required." }, { status: 401, headers: cors })
+  Response.json({ error: "Invalid or expired token. Refresh required." }, { status: 401, headers: { ...cors, "X-Candy-Token": "invalid" } })
 
 // JSON for inside a <script> element: no "</script>" or "<!--" can end it early
 const scriptJson = (v: unknown): string => JSON.stringify(v).replace(/</g, "\\u003c")
@@ -6268,7 +6271,7 @@ const scriptJson = (v: unknown): string => JSON.stringify(v).replace(/</g, "\\u0
 // Portal pages that are served as a shell on navigation (public/portal-shell.html):
 // the real page, with its page token, only comes back to a request that carries
 // the session secret header, which a stolen cookie alone can't add
-const PORTAL_PAGES = new Set(["/", "/oauth/consent", "/go/kill", "/go/portal", "/app-auth/consent", "/passkeys", "/settings"])
+const PORTAL_PAGES = new Set(["/oauth/consent", "/go/kill", "/go/portal", "/app-auth/consent"])
 
 // Put into every portal page: same-origin fetches carry the session secret,
 // which the login page keeps in this origin's localStorage
@@ -6315,7 +6318,9 @@ const SITE_LOG_EXCERPT_BYTES = 32 * 1024
 // Logging in and out happens before there is a page token; /token is the refresh itself.
 // All of them are still held to sameOrigin, except /auth/passkey/finish, which only
 // the candy host's page may post (its Origin is exactly https://<candy host>)
-const TOKENLESS_ROUTES = new Set(["/auth/login", "/auth/logout", "/token", "/auth/passkey/finish"])
+// /portal/boot is where a portal SPA page gets its first token, so it can't need one
+// (it is POST, so sameOrigin still holds it to a portal page)
+const TOKENLESS_ROUTES = new Set(["/auth/login", "/auth/logout", "/token", "/auth/passkey/finish", "/portal/boot"])
 
 // Whether /etc/pam.d/candy is there. Login fails closed (with a message) while it isn't.
 let pamReady = false
@@ -6454,6 +6459,9 @@ const appAuthRoutes = createAuthRoutes({
   sessionHeader: SESSION_HEADER,
   audit: (action, details, actor) => { auditLog(action, details, actor as Actor) },
   now: () => Date.now(),
+  multiUser: RUNNING_AS_ROOT,
+  owner: OWNER,
+  buildStale: () => portalBuildStale,
 })
 
 // candy.<zone>: the passkey ceremonies, nothing else (candy-host.ts). Handled
@@ -6502,7 +6510,21 @@ const ROUTE_TABLE: readonly RouteRule[] = [
   ["GET", "/candy/registry", "public"],
   ["*", "/candy-auth/check", "public"],
   ["POST", "/candy-auth/login", "public"],
-  ["GET", "/", "user"],
+  ["GET", "/", "app"],
+  ["GET", "/sites", "app"],
+  ["GET", "/sites/*", "app"],
+  ["GET", "/public", "app"],
+  ["GET", "/public/*", "app"],
+  ["GET", "/network", "app"],
+  ["GET", "/network/*", "app"],
+  ["GET", "/activity", "app"],
+  ["GET", "/machine", "app"],
+  ["GET", "/machine/*", "app"],
+  ["GET", "/settings", "app"],
+  ["GET", "/settings/*", "app"],
+  ["GET", "/passkeys", "app"],
+  ["GET", "/assets/*", "public"],
+  ["POST", "/portal/boot", "user"],
   ["GET", "/auth/me", "user"],
   ["POST", "/token", "user"],
   ["GET", "/oauth/consent", "user"],
@@ -6518,11 +6540,9 @@ const ROUTE_TABLE: readonly RouteRule[] = [
   ["GET", "/app-auth/sites", "user"],
   ["POST", "/app-auth/rotate", "user"],
   ["POST", "/app-auth/drop", "user"],
-  ["GET", "/settings", "user"],
   ["GET", "/app-auth/consents", "user"],
   ["POST", "/app-auth/consents/revoke", "user"],
   ["POST", "/auth/reauth", "user"],
-  ["GET", "/passkeys", "user"],
   ["GET", "/passkeys/list", "user"],
   ["POST", "/passkeys/enroll/start", "user"],
   ["POST", "/passkeys/rename", "user"],
@@ -6598,8 +6618,50 @@ const ROUTE_TABLE: readonly RouteRule[] = [
 // route-table:end
 
 // The portal's pages (the shell, the login page, everything on its host) are
-// never shown in someone else's frame: no clickjacking of its buttons
-const PORTAL_NO_FRAMING = { "Content-Security-Policy": "frame-ancestors 'none'", "X-Frame-Options": "DENY" }
+// never shown in someone else's frame: no clickjacking of its buttons. nosniff:
+// an API answer with user text in it (logs, process output) never runs as a script
+const PORTAL_NO_FRAMING = { "Content-Security-Policy": "frame-ancestors 'none'", "X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff" }
+
+// === The portal SPA (web/, built to web/dist by the owner; portal-app.ts) ===
+// Served only on the portal host, for ROUTE_TABLE "app" paths and /assets/*.
+// Root mode: only what the owner could read; no owner account, no pages (never as root)
+const PORTAL_WEB_DIR = `${import.meta.dir}/web`
+const PORTAL_DIST_DIR = `${PORTAL_WEB_DIR}/dist`
+const PORTAL_BUILD_COMMAND = "bun run web:install && bun run web:build"
+const portalOwner: UserAccount | null = RUNNING_AS_ROOT
+  ? await lookupUser(OWNER).then(a => a && a.uid !== 0 ? a : null).catch(() => null)
+  : null
+let portalOwnerGids: number[] = portalOwner ? await fnUserGids(portalOwner).catch(() => [portalOwner.gid]) : []
+if (portalOwner) setInterval(async () => { portalOwnerGids = await fnUserGids(portalOwner).catch(() => portalOwnerGids) }, 60_000)
+if (RUNNING_AS_ROOT && !portalOwner) {
+  console.error(`\x1b[33mPortal: no usable owner account (CANDY_OWNER=${OWNER || "unset"}); the portal pages are off\x1b[0m`)
+}
+let portalUnbuiltTold = false
+const portalApp = createPortalApp({
+  dir: PORTAL_DIST_DIR,
+  canRead: !RUNNING_AS_ROOT ? undefined
+    : portalOwner ? (p: string) => userCanRead(p, portalOwner.uid, portalOwnerGids)
+    : () => false,
+  onUnbuilt: () => {
+    if (portalUnbuiltTold) return
+    portalUnbuiltTold = true
+    const details = `${PORTAL_DIST_DIR} has no readable build: run ${PORTAL_BUILD_COMMAND} in ${import.meta.dir}`
+    console.error(`\x1b[33mPortal: ${details}\x1b[0m`)
+    auditLog('PORTAL_UNBUILT', details, 'System')
+  },
+})
+// web/src newer than web/dist? Checked on a 30s timer, never by a request; /portal/boot reads the answer
+let portalBuildStale = false
+const checkPortalBuild = async () => {
+  const stale = await buildIsStale(`${PORTAL_WEB_DIR}/src`, `${PORTAL_DIST_DIR}/index.html`).catch(() => false)
+  if (stale === portalBuildStale) return
+  portalBuildStale = stale
+  const details = stale ? `web/src is newer than web/dist: run bun run web:build in ${import.meta.dir}` : "web/dist is up to date again"
+  if (stale) console.error(`\x1b[33mPortal: ${details}\x1b[0m`)
+  auditLog('PORTAL_BUILD_STALE', details, 'System')
+}
+checkPortalBuild()
+setInterval(checkPortalBuild, 30 * 1000)
 const noFraming = (req: Request, res: Response): Response => {
   if (!isPortalHost(req.headers.get("host"))) return res
   try {
@@ -6949,8 +7011,10 @@ async function controlFetch(req: Request): Promise<Response> {
       }
       // === The guard: every control route is in ROUTE_TABLE, or it's denied ===
       auth = await requestAuth(req)
+      const cls = classifyRoute(ROUTE_TABLE, req.method, url.pathname)
       const verdict = guardRequest({
-        cls: classifyRoute(ROUTE_TABLE, req.method, url.pathname),
+        cls,
+        method: req.method,
         auth,
         portalHost,
         // The shell's own request (with the header) wants a 401, not a redirect
@@ -6962,6 +7026,12 @@ async function controlFetch(req: Request): Promise<Response> {
         if (verdict.status === 302) return new Response(null, { status: 302, headers: { Location: verdict.location, "Cache-Control": "no-store" } })
         const loginHeader: Record<string, string> = verdict.status === 401 ? { "X-Candy-Login": "required" } : {}
         return Response.json({ error: verdict.error }, { status: verdict.status, headers: { ...corsHeaders, ...loginHeader } })
+      }
+      // === The portal SPA (portal-app.ts) ===
+      // Every app path and every /assets/* request stops here: nothing below the guard ever answers them
+      if (cls === "app" || url.pathname.startsWith("/assets/")) {
+        if (!portalHost) return Response.json({ error: "not found" }, { status: 404, headers: corsHeaders })
+        return portalApp.serve(req, url, cls === "app")
       }
       // === API Routes require token validation ===
       // Anything that changes state from the portal: sent by a portal page (Origin),
@@ -7052,6 +7122,9 @@ async function controlFetch(req: Request): Promise<Response> {
       })
     }
 
+    // The portal SPA's start: its first page token and who is looking (app-auth-routes.ts portalBoot)
+    if (req.method === "POST" && url.pathname === "/portal/boot") return appAuthRoutes.boot(req, appAuthContext(req, auth, portalHost, corsHeaders, requestActor))
+
     if (req.method === "GET" && url.pathname === "/auth/me") {
       return Response.json({ user: auth!.user, superuser: auth!.superuser, via: auth!.via, amr: auth!.amr, multiUser: RUNNING_AS_ROOT }, { headers: { ...corsHeaders, "Cache-Control": "no-store" } })
     }
@@ -7060,10 +7133,10 @@ async function controlFetch(req: Request): Promise<Response> {
     // After the guard: the class, the login, and for state-changing portal
     // requests sameOrigin and the page token (passkey login is TOKENLESS)
     if (url.pathname === "/app-auth/authorize" || url.pathname === "/app-auth/consent" || url.pathname === "/app-auth/decision" || url.pathname === "/app-auth/fresh"
-      || url.pathname === "/app-auth/sites" || url.pathname === "/app-auth/rotate" || url.pathname === "/app-auth/drop" || url.pathname === "/settings"
+      || url.pathname === "/app-auth/sites" || url.pathname === "/app-auth/rotate" || url.pathname === "/app-auth/drop"
       || url.pathname === "/app-auth/consents" || url.pathname === "/app-auth/consents/revoke"
       || url.pathname === "/auth/passkey/start" || url.pathname === "/auth/passkey/finish" || url.pathname === "/auth/reauth"
-      || url.pathname === "/passkeys" || url.pathname === "/passkeys/list" || url.pathname === "/passkeys/enroll/start"
+      || url.pathname === "/passkeys/list" || url.pathname === "/passkeys/enroll/start"
       || url.pathname === "/passkeys/rename" || url.pathname === "/passkeys/delete") {
       await refreshManifests()   // which sites have "auth": true right now
       const answer = await appAuthRoutes.handle(req, url, appAuthContext(req, auth, portalHost, corsHeaders, requestActor))
@@ -9239,23 +9312,10 @@ async function serveSitePage(req: Request, url: URL, corsHeaders: Record<string,
       const isBoundDomain = !!boundMatch
       const isRootPath = url.pathname === "/" || url.pathname === ""
 
-      // Portal UI at portal.localhost (only root), for a portal login only
+      // The portal name: its pages are the SPA (app routes, answered before this);
+      // anything else here is for a portal login only
       if (domain === "portal" && !isBoundDomain && auth?.via !== "portal") {
         return new Response(null, { status: 302, headers: { Location: "/login", "Cache-Control": "no-store" } })
-      }
-      if (domain === "portal" && isRootPath && !isBoundDomain) {
-        domainHits.set(domain, (domainHits.get(domain) || 0) + 1)
-        const rawHtml = await Bun.file(import.meta.dir + "/public/portal.html").text()
-        let html = injectVars(rawHtml, { user: auth!.user, superuser: auth!.superuser, multiUser: RUNNING_AS_ROOT })
-        // Check if any bound domain is unprotected → inject nag banner on portal
-        const domainConfig = await loadDomainConfig()
-        const hasUnprotected = domainConfig?.bindings && Object.values(domainConfig.bindings).some((b: any) => mayChangeName(auth, b.serverName) && (!b.auth?.password || !b.auth?.enabled))
-        if (hasUnprotected) {
-          const nagScript = `<script data-candy-nag>(function(){if(document.querySelector('[data-candy-nag-banner]'))return;var b=document.createElement('div');b.setAttribute('data-candy-nag-banner','1');b.setAttribute('role','status');b.innerHTML='<span>A public domain has no password. Anyone with the link can open it.</span><button aria-label="Dismiss" style="background:none;border:0;color:inherit;opacity:.7;cursor:pointer;font-size:16px;line-height:1;padding:0 0 0 14px">&times;</button>';b.querySelector('button').onclick=function(){b.remove()};b.style.cssText='position:fixed;left:50%;bottom:20px;transform:translateX(-50%);max-width:calc(100% - 32px);display:flex;align-items:center;background:#1a1d33;color:#fff;padding:10px 14px 10px 16px;border-radius:10px;font:500 13px/1.4 \\'Schibsted Grotesk\\',system-ui,sans-serif;box-shadow:0 10px 30px rgba(10,12,24,.25);z-index:999999';document.body.appendChild(b)})()</script>`
-          html = html.replace('</body>', nagScript + '</body>')
-        }
-        // Holds a page token: never cached, where a plain navigation could find it
-        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Vary": SESSION_HEADER } })
       }
 
       const configs = getConfigsForName(domain)

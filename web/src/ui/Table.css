@@ -1,0 +1,74 @@
+.ui-table-frame { background: var(--sheet); border: 1px solid var(--line); border-radius: var(--r-2); overflow: hidden; min-width: 0; }
+.ui-table-frame.is-refreshing { opacity: .92; }
+.ui-table-scroll { overflow-x: auto; }
+.ui-table { width: 100%; font: var(--t-body); }
+/* tabular figures only where numbers line up: the UI face widens its comma under tnum */
+.ui-td.is-right, .ui-td.is-mono { font-variant-numeric: tabular-nums; }
+.ui-td { padding: 7px var(--s-4); height: var(--row-h-dense); text-align: left; vertical-align: middle; border-top: 1px solid var(--line); min-width: 0; }
+.ui-td.is-right { text-align: right; }
+.ui-td.is-mono { font: var(--t-host); font-stretch: 87.5%; font-size: 13px; }
+.ui-th {
+  height: 36px; border-top: 0; background: var(--sheet-2); border-bottom: 1px solid var(--line);
+  font: var(--t-small); color: var(--ink-2); font-weight: 400; white-space: nowrap;
+}
+.ui-th.is-mono { font: var(--t-small); }
+.ui-table tbody tr:first-child .ui-td { border-top: 0; }
+.ui-th-sort {
+  display: inline-flex; align-items: center; gap: 4px; padding: 0; margin: 0; border: 0; background: none;
+  font: inherit; color: inherit; border-radius: 4px;
+}
+.ui-th-sort:hover, .ui-th-sort.is-active { color: var(--ink); }
+.ui-th-arrow { opacity: 0; transition: transform var(--t-fast) ease-out, opacity var(--t-fast) ease-out; }
+.ui-th-sort:hover .ui-th-arrow { opacity: .5; }
+.ui-th-sort.is-active .ui-th-arrow { opacity: 1; }
+.ui-th-arrow.is-desc { transform: rotate(180deg); }
+.is-right .ui-th-sort { flex-direction: row-reverse; }
+
+.ui-tr { transition: background var(--t-fast) ease-out; }
+.ui-tr.is-linked { cursor: pointer; position: relative; }
+.ui-tr.is-linked:hover, .ui-tr:focus-within { background: var(--hover); }
+.ui-tr.is-selected { background: var(--sheet-3); }
+.ui-tr.is-selected:hover { background: var(--sheet-3); }
+.ui-tr:focus-visible { outline: 2px solid var(--cherry); outline-offset: -2px; }
+/* the first cell's link covers the whole row; other links and buttons sit above it */
+.ui-row-link { color: inherit; display: inline-flex; align-items: center; gap: var(--s-2); min-width: 0; max-width: 100%; }
+.ui-row-link:hover { text-decoration: none; }
+.ui-row-link::after { content: ""; position: absolute; inset: 0; }
+.ui-row-link:focus-visible { outline: none; }
+.ui-row-link:focus-visible::after { outline: 2px solid var(--cherry); outline-offset: -2px; border-radius: 2px; }
+.ui-tr.is-linked .ui-td a:not(.ui-row-link), .ui-tr.is-linked .ui-td button, .ui-tr.is-linked .ui-td input { position: relative; z-index: 1; }
+.ui-td-actions { width: 1%; white-space: nowrap; text-align: right; padding-left: 0; padding-top: 4px; padding-bottom: 4px; }
+.ui-row-actions { display: inline-flex; gap: var(--s-1); justify-content: flex-end; }
+@media (hover: hover) and (min-width: 640px) {
+  .ui-tr.is-linked .ui-row-actions { opacity: 0; transition: opacity var(--t-fast) ease-out; }
+  .ui-tr.is-linked:hover .ui-row-actions, .ui-tr.is-linked:focus-within .ui-row-actions { opacity: 1; }
+}
+
+.ui-table-foot { padding: 10px var(--s-4); border-top: 1px solid var(--line); font: var(--t-small); color: var(--ink-2); background: var(--sheet-2); }
+.ui-table-foot.is-error { color: var(--ink-2); }
+
+@media (max-width: 1023px) { .ui-td.p3 { display: none; } }
+
+@media (max-width: 639px) {
+  .ui-table-scroll { overflow: visible; }
+  .ui-table, .ui-table tbody { display: block; }
+  .ui-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .ui-tr { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--s-3); padding: 10px var(--s-4); border-top: 1px solid var(--line); }
+  .ui-table tbody tr:first-child { border-top: 0; }
+  .ui-tr > .ui-td { display: block; height: auto; padding: 0; border: 0; text-align: left; }
+  .ui-tr > .ui-td.p1 { flex: 0 1 auto; min-width: 0; }
+  .ui-tr > .ui-td.p1:first-child { flex: 1 1 auto; }
+  .ui-tr > .ui-td.p2 { order: 2; flex: 0 0 100%; display: flex; gap: var(--s-2); font: var(--t-small); color: var(--ink-2); }
+  .ui-tr > .ui-td.p2::before { content: attr(data-label); color: var(--ink-2); flex: 0 0 96px; }
+  .ui-tr > .ui-td.p2.is-mono { font: var(--t-mono-small); font-stretch: 87.5%; color: var(--ink); }
+  .ui-tr > .ui-td.p2.is-mono::before { font: var(--t-small); color: var(--ink-2); }
+  /* the value side of a stacked cell shrinks and wraps instead of running past the sheet's edge */
+  .ui-tr > .ui-td.p2 { min-width: 0; overflow-wrap: anywhere; }
+  .ui-tr > .ui-td.p2 > * { min-width: 0; max-width: 100%; }
+  .ui-tr > .ui-td.p2 .ui-xlink-text { white-space: normal; }
+  .ui-tr > .ui-td.p3 { display: none; }
+  /* a stacked fact with no value ("—") is left out of the block */
+  .ui-tr > .ui-td.p2:empty, .ui-tr > .ui-td.p2:has(> .ink-3:only-child) { display: none; }
+  .ui-tr > .ui-td-actions { order: 1; width: auto; margin-left: auto; }
+  .ui-tr.is-linked .ui-row-actions { opacity: 1; }
+}

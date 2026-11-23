@@ -14,10 +14,10 @@ case "$PATH_PART" in
     xdg-open "https://portal.localhost"
     ;;
   "routes"|"ls"|"list")
-    xdg-open "https://portal.localhost/#routes"
+    xdg-open "https://portal.localhost/sites"
     ;;
   "stats"|"status")
-    xdg-open "https://portal.localhost/#stats"
+    xdg-open "https://portal.localhost/machine"
     ;;
   *)
     # Assume it's a domain name, open it

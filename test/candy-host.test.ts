@@ -256,13 +256,24 @@ describe("the pages", () => {
     expect(block('if (req.method === "GET" && url.pathname === "/login")')).toContain('next.startsWith("/app-auth/consent?") && url.searchParams.get("with") !== "password"')
   })
   it("the passkeys page opens a popup on the candy host and trusts only its messages; no portal-address notice", async () => {
-    const html = await page("portal-passkeys.html")
-    expect(html).not.toContain("navigator.credentials.create")
-    expect(html).not.toContain("only on the portal address")
-    expect(html).toContain("e.origin !== candyOrigin")
-    expect(html).toContain("e.source !== popup")
-    expect(html).toContain("'/passkeys/enroll/start'")
-    expect(html).toContain("Passkeys need a bound domain")
+    // The portal SPA's Settings › Passkeys (web/src/pages/settings); passkeyMessage.ts is pure, no web deps
+    const { acceptPasskeyMessage, checkEnrollUrl } = await import("../web/src/pages/settings/passkeyMessage.ts")
+    const web = (f: string) => Bun.file(new URL(`../web/src/pages/settings/${f}`, import.meta.url)).text()
+    const tsx = await web("PasskeysPage.tsx")
+    expect(tsx).not.toContain("navigator.credentials")
+    expect(tsx).not.toContain("only on the portal address")
+    expect(tsx).toContain("if (!acceptPasskeyMessage(e, candyOrigin, popup.current)) return")
+    expect(tsx).toContain('"/passkeys/enroll/start"')
+    expect(tsx).toContain("Passkeys need a bound domain")
+    const popup = {}, ok = { type: "candy-passkey", purpose: "enroll", ok: true }
+    const origin = "https://candy.example.com"
+    expect(acceptPasskeyMessage({ origin, source: popup, data: ok }, origin, popup)).toBe(true)
+    expect(acceptPasskeyMessage({ origin: "https://evil.example", source: popup, data: ok }, origin, popup)).toBe(false)
+    expect(acceptPasskeyMessage({ origin, source: {}, data: ok }, origin, popup)).toBe(false)
+    expect(acceptPasskeyMessage({ origin, source: popup, data: { ...ok, purpose: "login" } }, origin, popup)).toBe(false)
+    expect(acceptPasskeyMessage({ origin, source: popup, data: ok }, null, popup)).toBe(false)
+    expect(checkEnrollUrl(`${origin}/passkey/enroll?candy_stamp=x`, "candy.example.com")).toBe(`${origin}/passkey/enroll?candy_stamp=x`)
+    expect(checkEnrollUrl("https://evil.example/passkey/enroll", "candy.example.com")).toBeNull()
   })
   it("the candy host's page: no external resources, the stamp out of the address bar, a retry after a cancelled prompt, postMessage to the exact portal origin", async () => {
     const html = await page("passkey-host.html")

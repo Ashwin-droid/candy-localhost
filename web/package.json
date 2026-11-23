@@ -1,0 +1,19 @@
+{
+  "name": "candy-portal",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "bun build --check --no-bundle src/main.tsx > /dev/null",
+    "build": "bun run check && rm -rf dist.new && bun build src/index.html --outdir=dist.new --production --public-path=/ --chunk-naming='assets/[name]-[hash].[ext]' --asset-naming='assets/[name]-[hash].[ext]' && rm -rf dist.old && (test -d dist && mv dist dist.old || true) && mv dist.new dist && rm -rf dist.old",
+    "dev": "bun build src/index.html --outdir=dist --watch --public-path=/ --chunk-naming='assets/[name]-[hash].[ext]' --asset-naming='assets/[name]-[hash].[ext]' --sourcemap=linked",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0"
+  }
+}

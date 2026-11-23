@@ -21,7 +21,11 @@
     "dev": "bun run --watch daemon.ts",
     "mcp": "bun run mcp.ts",
     "cli": "bun run cli.ts",
-    "test": "bun test",
+    "test": "bun test --path-ignore-patterns='web/**'",
+    "test:web": "cd web && bun test",
+    "web:install": "cd web && bun install --frozen-lockfile",
+    "web:build": "cd web && bun run build",
+    "web:dev": "cd web && bun run dev",
     "dns": "bun run candy-dns.ts",
     "install-service": "./install-service.sh daemon",
     "install-dns-service": "./install-service.sh dns"

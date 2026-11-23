@@ -1,0 +1,27 @@
+.ui-listbox { position: relative; min-width: 0; }
+.ui-listbox-button {
+  display: flex; align-items: center; gap: var(--s-2); width: 100%; height: var(--control-h); padding: 0 10px;
+  background: var(--sheet); border: 1px solid var(--line-2); border-radius: var(--r-1); text-align: left;
+  transition: border-color var(--t-fast) ease-out;
+}
+.ui-listbox-button:hover:not(:disabled) { border-color: var(--ink-3); }
+.ui-listbox-button:disabled { background: var(--sheet-2); color: var(--ink-2); }
+.ui-listbox.is-open .ui-listbox-button { border-color: var(--ink-2); }
+.ui-listbox-current { display: flex; align-items: center; gap: var(--s-2); min-width: 0; flex: 1; }
+.ui-listbox-placeholder { color: var(--ink-3); flex: 1; }
+.ui-listbox-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ui-listbox-detail { color: var(--ink-2); font: var(--t-small); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ui-listbox-current .ui-listbox-detail { margin-left: 2px; }
+.ui-listbox-chevron { color: var(--ink-2); margin-left: auto; transition: transform var(--t-fast) ease-out; }
+.ui-listbox.is-open .ui-listbox-chevron { transform: rotate(180deg); }
+.ui-listbox-list {
+  position: absolute; z-index: 40; left: 0; right: 0; top: calc(100% + 4px);
+  max-height: 280px; overflow-y: auto; padding: 4px;
+  background: var(--sheet); border: 1px solid var(--line); border-radius: var(--r-2); box-shadow: var(--shadow-pop);
+}
+.ui-listbox-list:focus-visible { outline: none; }
+.ui-listbox-option { display: flex; align-items: center; gap: var(--s-2); padding: 6px 8px; border-radius: var(--r-1); cursor: pointer; }
+.ui-listbox-option.is-active { background: var(--sheet-3); }
+.ui-listbox-texts { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.ui-listbox-check { color: var(--ink); }
+.ui-listbox-empty { padding: 10px; color: var(--ink-2); font: var(--t-small); }

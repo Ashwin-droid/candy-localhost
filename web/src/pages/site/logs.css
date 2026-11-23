@@ -1,0 +1,76 @@
+/* Logs tab (package C). Colours from tokens.css only. */
+
+.logs { display: flex; flex-direction: column; gap: var(--s-3); min-width: 0; }
+
+.logs-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-5); min-height: var(--control-h); }
+.logs-status { display: inline-flex; align-items: center; gap: var(--s-3); font: var(--t-body); font-weight: 500; }
+.logs-conn { font: var(--t-small); color: var(--ink-2); }
+.logs-follow, .logs-raw { display: inline-flex; align-items: center; gap: var(--s-2); font: var(--t-small); color: var(--ink-2); cursor: pointer; user-select: none; }
+.logs-find { display: flex; align-items: center; gap: var(--s-2); flex: 1 1 320px; min-width: 0; }
+.logs-find .ui-input { max-width: 300px; height: var(--control-h-sm); }
+.logs-count { font: var(--t-small); color: var(--ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.logs-actions { display: flex; gap: var(--s-1); margin-left: auto; }
+
+/* the dark pane: a fixed-row window over the buffer */
+.logs-pane-wrap { position: relative; min-width: 0; }
+.logs-pane {
+  position: relative; overflow: auto; min-height: 420px;
+  background: var(--log-bg); color: var(--log-ink);
+  border-radius: var(--r-2) var(--r-2) 0 0; border: 1px solid var(--line); border-bottom: 0;
+  overscroll-behavior: contain;
+}
+.logs-pane.is-raw { cursor: text; }
+.logs-pane.is-typing { border-color: var(--cherry); }
+.logs-pane:focus-visible { outline: 2px solid var(--cherry); outline-offset: 2px; }
+.logs-sizer { position: relative; min-width: 100%; width: max-content; padding: var(--s-3) 0; box-sizing: content-box; }
+.logs-pane .logs-lines.ui-ansi {
+  padding: 0 var(--s-4); margin: 0; background: transparent; border-radius: 0;
+  white-space: pre; overflow: visible; overflow-wrap: normal; will-change: transform;
+}
+.log-line { height: 19px; line-height: 19px; white-space: pre; }
+.log-line.is-current { background: var(--cherry-soft); box-shadow: inset 2px 0 0 var(--cherry); }
+.log-hit { background: var(--log-warn); color: var(--log-bg); border-radius: 2px; }
+.logs-empty { position: absolute; inset: var(--s-4); font: var(--t-mono-small); font-stretch: 87.5%; color: var(--log-dim); }
+
+.logs-jump { position: absolute; right: var(--s-4); bottom: calc(var(--s-4) + 30px); box-shadow: var(--shadow-pop); }
+.logs-foot {
+  display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-5); align-items: center;
+  padding: 6px var(--s-4); min-height: 30px;
+  background: var(--sheet); border: 1px solid var(--line); border-top: 0; border-radius: 0 0 var(--r-2) var(--r-2);
+  font: var(--t-small); color: var(--ink-2); font-variant-numeric: tabular-nums;
+}
+.logs-raw-hint { color: var(--ink); margin-left: auto; }
+
+/* whole-file search results, above the pane */
+.logs-search { background: var(--sheet); border: 1px solid var(--line); border-radius: var(--r-2); overflow: hidden; }
+.logs-search-head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s-3);
+  padding: 6px var(--s-2) 6px var(--s-4); background: var(--sheet-2); border-bottom: 1px solid var(--line); font: var(--t-small); color: var(--ink-2);
+}
+.logs-search-head code { color: var(--ink); font: var(--t-mono-small); font-stretch: 87.5%; }
+.logs-search .ui-error-state { border: 0; border-radius: 0; }
+.logs-search-body { max-height: 280px; overflow: auto; padding: var(--s-2) 0; }
+.logs-search-group + .logs-search-group { border-top: 1px dashed var(--line); margin-top: var(--s-2); padding-top: var(--s-2); }
+.logs-search-line { display: flex; gap: var(--s-3); padding: 0 var(--s-4); font: var(--t-mono-small); font-stretch: 87.5%; color: var(--ink-2); line-height: 19px; }
+.logs-search-line.is-hit { color: var(--ink); }
+.logs-search-no { flex: 0 0 6ch; text-align: right; color: var(--ink-3); font-variant-numeric: tabular-nums; user-select: none; }
+.logs-search-text { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
+.logs-search-line .log-hit { background: var(--lemon-soft); color: var(--ink); box-shadow: inset 0 -1px 0 var(--lemon); }
+.logs-search-more { padding: var(--s-2) var(--s-4) 0; font: var(--t-small); color: var(--ink-2); }
+
+/* the terminal line under the pane */
+.logs-input { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-4); }
+.logs-line { display: flex; gap: var(--s-2); flex: 1 1 360px; min-width: 0; }
+.logs-line .ui-input-wrap { flex: 1 1 auto; }
+.logs-line .ui-input-affix { color: var(--cherry); font-weight: 700; }
+.logs-keys { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1); }
+.logs-key { font: var(--t-mono-small); font-stretch: 87.5%; min-width: 36px; justify-content: center; }
+.logs-raw { margin-left: var(--s-3); }
+.logs-send-error { flex: 0 0 100%; display: flex; align-items: center; gap: 6px; font: var(--t-small); color: var(--cherry); }
+.logs-send-note { flex: 0 0 100%; font: var(--t-small); color: var(--ink-2); }
+
+@media (max-width: 639px) {
+  .logs-actions { margin-left: 0; }
+  .logs-find .ui-input { max-width: none; }
+  .logs-raw { margin-left: 0; }
+}

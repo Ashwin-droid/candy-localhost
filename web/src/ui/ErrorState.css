@@ -1,0 +1,7 @@
+.ui-error-state {
+  display: flex; align-items: center; gap: var(--s-3); flex-wrap: wrap;
+  padding: var(--s-4); background: var(--sheet); border: 1px solid var(--line); border-radius: var(--r-2);
+}
+.ui-error-state-icon { color: var(--cherry); }
+.ui-error-state-text { flex: 1 1 240px; color: var(--ink); overflow-wrap: anywhere; }
+.ui-table-frame .ui-error-state { border: 0; border-radius: 0; }

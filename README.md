@@ -32,9 +32,12 @@ candy-localhost replaces the workflow of manually starting dev servers, remember
 git clone https://github.com/Ashwin-droid/candy-localhost.git
 cd candy-localhost
 bun install
+bun run web:install && bun run web:build   # the portal SPA (web/), built to web/dist; again after each git pull
 bun link          # registers the 'candy' CLI globally
 bun run daemon
 ```
+
+Without a portal build the daemon, CLI, MCP and sites all work; the portal's new pages answer "The portal isn't built yet. See the daemon log." until `bun run web:build` has run (no restart needed). `bun run web:dev` rebuilds on save.
 
 After `bun link`, the `candy` command is available system-wide.
 
@@ -139,6 +142,7 @@ Open `https://myapp.localhost` in your browser. candy spawns the process, detect
 | MCP Server | `mcp.ts` | JSON-RPC MCP server over stdio for agent integration |
 | DNS Daemon | `candy-dns.ts` | UDP DNS for `.candy` TLD, resolves to Tailscale IP |
 | UI Pages | `public/*.html` | Registration, startup progress, portal control, crash/kill pages |
+| Portal | `web/` | React SPA (its own package: react, react-dom), built to `web/dist` by the owner and served by the daemon through fn-assets (`portal-app.ts`) on the portal host |
 | Protocol Handler | `candy-open.sh`, `candy-protocol.desktop` | `candy://` URL scheme |
 | Service Units | `*.service` | systemd service files |
 | Functions | `fn-*.ts` | candy-functions: frame protocol, dispatcher, instance pool, host shim, bindings, cron, deploys, request log |
@@ -1095,7 +1099,7 @@ Requires `~/.config/candy/domains.json` with zone and tunnel configuration.
 
 | Page | Purpose |
 |------|---------|
-| `portal.html` | Dashboard (routes, processes, configs, portals, bound domains) with a log viewer that passes keystrokes to the process. Functions get an `fn` badge and a panel for deploys, rollback, hot/max, instances and the request log with replay |
+| `web/` (the portal SPA) | The management UI on the portal host, a React app built to `web/dist` and served by the daemon (`portal-app.ts`) on `/`, `/sites`, `/public`, `/network`, `/activity`, `/machine`, `/settings` and `/passkeys`: sites (routes, processes, configs, tunnels), a log viewer that passes keystrokes to the process, functions (deploys, rollback, hot/max, instances, the request log with replay, KV/D1 data), public domains, account, passkeys, Sign in with candy and daemon settings. API URLs typed into the address bar still answer JSON, never the SPA |
 | `candy.html` | Registration page (quick route mode + lazy server config mode) |
 | `starting.html` | Startup progress with live log SSE, manual port assignment, variant chooser |
 | `crashed.html` | Crash page with recent logs and restart action |
@@ -1111,8 +1115,8 @@ Requires `~/.config/candy/domains.json` with zone and tunnel configuration.
 | URL | Opens |
 |-----|-------|
 | `candy://portal` | `https://portal.localhost` |
-| `candy://routes` / `candy://list` | `https://portal.localhost/#routes` |
-| `candy://stats` / `candy://status` | `https://portal.localhost/#stats` |
+| `candy://routes` / `candy://list` | `https://portal.localhost/sites` |
+| `candy://stats` / `candy://status` | `https://portal.localhost/machine` (superusers) |
 | `candy://<name>` | `https://<name>.localhost` |
 
 Install: `xdg-mime default candy-protocol.desktop x-scheme-handler/candy`

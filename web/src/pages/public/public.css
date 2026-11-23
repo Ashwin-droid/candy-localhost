@@ -1,0 +1,50 @@
+/* Public domains (SPEC §5.13). Colours come from tokens.css only. */
+.pub-fqdn { color: var(--ink); }
+.pub-zone { color: var(--ink-3); }
+.pub-site { display: inline-flex; align-items: baseline; gap: var(--s-2); flex-wrap: wrap; min-width: 0; }
+.pub-site .mono { font-size: 13px; }
+.pub-note { font: var(--t-small); }
+.pub-open { font: var(--t-small); font-weight: 500; color: var(--ink-2); padding: 4px 6px; border-radius: var(--r-1); }
+.pub-open:hover { color: var(--ink); background: var(--hover); text-decoration: none; }
+.pub-meta-link { color: var(--ink); text-decoration: underline; text-decoration-color: var(--line-2); text-underline-offset: 3px; }
+.pub-now { color: var(--ink); font-weight: 500; }
+
+.pub-banner, .pub-flash { margin-bottom: var(--s-6); }
+.pub-flash .pub-status { min-height: 0; }
+
+/* a form on its own sheet: fields in an aligned grid, a footer with the status line and the buttons */
+.pub-card {
+  display: flex; flex-direction: column; gap: var(--s-5);
+  background: var(--sheet); border: 1px solid var(--line); border-radius: var(--r-2);
+  padding: var(--s-5) var(--s-6);
+}
+.pub-card-lede { font: var(--t-body); color: var(--ink-2); max-width: 64ch; }
+.pub-card-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); flex-wrap: wrap; }
+.pub-card-foot > .row { margin-left: auto; }
+@media (max-width: 639px) { .pub-card { padding: var(--s-4); } }
+
+.pub-status { font: var(--t-small); color: var(--ink-2); min-width: 0; }
+.pub-card-foot > .pub-status { flex: 1 1 200px; min-height: 20px; }
+.ui-kv + .pub-status:not(:empty), .ui-reveal + .pub-status:not(:empty), .pub-danger-text > .pub-status:not(:empty) { margin-top: var(--s-2); }
+.pub-status-msg { display: inline-flex; align-items: flex-start; gap: 6px; overflow-wrap: anywhere; }
+.pub-status-msg .ui-icon { margin-top: 2px; flex-shrink: 0; }
+.pub-status-msg.is-ok { color: var(--ink); }
+.pub-status-msg.is-ok .ui-icon { color: var(--mint); }
+.pub-status-msg.is-error { color: var(--cherry); }
+.pub-status-msg.is-warn .ui-icon { color: var(--lemon); }
+
+/* the foreign-records warning: a lemon rule on the left, records as plain mono lines */
+.pub-warning {
+  display: flex; flex-direction: column; gap: var(--s-3);
+  padding: var(--s-4); border-left: 3px solid var(--lemon); background: var(--lemon-soft); border-radius: 0 var(--r-1) var(--r-1) 0;
+}
+.pub-warning-text { font: var(--t-body); color: var(--ink); max-width: 64ch; overflow-wrap: anywhere; }
+.pub-warning-records { display: flex; flex-direction: column; gap: 2px; font: var(--t-mono-small); font-family: var(--font-mono); font-stretch: 87.5%; color: var(--ink); overflow-wrap: anywhere; }
+.pub-warning-ask { font: var(--t-small); color: var(--ink-2); }
+
+.pub-danger { flex-direction: row; align-items: center; justify-content: space-between; gap: var(--s-4); flex-wrap: wrap; }
+.pub-danger-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 320px; }
+.pub-danger-text .mono { font-size: 13px; overflow-wrap: anywhere; }
+
+/* a binding's page is a settings page: one 720px reading column */
+.pub-binding { max-width: var(--reading-max); min-width: 0; }

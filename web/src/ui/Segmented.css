@@ -1,0 +1,14 @@
+.ui-seg {
+  display: inline-flex; max-width: 100%; overflow-x: auto; scrollbar-width: none;
+  padding: 2px; gap: 2px; background: var(--sheet-3); border-radius: calc(var(--r-1) + 2px);
+}
+.ui-seg::-webkit-scrollbar { display: none; }
+.ui-seg-item {
+  height: calc(var(--control-h-sm) - 2px); padding: 0 10px; border: 0; border-radius: var(--r-1);
+  background: transparent; color: var(--ink-2); font: var(--t-small); font-weight: 500; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  transition: background var(--t-fast) ease-out, color var(--t-fast) ease-out;
+}
+.ui-seg-item:hover { color: var(--ink); }
+.ui-seg-item.is-on { background: var(--sheet); color: var(--ink); box-shadow: 0 0 0 1px var(--line), 0 1px 2px var(--hover); }
+.ui-seg-item:focus-visible { outline-offset: 0; }

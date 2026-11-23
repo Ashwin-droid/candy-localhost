@@ -101,33 +101,43 @@ describe("site-host pages", () => {
   }
 
   it("the portal opens those links", async () => {
-    const html = await page("portal.html")
-    expect(html).toContain("deepLink.get('add')")
-    expect(html).toContain("deepLink.get('logs')")
+    // The portal SPA's Sites page (/) reads them; web/src/test/lib.test.ts covers parseDeepLink itself
+    const links = await Bun.file(join(root, "web", "src", "lib", "deeplinks.ts")).text()
+    expect(links).toContain('if (q.has("add")) return { kind: "add"')
+    expect(links).toContain('if (q.has("logs"))')
+    expect(await Bun.file(join(root, "web", "src", "pages", "sites", "SitesPage.tsx")).text()).toContain("parseDeepLink(")
+    expect(daemon).toContain('["GET", "/", "app"],')
   })
 })
 
 describe("superuser settings", () => {
   it("the settings page has forms for the zone and AdGuard Home, for superusers only", async () => {
-    const html = await page("portal-settings.html")
-    for (const id of ["zone-domain", "zone-tunnel", "zone-tunnel-id", "zone-credentials", "adguard-url", "adguard-username", "adguard-password", "adguard-client", "adguard-dns"]) {
-      expect(html).toContain(`id="${id}"`)
-    }
-    expect(html).toContain('<section class="sheet" id="daemon" hidden>')
-    expect(block(html, "async function loadAdguard()")).toContain("if (!SUPER) return")
-    expect(html).toContain("act('/domains/config'")
-    expect(html).toContain("act('/lan/adguard'")
+    // Settings › Daemon in the portal SPA; web/src/pages/settings/settings.test.tsx renders it both ways
+    const daemonPage = await Bun.file(join(root, "web", "src", "pages", "settings", "DaemonPage.tsx")).text()
+    expect(daemonPage).toMatch(/const \{ superuser \} = useSession\(\)\s+if \(!superuser\) \{/)
+    expect(daemonPage).toContain('getApi().post<DomainConfigResponse>("/domains/config"')
+    expect(daemonPage).toContain('getApi().post<AdguardStatus>("/lan/adguard"')
+    // The UI only hides: the routes themselves are superuser-only
+    expect(daemon).toContain('["POST", "/domains/config", "superuser"],')
+    expect(daemon).toContain('["*", "/lan/adguard", "superuser"],')
   })
 })
 
 describe("superuser in the portal (a sudoer's passkey login too)", () => {
-  it("is the daemon's superuser flag, fixed for the page; no step-up prompt", async () => {
-    const portalVars = daemon.slice(daemon.indexOf('const rawHtml = await Bun.file(import.meta.dir + "/public/portal.html")'))
-    expect(portalVars.slice(0, 400)).toContain("superuser: auth!.superuser, multiUser")
-    const html = await page("portal.html")
-    expect(html).toContain("const SUPER = !!ME.superuser;")
-    // The portal never asks for the password again (that's the passkeys page, to manage passkeys)
-    expect(html).not.toContain("/auth/reauth")
+  it("is the daemon's superuser flag, from the boot; no step-up prompt", async () => {
+    // POST /portal/boot returns superuser and multiUser (app-auth-routes.ts portalBoot)
+    const routes = await Bun.file(join(root, "app-auth-routes.ts")).text()
+    const boot = block(routes, "const portalBoot = async (")
+    expect(boot).toContain("superuser: auth.superuser,")
+    expect(boot).toContain("multiUser: d.multiUser,")
+    expect(daemon).toContain("multiUser: RUNNING_AS_ROOT,")
+    // The portal never asks for the password again, except to manage passkeys (Settings › Passkeys)
+    const reauthers: string[] = []
+    for await (const f of new Bun.Glob("**/*.{ts,tsx}").scan({ cwd: join(root, "web", "src") })) {
+      if (/\.test\.tsx?$/.test(f) || f.startsWith("test/")) continue
+      if ((await Bun.file(join(root, "web", "src", f)).text()).includes('"/auth/reauth"')) reauthers.push(f)
+    }
+    expect(reauthers).toEqual(["pages/settings/ReauthPanel.tsx"])
   })
 })
 

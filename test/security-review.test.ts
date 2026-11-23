@@ -17,11 +17,21 @@ import {
   PROXY_TAG_HEADER, SYSTEM_BLOCK_MARK,
 } from "../caddy-config.ts"
 import { fnRequestHeaders } from "../fn-daemon.ts"
+import { createAuthRoutes, BOOT_NOT_PORTAL, type AuthRouteContext, type AuthRouteDeps } from "../app-auth-routes.ts"
 
 const root = join(import.meta.dir, "..")
 const daemon = await Bun.file(join(root, "daemon.ts")).text()
 const apiMode = await Bun.file(join(root, "api-mode.ts")).text()
 const page = (name: string) => Bun.file(join(root, "public", name)).text()
+// The portal SPA's own source (web/src, not tests): read as text, so no web/node_modules is needed
+const webSources = async (): Promise<{ path: string; text: string }[]> => {
+  const out: { path: string; text: string }[] = []
+  for await (const path of new Bun.Glob("**/*.{ts,tsx}").scan({ cwd: join(root, "web", "src") })) {
+    if (/\.test\.tsx?$/.test(path) || path.startsWith("test/") || path.endsWith(".d.ts")) continue
+    out.push({ path, text: await Bun.file(join(root, "web", "src", path)).text() })
+  }
+  return out
+}
 
 /** From `start` to the brace that closes the block opened on its line. */
 const block = (text: string, start: string): string => {
@@ -98,7 +108,9 @@ describe("1. the portal cookie alone never authenticates", () => {
     const guardAt = control.indexOf("auth = await requestAuth(req)")
     expect(shellAt).toBeGreaterThan(0)
     expect(shellAt).toBeLessThan(guardAt)
-    expect(daemon).toContain('const PORTAL_PAGES = new Set(["/", "/oauth/consent", "/go/kill", "/go/portal", "/app-auth/consent", "/passkeys", "/settings"])')
+    // The dashboard, settings and passkeys pages are the SPA's now (app routes: a static page, no token on it)
+    expect(daemon).toContain('const PORTAL_PAGES = new Set(["/oauth/consent", "/go/kill", "/go/portal", "/app-auth/consent"])')
+    for (const p of ["/", "/settings", "/passkeys"]) expect(daemon).toContain(`["GET", "${p}", "app"],`)
   })
 
   it("every page token goes out with the session fetch patch, and only after the guard", () => {
@@ -114,13 +126,17 @@ describe("1. the portal cookie alone never authenticates", () => {
     expect(block(daemon, 'if (req.method === "POST" && url.pathname === "/auth/login")')).toContain("session: secret")
     const login = await page("portal-login.html")
     expect(login).toContain("localStorage.setItem('candy_session'")
-    expect(await page("portal.html")).toContain("localStorage.removeItem('candy_session')")
+    // The portal SPA's logout drops it again (web/src/session.tsx)
+    const session = await Bun.file(join(root, "web", "src", "session.tsx")).text()
+    expect(session).toContain('export const SESSION_KEY = "candy_session"')
+    expect(block(session, "export async function logout(")).toContain("localStorage.removeItem(SESSION_KEY)")
   })
 
   it("the portal reads logs over a fetch stream (EventSource can't send the header)", async () => {
-    const portal = await page("portal.html")
-    expect(portal).not.toContain("new EventSource")
-    expect(portal).toContain("readLogStream")
+    const web = await webSources()
+    expect(web.length).toBeGreaterThan(0)
+    expect(web.filter(f => /\bEventSource\b/.test(f.text.replace(/\/\/.*$/gm, ""))).map(f => f.path)).toEqual([])
+    expect(await Bun.file(join(root, "web", "src", "api", "stream.ts")).text()).toContain("getApi")
   })
 
   it("CORS answers only exact portal origins", () => {
@@ -571,9 +587,11 @@ describe("14. the audit actor is the authenticated user", () => {
 
 describe("15. server data is escaped before innerHTML", () => {
   it("Cloudflare record content and tunnel URLs are escaped", async () => {
-    const portal = await page("portal.html")
-    expect(portal).toContain("`${escapeHtml(r.type)} -> ${escapeHtml(r.content)}`")
-    expect(portal).not.toContain("${r.content}")
+    // The portal SPA renders server data as React text only: no raw HTML sink anywhere in web/src
+    const web = await webSources()
+    expect(web.length).toBeGreaterThan(0)
+    const sink = /dangerouslySetInnerHTML|\binnerHTML\b|\bouterHTML\b|insertAdjacentHTML|document\.write|\beval\s*\(|new\s+Function\b/
+    expect(web.filter(f => sink.test(f.text)).map(f => f.path)).toEqual([])
     const portaling = await page("portaling.html")
     expect(portaling).not.toMatch(/<span class="url">\$\{(tunnelUrl|existingUrl)\}/)
     expect(portaling).toContain("const existingUrl = httpsUrl(vars.existingUrl)")
@@ -1132,9 +1150,57 @@ describe("R8. Caddy's admin socket", () => {
 
 describe("R9. the portal can't be framed", () => {
   it("every response on the portal host carries frame-ancestors 'none' and DENY", () => {
-    expect(daemon).toContain(`const PORTAL_NO_FRAMING = { "Content-Security-Policy": "frame-ancestors 'none'", "X-Frame-Options": "DENY" }`)
+    expect(daemon).toContain(`const PORTAL_NO_FRAMING = { "Content-Security-Policy": "frame-ancestors 'none'", "X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff" }`)
     // the server's only fetch is the wrapper, so the login page and the shell get it too
     expect(block(daemon, "const controlServer = Bun.serve({")).toContain("return noFraming(req, await controlFetch(req))")
     expect(block(daemon, "const noFraming = ")).toContain('isPortalHost(req.headers.get("host"))')
+  })
+})
+
+describe("R10. the portal SPA's boot hands tokens to portal logins only", () => {
+  const minted: string[] = []
+  const routes = createAuthRoutes({
+    pageTokens: { mint: (id: string) => { minted.push(id); return `chain:${id}` }, dropSession: () => {} },
+    candyHost: () => null,
+    multiUser: true,
+    owner: "owner",
+    buildStale: () => false,
+    now: () => Date.now(),
+  } as unknown as AuthRouteDeps)
+  const ctx = (auth: RequestAuth | null, portalHost = true): AuthRouteContext =>
+    ({ auth, portalHost, host: "portal.localhost", ip: "127.0.0.1", userAgent: "t", https: true, cors: {}, actor: "t" })
+  const post = () => new Request("https://portal.localhost/portal/boot", { method: "POST", body: "{}", headers: { "Content-Type": "application/json" } })
+  const portal: RequestAuth = { user: "ann", superuser: false, via: "portal", sessionId: "s1", amr: "pam", pamAt: null }
+
+  it("mints only for via === \"portal\" on a portal host, and only on POST", async () => {
+    minted.length = 0
+    const ok = await routes.boot(post(), ctx(portal))
+    expect(ok.status).toBe(200)
+    expect(ok.headers.get("Cache-Control")).toBe("no-store")
+    expect((await ok.json()).token).toBe("chain:s1")
+    for (const via of ["apikey", "oauth"] as const) {
+      const r = await routes.boot(post(), ctx({ user: "ann", superuser: false, via }))
+      expect(r.status).toBe(403)
+      expect((await r.json()).error).toBe(BOOT_NOT_PORTAL)
+    }
+    expect((await routes.boot(post(), ctx(portal, false))).status).toBe(403)
+    const none = await routes.boot(post(), ctx(null))
+    expect(none.status).toBe(401)
+    expect(none.headers.get("X-Candy-Login")).toBe("required")
+    expect((await routes.boot(new Request("https://portal.localhost/portal/boot"), ctx(portal))).status).toBe(404)
+    expect(minted).toEqual(["s1"])
+  })
+
+  it("is POST, user class, tokenless (sameOrigin still runs first) and dispatched after the CSRF block", () => {
+    expect(daemon).toContain('["POST", "/portal/boot", "user"],')
+    expect(daemon).not.toMatch(/\["GET", "\/portal\/boot"/)
+    expect(daemon).toMatch(/const TOKENLESS_ROUTES = new Set\(\[[^\]]*"\/portal\/boot"[^\]]*\]\)/)
+    const body = block(daemon, "async function controlFetch(")
+    const origin = body.indexOf("if (!fromOwnHost && !sameOrigin(req.headers, isPortalHost)) {")
+    const tokenless = body.indexOf("!TOKENLESS_ROUTES.has(url.pathname)")
+    const dispatch = body.indexOf('if (req.method === "POST" && url.pathname === "/portal/boot") return appAuthRoutes.boot(')
+    expect(origin).toBeGreaterThan(0)
+    expect(tokenless).toBeGreaterThan(origin)
+    expect(dispatch).toBeGreaterThan(tokenless)
   })
 })

@@ -1,0 +1,18 @@
+.ui-ansi {
+  margin: 0; padding: var(--s-3) var(--s-4); border-radius: var(--r-2);
+  background: var(--log-bg); color: var(--log-ink);
+  font: var(--t-mono-small); font-stretch: 87.5%; line-height: 19px;
+  white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: auto; tab-size: 4;
+}
+.ui-ansi ::selection { background: var(--ansi-black); }
+.ui-ansi .fg-black { color: var(--ansi-black); }
+.ui-ansi .fg-red { color: var(--ansi-red); }
+.ui-ansi .fg-green { color: var(--ansi-green); }
+.ui-ansi .fg-yellow { color: var(--ansi-yellow); }
+.ui-ansi .fg-blue { color: var(--ansi-blue); }
+.ui-ansi .fg-magenta { color: var(--ansi-magenta); }
+.ui-ansi .fg-cyan { color: var(--ansi-cyan); }
+.ui-ansi .fg-white { color: var(--ansi-white); }
+.ui-ansi .b { font-weight: 700; }
+.ui-ansi .dim { color: var(--log-dim); }
+.ui-ansi .dim[class*="fg-"] { opacity: .7; }

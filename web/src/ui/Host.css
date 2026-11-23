@@ -1,0 +1,4 @@
+.ui-host { font: var(--t-host); font-stretch: 87.5%; letter-spacing: -0.01em; white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ui-host-name { color: var(--ink); }
+.ui-host-tld { color: var(--ink-3); }
+.ui-host-xl { font: var(--t-host-xl); font-stretch: 87.5%; letter-spacing: -0.025em; }

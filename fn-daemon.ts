@@ -309,7 +309,7 @@ export interface FnRoutingState {
 export const fnSummaryOf = (
   fn: FnSettings,
   routing: FnRoutingState | null,
-  live: { main: string | null; assets?: AssetsConfig | null } | null,
+  live: { main: string | null; assets?: AssetsConfig | null; kv?: string[]; d1?: string[] } | null,
 ) => ({
   entry: fn.entry,
   deploy: fn.deploy ?? null,
@@ -322,4 +322,7 @@ export const fnSummaryOf = (
   hasWorker: routing ? routing.hasWorker : live ? !!live.main : fn.entry !== null,
   source: routing ? (routing.deploy ? `deploy:${routing.deploy}` : "live") : null,
   assets: fnAssetsSummary(routing ? routing.assetsConfig : live?.assets),
+  // Binding names from the live candy.json, for the portal's Data tab; null until it has been read
+  kv: live?.kv ?? null,
+  d1: live?.d1 ?? null,
 })

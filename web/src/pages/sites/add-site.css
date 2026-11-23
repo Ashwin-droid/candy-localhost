@@ -1,0 +1,45 @@
+/* Add site dialog (SPEC §5.2). Tokens only. */
+
+.add-site { display: flex; flex-direction: column; gap: var(--s-5); }
+
+/* the kind picker: a radio list, one line of explanation each */
+.add-kinds {
+  margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--r-2); overflow: hidden;
+  display: flex; flex-direction: column; min-width: 0;
+}
+.add-kind {
+  display: flex; align-items: flex-start; gap: var(--s-3); padding: 10px var(--s-4); cursor: pointer;
+  background: var(--sheet); transition: background var(--t-fast) ease-out;
+}
+.add-kind + .add-kind { border-top: 1px solid var(--line); }
+.add-kind:hover { background: var(--hover); }
+.add-kind.is-on { background: var(--sheet-2); }
+.add-kind input { margin: 3px 0 0; accent-color: var(--ink); flex: 0 0 auto; }
+.add-kind input:focus-visible { outline: 2px solid var(--cherry); outline-offset: 2px; }
+.add-kind-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.add-kind-label { font: var(--t-body); font-weight: 500; color: var(--ink); }
+.add-kind-help { font: var(--t-small); color: var(--ink-2); }
+
+.add-check { display: flex; align-items: flex-start; gap: 10px; font: var(--t-body); color: var(--ink); cursor: pointer; }
+.add-check input { margin: 3px 0 0; accent-color: var(--ink); flex: 0 0 auto; }
+
+.add-presets { display: flex; flex-wrap: wrap; gap: var(--s-1); margin-top: calc(-1 * var(--s-3)); }
+.add-presets .ui-btn[aria-pressed="true"] { background: var(--sheet-3); color: var(--ink); }
+
+.add-more { border-top: 1px solid var(--line); padding-top: var(--s-3); }
+.add-more > summary {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer; list-style: none;
+  font: var(--t-small); font-weight: 500; color: var(--ink-2); border-radius: 4px;
+}
+.add-more > summary::-webkit-details-marker { display: none; }
+.add-more > summary::before {
+  content: ""; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg); transition: transform var(--t-fast) ease-out; margin-right: 2px;
+}
+.add-more[open] > summary::before { transform: rotate(45deg); }
+.add-more > summary:hover { color: var(--ink); }
+.add-more-body { padding-top: var(--s-4); }
+
+.add-scaling { display: flex; flex-direction: column; gap: var(--s-2); }
+/* three short numbers stay side by side even on a phone */
+.add-scaling .fields-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s-3); }

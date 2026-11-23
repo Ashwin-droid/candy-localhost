@@ -1,0 +1,35 @@
+.ui-input, .ui-input-wrap, .ui-select select {
+  height: var(--control-h); width: 100%; min-width: 0;
+  background: var(--sheet); color: var(--ink);
+  border: 1px solid var(--line-2); border-radius: var(--r-1);
+  font: var(--t-body);
+  transition: border-color var(--t-fast) ease-out, box-shadow var(--t-fast) ease-out;
+}
+.ui-input { padding: 0 10px; }
+.ui-input::placeholder { color: var(--ink-3); opacity: 1; }
+.ui-input.is-mono { font: var(--t-host); font-stretch: 87.5%; font-size: 13px; }
+.ui-input:hover:not(:disabled), .ui-input-wrap:hover:not(.is-disabled), .ui-select select:hover:not(:disabled) { border-color: var(--ink-3); }
+.ui-input:focus-visible, .ui-select select:focus-visible { outline: none; border-color: var(--ink-2); box-shadow: 0 0 0 3px var(--cherry-soft), 0 0 0 1px var(--cherry); }
+.ui-input.is-invalid, .ui-input-wrap.is-invalid { border-color: var(--cherry); }
+.ui-input:disabled, .ui-select select:disabled { background: var(--sheet-2); color: var(--ink-2); }
+.ui-input[readonly] { background: var(--sheet-2); }
+
+.ui-input-wrap { display: flex; align-items: stretch; overflow: hidden; }
+.ui-input-wrap:focus-within { border-color: var(--ink-2); box-shadow: 0 0 0 3px var(--cherry-soft), 0 0 0 1px var(--cherry); }
+.ui-input-wrap.is-disabled { background: var(--sheet-2); }
+.ui-input-wrap .ui-input { border: 0; height: 100%; border-radius: 0; background: transparent; box-shadow: none; flex: 1 1 auto; }
+.ui-input-wrap .ui-input:focus-visible { box-shadow: none; }
+.ui-input-affix { display: flex; align-items: center; padding: 0 10px; color: var(--ink-2); background: var(--sheet-2); white-space: nowrap; font: var(--t-body); }
+.ui-input-affix.mono { font: var(--t-host); font-stretch: 87.5%; font-size: 13px; }
+.ui-input-affix:first-child { border-right: 1px solid var(--line); }
+.ui-input-affix:last-child { border-left: 1px solid var(--line); }
+
+.ui-textarea { height: auto; min-height: 84px; padding: 8px 10px; resize: vertical; line-height: 21px; }
+.ui-textarea.is-mono { font: var(--t-mono-small); font-stretch: 87.5%; line-height: 20px; }
+
+.ui-select { position: relative; display: block; min-width: 0; }
+.ui-select select { appearance: none; -webkit-appearance: none; padding: 0 32px 0 10px; cursor: pointer; }
+.ui-select::after {
+  content: ""; position: absolute; right: 13px; top: 50%; width: 6px; height: 6px; margin-top: -5px;
+  border-right: 1.5px solid var(--ink-2); border-bottom: 1.5px solid var(--ink-2); transform: rotate(45deg); pointer-events: none;
+}

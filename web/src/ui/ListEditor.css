@@ -1,0 +1,5 @@
+.ui-listed { display: flex; flex-direction: column; gap: var(--s-2); }
+.ui-listed-items { display: flex; flex-direction: column; gap: var(--s-2); }
+.ui-listed-item, .ui-listed-add { display: flex; align-items: center; gap: var(--s-2); }
+.ui-listed-item .ui-btn { flex-shrink: 0; }
+.ui-listed-add .ui-btn { flex-shrink: 0; }

@@ -39,6 +39,20 @@ if [ "$mode" = "--print" ]; then
   exit 0
 fi
 
+# The portal SPA (web/ -> web/dist), built as the owner, never as root: a root build
+# would leave root-owned files in the checkout and run npm install scripts as root.
+# Without a build the daemon still runs; the portal pages say it isn't built yet.
+if [ "$kind" = daemon ] && [ -f "$dir/web/package.json" ]; then
+  build_web=(sh -c 'cd "$1" && "$2" install --frozen-lockfile && "$2" run build' sh "$dir/web" "$bun")
+  if [ "$user" = root ]; then
+    echo "Not building the portal as root: run bun run web:install && bun run web:build in $dir as its owner" >&2
+  elif [ "$(id -u)" -eq 0 ]; then
+    sudo -u "$user" -H "${build_web[@]}" || echo "Portal build failed: run bun run web:install && bun run web:build in $dir" >&2
+  else
+    "${build_web[@]}" || echo "Portal build failed: run bun run web:install && bun run web:build in $dir" >&2
+  fi
+fi
+
 printf '%s\n' "$rendered" | sudo tee "$dest" >/dev/null
 
 # Functions: the shim runs inside each function's sandbox as that function's

@@ -1,0 +1,38 @@
+/* Self-hosted OFL fonts, Latin subset (from Fontsource 5.3.0; licences in ../fonts/). Martian Mono carries the
+   wght and wdth axes, Schibsted Grotesk the wght axis. The "Fallback" faces are local system fonts with metrics
+   nudged toward the web fonts, so tables don't reflow when the web font arrives. */
+
+@font-face {
+  font-family: "Martian Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 800;
+  font-stretch: 75% 112.5%;
+  src: url("../fonts/MartianMono-var.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Schibsted Grotesk";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400 900;
+  src: url("../fonts/SchibstedGrotesk-var.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Martian Mono Fallback";
+  src: local("Menlo"), local("DejaVu Sans Mono"), local("Consolas"), local("Liberation Mono");
+  size-adjust: 104%;
+  ascent-override: 92%;
+  descent-override: 24%;
+}
+@font-face {
+  font-family: "Schibsted Grotesk Fallback";
+  src: local("Arial"), local("Helvetica"), local("Liberation Sans"), local("DejaVu Sans");
+  size-adjust: 98%;
+  ascent-override: 96%;
+  descent-override: 25%;
+}
+
+:root {
+  --font-ui: "Schibsted Grotesk", "Schibsted Grotesk Fallback", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Martian Mono", "Martian Mono Fallback", ui-monospace, "SF Mono", Menlo, monospace;
+}

@@ -1,0 +1,17 @@
+.ui-dot {
+  display: inline-block; flex-shrink: 0; width: 10px; height: 10px; border-radius: 50%;
+  box-sizing: border-box; vertical-align: -1px;
+}
+.ui-dot-running { background: var(--mint); box-shadow: 0 0 0 3px var(--mint-soft); }
+.ui-dot-starting { background: var(--lemon); animation: ui-dot-pulse 1.2s ease-in-out infinite; }
+.ui-dot-crashed { background: var(--cherry); }
+.ui-dot-stopped { border: 1.5px solid var(--line-2); }
+.ui-dot-idle { border: 1.5px solid var(--ink-3); }
+.ui-dot-external { border: 1.5px dashed var(--ink-3); }
+@keyframes ui-dot-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--lemon-soft); opacity: 1; }
+  50% { box-shadow: 0 0 0 4px var(--lemon-soft); opacity: .7; }
+}
+.ui-lamp { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.ui-lamp-label { color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ui-lamp.is-crashed .ui-lamp-label { color: var(--cherry); }

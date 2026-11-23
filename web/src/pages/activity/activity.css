@@ -1,0 +1,21 @@
+/* Activity (SPEC §5.11). Colours come from tokens.css only. */
+.act-tools { display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; }
+.act-filter { width: 260px; }
+@media (max-width: 639px) { .act-tools { width: 100%; } .act-filter { flex: 1 1 auto; width: auto; min-width: 0; } }
+
+/* a date heading is a row of its own, on the sheet-2 band */
+.act-table .ui-tr:has(.act-day) { background: var(--sheet-2); }
+.act-table .ui-tr:has(.act-day) > .ui-td { height: 32px; }
+.act-day { font: var(--t-small); font-family: var(--font-ui); font-weight: 600; color: var(--ink); white-space: nowrap; }
+.act-time { color: var(--ink-2); }
+.act-action { font-weight: 500; color: var(--ink); white-space: nowrap; }
+.act-details { color: var(--ink-2); overflow-wrap: anywhere; }
+.act-site { color: var(--ink); font-family: var(--font-mono); font-stretch: 87.5%; font-size: 13px; text-decoration: underline; text-decoration-color: var(--line-2); text-underline-offset: 3px; }
+.act-site:hover { text-decoration-color: var(--ink-2); }
+@media (max-width: 639px) {
+  .act-table .ui-tr:has(.act-day) { padding-top: 8px; padding-bottom: 8px; }
+  .act-table .ui-tr:has(.act-day) > .ui-td { height: auto; }
+  .act-table .ui-tr:has(.act-day) > .ui-td:not(:first-child) { display: none; }
+  .act-table .ui-tr:has(.act-time) > .ui-td:first-child { flex: 0 0 auto; }
+  .act-table .ui-tr:has(.act-time) > .ui-td:last-child { flex: 0 0 100%; }
+}

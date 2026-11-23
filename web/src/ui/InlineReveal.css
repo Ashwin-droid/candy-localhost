@@ -1,0 +1,13 @@
+.ui-reveal { display: flex; flex-direction: column; gap: var(--s-2); padding: var(--s-4); border: 1px solid var(--line-2); border-radius: var(--r-2); background: var(--sheet-2); }
+.ui-reveal-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); }
+.ui-reveal-label { font: var(--t-small); font-weight: 500; color: var(--ink); }
+.ui-reveal-once { font: var(--t-small); color: var(--ink-2); }
+.ui-reveal-row { display: flex; gap: var(--s-2); align-items: center; }
+.ui-reveal-value {
+  flex: 1; min-width: 0; height: var(--control-h-sm); padding: 0 10px;
+  font: var(--t-mono-small); font-stretch: 87.5%; color: var(--ink);
+  background: var(--sheet); border: 1px solid var(--line-2); border-radius: var(--r-1);
+}
+.ui-reveal-error { font: var(--t-small); color: var(--cherry); }
+.ui-reveal-hint { font: var(--t-small); color: var(--ink-2); max-width: 64ch; }
+@media (max-width: 639px) { .ui-reveal-row { flex-wrap: wrap; } .ui-reveal-value { flex-basis: 100%; } }

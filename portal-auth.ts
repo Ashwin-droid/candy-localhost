@@ -9,7 +9,10 @@
 //   userScopedFetch makes in-process MCP calls act as one user
 import type { AsyncLocalStorage } from "node:async_hooks"
 
-export type RouteClass = "public" | "user" | "superuser"
+// "app": a page of the portal SPA (web/dist index.html). GET/HEAD only, no login
+// needed (the page is static and holds no data or token), answered only on a
+// portal host by the daemon's app branch right after the guard
+export type RouteClass = "public" | "user" | "superuser" | "app"
 /** [method or "*", path, class]. A path ending in "/*" matches anything below it, never the bare prefix. */
 export type RouteRule = readonly [string, string, RouteClass]
 
@@ -82,9 +85,13 @@ export const guardRequest = (o: {
   html: boolean
   path: string
   search: string
+  method?: string   // needed for class "app" (GET/HEAD), unused otherwise
 }): GuardResult => {
   if (!o.cls) return { ok: false, status: 404, error: "not found" }
   if (o.cls === "public") return { ok: true }
+  // Like public, for GET and HEAD only. classifyRoute only gives "app" for those
+  // already; without a method it fails closed
+  if (o.cls === "app") return o.method === "GET" || o.method === "HEAD" ? { ok: true } : { ok: false, status: 404, error: "not found" }
   if (!o.auth) {
     if (o.portalHost && o.html) return { ok: false, status: 302, location: `/login?next=${encodeURIComponent(safeNext(o.path + o.search))}` }
     return { ok: false, status: 401, error: "login required" }
@@ -136,8 +143,13 @@ export const sameOrigin = (headers: Headers, isPortalHost: (host: string) => boo
 
 interface Chain { tokens: string[]; session: string; created: number }
 
-/** Page loads one login keeps tokens for; older pages need a reload. */
-export const MAX_CHAINS_PER_SESSION = 32
+/**
+ * Page loads one login keeps tokens for; older pages need a reload. The portal
+ * SPA mints one chain per lane (main, long, term) per tab through
+ * /portal/boot, and every boot evicts the session's oldest chain once this is
+ * reached: 32 tabs x 3 lanes, so many open tabs don't evict each other in a loop.
+ */
+export const MAX_CHAINS_PER_SESSION = 96
 
 export class PageTokens {
   private chains = new Map<string, Chain>()

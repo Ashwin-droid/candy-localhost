@@ -5,7 +5,7 @@ First off: this project started as a shitpost about IANA handing out /8 blocks l
 ## The Rules
 
 1. **The daemon is the source of truth.** Everything else is a client. Don't break this.
-2. **Zero npm dependencies.** Pure Bun stdlib. If you need a library, you need a better idea.
+2. **Zero npm dependencies** in the daemon, CLI, SDK and MCP server. Pure Bun stdlib. If you need a library, you need a better idea. The one exception is `web/`, the portal SPA: its own package with react and react-dom as build-time dependencies, nothing else.
 3. **Easter eggs are features.** The void system, yandere mode, and candy corruption are not bugs. Don't "fix" them. Enhance them.
 4. **Flavor text matters.** If you add an API response, give it personality. Study the existing `msg` object in `daemon.ts`.
 
@@ -13,6 +13,7 @@ First off: this project started as a shitpost about IANA handing out /8 blocks l
 
 ```bash
 bun install
+bun run web:install && bun run web:build   # the portal SPA in web/ (bun run web:dev rebuilds on save)
 bun run dev    # daemon with auto-reload
 ```
 
@@ -24,8 +25,9 @@ Visit `https://portal.localhost` to see the portal UI. Visit any unconfigured do
 daemon.ts          The daemon. Manages everything. 
 mcp.ts             MCP server for AI integration
 cli.ts             CLI client (candy dev, candy logs, etc.)
+portal-app.ts      Serves the portal SPA (web/dist) on the portal host
+web/               The portal SPA (React), its own package; built to web/dist (not committed): the management UI
 public/
-  portal.html      Management UI with terminal + GUI modes
   candy.html       Registration page (cute mode)
   terminal.html    Registration page (dark mode, 15% chance)
   starting.html    Server boot screen with streaming logs
@@ -53,7 +55,6 @@ The existing horror systems are:
 - **Candy corruption** (candy.html) — candies become eyes, taglines shift, shadow figure, color degradation
 - **Yandere mode** (candy.html) — tab abandonment triggers clingy localhost behavior
 - **Restricted zone** (candy.html) — guilt trip when proxying external domains
-- **Void incursion** (portal.html) — full terminal corruption with interactive void commands
 - **Time corruption** (terminal.html) — progressive visual degradation
 
 Add new ones. Surprise us. Some ground rules:
@@ -69,7 +70,7 @@ The `candy` CLI is young. Make it better.
 
 ## What We Don't Want
 
-- npm dependencies
+- npm dependencies (outside `web/`, and in `web/` anything beyond react and react-dom)
 - Removing or "fixing" easter eggs
 - Making the flavor text "professional"
 - Breaking the multiplayer log architecture (daemon owns processes, clients read streams)

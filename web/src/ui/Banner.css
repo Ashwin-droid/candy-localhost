@@ -1,0 +1,16 @@
+.ui-banner {
+  display: flex; align-items: flex-start; gap: 10px; padding: 10px var(--s-4);
+  border: 1px solid var(--line); border-radius: var(--r-2); background: var(--sheet);
+  font: var(--t-body); color: var(--ink);
+}
+.ui-banner + .ui-banner { margin-top: var(--s-2); }
+.ui-banner-icon { margin-top: 2px; color: var(--ink-2); }
+.ui-banner.is-warn { background: var(--lemon-soft); border-color: transparent; }
+.ui-banner.is-warn .ui-banner-icon { color: var(--lemon); }
+.ui-banner.is-error { background: var(--cherry-soft); border-color: transparent; }
+.ui-banner.is-error .ui-banner-icon { color: var(--cherry); }
+.ui-banner-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ui-banner-text code { font-size: 12.5px; }
+.ui-banner-actions { display: flex; align-items: center; gap: var(--s-2); margin: -4px -6px -4px 0; }
+.ui-banner-close { display: flex; padding: 5px; border: 0; background: none; border-radius: var(--r-1); color: var(--ink-2); }
+.ui-banner-close:hover { color: var(--ink); background: var(--hover); }

@@ -1,0 +1,16 @@
+.ui-subnav ul { display: flex; flex-direction: column; gap: 2px; }
+.ui-subnav-item {
+  display: flex; align-items: center; height: 32px; padding: 0 var(--s-3);
+  border-radius: var(--r-1); font: var(--t-body); font-weight: 500; color: var(--ink-2); white-space: nowrap;
+  transition: background var(--t-fast) ease-out, color var(--t-fast) ease-out;
+}
+.ui-subnav-item:hover { color: var(--ink); background: var(--hover); text-decoration: none; }
+.ui-subnav-item.is-active { color: var(--ink); background: var(--sheet-3); }
+@media (min-width: 1024px) {
+  .ui-subnav { position: sticky; top: calc(var(--topbar-h) + var(--s-6)); width: 200px; flex-shrink: 0; }
+}
+@media (max-width: 1023px) {
+  .ui-subnav { margin-bottom: var(--s-5); border-bottom: 1px solid var(--line); }
+  .ui-subnav ul { flex-direction: row; gap: var(--s-1); overflow-x: auto; scrollbar-width: none; padding-bottom: var(--s-2); }
+  .ui-subnav ul::-webkit-scrollbar { display: none; }
+}

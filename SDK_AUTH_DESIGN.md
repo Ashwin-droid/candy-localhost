@@ -14,8 +14,8 @@ Six work items. **A–E have no dependencies on each other at runtime or in test
 | B | `webauthn.ts`, `test/webauthn.test.ts` | nothing (WebCrypto) |
 | C | `passkey-store.ts`, `test/passkey-store.test.ts` | `portal-auth.ts` (`SoftLockout`, `logSafe`), `sealed-ids.ts`; `import type` from `webauthn.ts` |
 | D | `app-auth.ts`, `test/app-auth.test.ts` | `jwe.ts` (tests that open tokens run once A exists), `sealed-ids.ts`, `sdk-auth.ts` (`CALLBACK_PATH` only) |
-| E | `sdk-auth.ts`, `test/sdk-auth.test.ts`, `public/app-consent.html`, `public/portal-passkeys.html`, passkey section of `public/portal-login.html` | `jwe.ts` only |
-| F | `daemon.ts`, `portal-session.ts`, `sandbox.ts`, `fn-host.ts`, `sdk.ts`, `cli.ts`, `install-service.sh`, `package.json`, `public/portal.html` (one link), docs, tests for those | everything |
+| E | `sdk-auth.ts`, `test/sdk-auth.test.ts`, `public/app-consent.html`, the passkeys page (then `public/portal-passkeys.html`; since the cut-over the portal SPA's `/passkeys`), passkey section of `public/portal-login.html` | `jwe.ts` only |
+| F | `daemon.ts`, `portal-session.ts`, `sandbox.ts`, `fn-host.ts`, `sdk.ts`, `cli.ts`, `install-service.sh`, `package.json`, the dashboard (then `public/portal.html`, one link; now the portal SPA), docs, tests for those | everything |
 
 D and E depend on A's **contract** (section A). If A has not landed yet, D and E write against the signatures below; their tests run once `jwe.ts` exists.
 
@@ -703,13 +703,16 @@ Tests (real `jwe.ts`, keys from `generateKey`): login sets the cookie with the e
 - A 429 shows a countdown from `retryAfter`, like the password path. 401 shows the error string. `NotAllowedError` (the user cancelled) shows nothing.
 - Optional: when `PublicKeyCredential.isConditionalMediationAvailable()` resolves true, start a `mediation:'conditional'` request with `autocomplete="username webauthn"` on the user field. One AbortController; abort it before a button-initiated request.
 
-### `public/portal-passkeys.html` (served at `GET /passkeys` through the shell; G: "Add" opens a popup on the candy host, the notice below is gone)
+### The passkeys page (G: "Add" opens a popup on the candy host, the notice below is gone)
+
+Originally `public/portal-passkeys.html`, served at `GET /passkeys` through the shell. Since the cut-over it is the portal SPA's Settings › Passkeys (`web/src/pages/settings/PasskeysPage.tsx`, at `/settings/passkeys` and `/passkeys`): it takes `user`, `superuser`, `candyHost` and `pamUntil` from `POST /portal/boot` instead of `CANDY_VARS`. The design as first written:
+
 - `CANDY_VARS = { user, superuser, rpId, pamUntil: number | null }`.
 - It lists `GET /passkeys/list` as a table: name (inline rename → `POST /passkeys/rename {id,name}`), "this portal" marker when `here`, created, last used, synced badge (`backedUp`), and Delete (`POST /passkeys/delete {id}`).
 - "Add a passkey" → `POST /passkeys/register/options` → `navigator.credentials.create` (`parseCreationOptionsFromJSON`, or a manual conversion of `challenge`, `user.id` and `excludeCredentials[].id`) → serialize (`toJSON()`, or manually: clientDataJSON, attestationObject, transports via `getTransports()`) → `POST /passkeys/register {challengeId, credential, name}`. The name comes from a text field (default "Passkey on <platform>").
 - Any `{reauth:true}` 403, and also before Add/Delete when `pamUntil` is null or past, opens a password prompt → `POST /auth/reauth {password}` → `{pamUntil}` → retry.
 - Says plainly: "Passkeys work only on the portal address they were made on (<rpId>)."
-- Every POST sends `X-Candy-Token`. A token is consumed by each POST, so after each one get the next with `POST /token {token}` → `{token}` (the same as `refreshToken()` in portal.html). `app-consent.html` makes one POST and needs no refresh.
+- Every POST sends `X-Candy-Token`. A token is consumed by each POST, so after each one get the next with `POST /token {token}` → `{token}` (the portal SPA's token chain, `web/src/api/tokens.ts`). `app-consent.html` makes one POST and needs no refresh.
 
 ---
 
@@ -767,7 +770,7 @@ Tests (real `jwe.ts`, keys from `generateKey`): login sets the cookie with the e
 | GET | `/auth/passkey/start` | public | portal only (G) | `?next=` | 302 to `https://<candy host>/passkey/login?candy_stamp=…`; sets `__Host-candy_passkey`; 429 page when locked out; 404 without a bound domain |
 | POST | `/auth/passkey/finish` | public | portal only, TOKENLESS, Origin = the candy host (G) | form `candy_code` | redeems the login code; a page that stores the session secret and goes to `next` (or, for a fresh auth, re-authenticates the session and goes back to the consent page); 400 page / 403 |
 | POST | `/auth/reauth` | user | portal only, page token | `{password}` | `attemptLogin(loginDeps, {user: auth.user, password, ip})` (the body's user is ignored); ok → `markPam` → `{pamUntil: pamAt + RECENT_PAM_MS}`; else its status and body; audit `AUTH_REAUTH` |
-| GET | `/passkeys` | user | portal only, PORTAL_PAGES | | `portal-passkeys.html` + vars |
+| GET | `/passkeys` | app | portal host only (404 elsewhere); no login for the static page | | the portal SPA's `index.html` (Settings › Passkeys, also at `/settings/passkeys`); its page token comes from `POST /portal/boot` |
 | GET | `/passkeys/list` | user | portal or API key | `?user=` (portal superuser only) | `{passkeys: PasskeyView[]}` |
 | POST | `/passkeys/enroll/start` | user | portal only, page token, recent password (G) | `{name?}` | `{url, origin}`: the candy-host popup URL with an enroll stamp; 403 reauth / 409 limit / 404 without a bound domain |
 | POST | `/app-auth/fresh` | user | portal only, page token (H) | `{request}` | `{url}`: a passkey stamp that re-authenticates this login for that parked request |

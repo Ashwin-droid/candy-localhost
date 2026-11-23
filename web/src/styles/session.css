@@ -1,0 +1,13 @@
+.session-page { flex: 1; display: flex; align-items: center; justify-content: center; padding: var(--s-6) var(--s-4); }
+.session-card {
+  width: min(420px, 100%); padding: var(--s-7) var(--s-7) var(--s-6);
+  background: var(--sheet); border: 1px solid var(--line); border-radius: var(--r-3);
+  display: flex; flex-direction: column; gap: var(--s-3); color: var(--ink);
+}
+.session-card .session-mark { margin-bottom: var(--s-3); }
+.session-detail { font: var(--t-small); color: var(--ink-2); overflow-wrap: anywhere; }
+.session-link { color: var(--ink); text-decoration: underline; text-decoration-color: var(--line-2); text-underline-offset: 3px; font-weight: 500; }
+.session-mark { font: var(--t-wordmark); font-stretch: 112.5%; letter-spacing: -0.04em; color: var(--ink); }
+.session-mark span { color: var(--cherry); }
+.session-boot { flex: 1; }
+.session-boot-bar { height: var(--topbar-h); display: flex; align-items: center; padding: 0 var(--gutter); background: var(--sheet); border-bottom: 1px solid var(--line); }

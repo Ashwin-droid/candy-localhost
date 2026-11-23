@@ -1,0 +1,35 @@
+/* Site Settings tab (SPEC §5.5): a 720px reading column with the section index beside it at >= 1024px.
+   Colours only from tokens.css. */
+.site-settings { display: flex; flex-direction: column; min-width: 0; }
+.site-settings-body { flex: 1 1 auto; min-width: 0; }
+.site-settings-column { max-width: 720px; min-width: 0; }
+@media (min-width: 1024px) {
+  .site-settings { flex-direction: row; align-items: flex-start; gap: var(--s-7); }
+}
+
+/* An input with its own action buttons on one line */
+.set-inline { display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; min-width: 0; }
+.set-inline > .ui-input, .set-inline > .ui-input-wrap { flex: 1 1 200px; max-width: 360px; }
+.set-value { font: var(--t-body); color: var(--ink); min-width: 0; overflow-wrap: anywhere; flex: 0 1 auto; }
+
+/* A switch row: label and help on the left, the switch on the right */
+.set-switch { display: flex; flex-direction: column; gap: var(--s-2); min-width: 0; }
+.set-switch-row { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-5); }
+.set-switch-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.set-switch-label { font: var(--t-small); font-weight: 500; color: var(--ink); cursor: pointer; }
+.set-switch-row .ui-switch { margin-top: 1px; }
+
+/* A one-line result under a control */
+.set-line { display: flex; align-items: flex-start; gap: 6px; font: var(--t-small); color: var(--ink); max-width: 64ch; }
+.set-line .ui-icon { margin-top: 2px; flex-shrink: 0; }
+.set-line.is-ok .ui-icon { color: var(--mint); }
+.set-line.is-warn .ui-icon { color: var(--lemon); }
+.set-line.is-error, .set-line.is-error .ui-icon { color: var(--cherry); }
+.ui-section-body > .set-line { margin-top: var(--s-3); }
+
+.set-link { font: var(--t-small); font-weight: 500; color: var(--ink); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line-2); }
+.set-link:hover { text-decoration-color: var(--ink-2); }
+
+@media (max-width: 639px) {
+  .set-inline > .ui-input, .set-inline > .ui-input-wrap { max-width: none; flex-basis: 100%; }
+}

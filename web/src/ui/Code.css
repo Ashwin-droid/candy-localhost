@@ -1,0 +1,12 @@
+.ui-code { font: var(--t-mono-small); font-stretch: 87.5%; padding: 1px 5px; border-radius: 4px; background: var(--sheet-3); color: var(--ink); overflow-wrap: anywhere; }
+.ui-code-block {
+  font: var(--t-mono-small); font-stretch: 87.5%; color: var(--ink);
+  padding: var(--s-3) var(--s-4); border: 1px solid var(--line); border-radius: var(--r-2); background: var(--sheet-2);
+  overflow-x: auto; white-space: pre; tab-size: 2;
+}
+.ui-code-block code { font: inherit; }
+.ui-kbd {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 5px;
+  font: var(--t-mono-small); font-stretch: 87.5%; font-size: 11px; color: var(--ink-2);
+  border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 4px; background: var(--sheet);
+}

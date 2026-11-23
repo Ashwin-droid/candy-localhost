@@ -1,6 +1,6 @@
 const API = process.env.CANDY_DAEMON_URL || "http://localhost:9999"
 import { exchangeSecret, readSecrets, secretHint } from "./secret.ts"
-import { CRON_JOB_ENV, validateCronJob, type CronJob } from "./cron.ts"
+import { CRON_JOB_ENV } from "./cron.ts"
 import { createAppAuth, type AppAuth, type AppAuthOptions } from "./sdk-auth.ts"
 
 export type { CronJob } from "./cron.ts"
@@ -351,8 +351,8 @@ export async function setIdling(idling = true): Promise<IdlingResult> {
 // --- Events and server-to-server tokens (sdk-runtime.ts) ---
 // These act as the site candy started this process for. Inside a candy
 // function the same object is env.CANDY.
-import { createRuntime, readRuntime, type CandyRuntime, type CandyEvent, type ServiceCaller, type Subscription, type SubscribeOptions, type SubClient, type SubscriptionStatus } from "./sdk-runtime.ts"
-export type { CandyRuntime, CandyEvent, ServiceCaller, Subscription, SubscribeOptions, SubClient, SubscriptionStatus } from "./sdk-runtime.ts"
+import { createRuntime, readRuntime, type CandyRuntime, type CandyEvent, type ServiceCaller, type Subscription, type SubscribeOptions, type SubClient, type SubscriptionStatus, type PublishOptions } from "./sdk-runtime.ts"
+export type { CandyRuntime, CandyEvent, ServiceCaller, Subscription, SubscribeOptions, SubClient, SubRequest, SubscriptionStatus, PublishOptions } from "./sdk-runtime.ts"
 export { SERVICE_HEADER } from "./sdk-runtime.ts"
 
 let cachedRuntime: CandyRuntime | null = null
@@ -367,7 +367,7 @@ export function runtime(): CandyRuntime {
  * Every site whose candy.json subscribes to "<this site>:<event>" gets it;
  * the ones that are stopped are started first. `data` is JSON, up to 64 KB.
  */
-export const publish = (event: string, data?: unknown) => runtime().publish(event, data)
+export const publish = (event: string, data?: unknown, opts?: PublishOptions) => runtime().publish(event, data, opts)
 
 /**
  * Receive the events this site's candy.json asks for ("sub":
@@ -380,11 +380,17 @@ export const subscribe = (handler: (event: CandyEvent) => unknown, opts?: Subscr
 /**
  * Who may subscribe is the publisher's call, event by event: "pub": [{ "event": "built",
  * "auth": "none" | "lax" | "strict", "auth-users": [...] }] in its candy.json. For a
- * "strict" event an app gets nothing until the publisher approves it here. Leave
+ * "strict" event an app gets nothing until the publisher approves it here
+ * (publish(event, data, { to }) sends to named apps only). Leave
  * `event` out to decide every strict event that app asks for. Each returns the list as it now stands.
  */
 /** Where each of this site's subscriptions stands: "ok", "denied", "pending", "rejected" or "revoked". A denied site still runs; what to do about it is yours. */
 export const subscriptions = () => runtime().subscriptions()
+/**
+ * Have candy read this site's candy.json again, now. Edit the file (say, its "cron" entries), then call this:
+ * the jobs are whatever the file lists. Throws with the reason if the file can't be used; the old config stays in force.
+ */
+export const reloadServerConfig = () => runtime().reloadConfig()
 export const listSubClients = () => runtime().listSubClients()
 export const approveSubClient = (app: string, event?: string) => runtime().approveSubClient(app, event)
 export const rejectSubClient = (app: string, event?: string) => runtime().rejectSubClient(app, event)
@@ -401,39 +407,11 @@ export const serviceHeaders = (target: string) => runtime().serviceHeaders(targe
 /** Which app a request is from (`{ app, user }`), or null. Needs "service": true in this site's candy.json. */
 export const verifyService = (from: Request | Headers | string | null | undefined): Promise<ServiceCaller | null> => runtime().verifyService(from)
 
-export interface CronJobInput {
-  /** Unique per server: setting a job with an existing name replaces it. */
-  name: string
-  /** 5-field cron (minute hour day-of-month month day-of-week) or @hourly, @daily, @weekly, @monthly, @yearly. Local time. */
-  schedule: string
-  /** Appended to the server's own command as separate arguments. Never parsed by a shell. */
-  args?: string[]
-  /** Stop a run after this many seconds. Default 3600, max 86400. */
-  timeoutSec?: number
-}
-
 /**
- * Run this server's command on a schedule, with extra arguments of your
- * choice. The base command can't be changed, and the arguments are passed as
- * plain argv entries: `;`, `&&`, `|` or `$(...)` in them are just text.
- * A run gets CANDY_CRON_JOB=<name> in its environment (see `cronJob()`).
- * Jobs are saved with the server's config and run whether or not it is running.
+ * Cron jobs are declared in candy.json: `"cron": [{ "tag": "sync", "schedule": "@hourly", "args": ["--sync"] }]`.
+ * A run is this server's own command (plus the entry's args) with CANDY_CRON_JOB=<tag> in its environment.
  */
-export async function setCron(job: CronJobInput): Promise<CronJob[]> {
-  const v = validateCronJob(job)
-  if (!v.ok) throw new Error(v.error)
-  return (await runtimeCall<{ jobs: CronJob[] }>("/sdk/cron", { action: "set", job: v.job })).jobs
-}
-
-export async function removeCron(name: string): Promise<CronJob[]> {
-  return (await runtimeCall<{ jobs: CronJob[] }>("/sdk/cron", { action: "remove", name })).jobs
-}
-
-export async function listCrons(): Promise<CronJob[]> {
-  return (await runtimeCall<{ jobs: CronJob[] }>("/sdk/cron", { action: "list" })).jobs
-}
-
-/** The cron job that started this process, or null when it wasn't started by cron. */
+/** The tag of the candy.json cron entry that started this process, or null when it wasn't started by cron. */
 export function cronJob(): string | null {
   return process.env[CRON_JOB_ENV]?.trim() || null
 }
@@ -491,9 +469,6 @@ const candySdk = {
   openPortal,
   registerPort,
   setIdling,
-  setCron,
-  removeCron,
-  listCrons,
   cronJob,
   appAuth,
   createAppAuth,
@@ -501,6 +476,7 @@ const candySdk = {
   publish,
   subscribe,
   subscriptions,
+  reloadServerConfig,
   listSubClients,
   approveSubClient,
   rejectSubClient,

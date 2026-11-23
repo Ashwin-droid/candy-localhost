@@ -1509,11 +1509,16 @@ async function cmdFn(argv: string[]) {
       if (linger !== undefined) body.linger = linger
       console.log(`${c.dim}Registering function ${name}...${c.reset}`)
       const res = await fnApi('POST', '/fn/add', body)
-      console.log(`${c.green}+ ${res.name ?? name}${c.reset} ${c.dim}->${c.reset} ${c.cyan}${res.url ?? `https://${name}.localhost`}${c.reset}`)
+      const noUrl = res.url === null
+      console.log(noUrl
+        ? `${c.green}+ ${res.name ?? name}${c.reset} ${c.dim}(no URL: "handlers" has no "http")${c.reset}`
+        : `${c.green}+ ${res.name ?? name}${c.reset} ${c.dim}->${c.reset} ${c.cyan}${res.url ?? `https://${name}.localhost`}${c.reset}`)
       for (const [k, v] of fnInfoRows(res.fn)) console.log(`  ${c.dim}${k.padEnd(7)}${c.reset}${v}`)
       console.log(fnAssetsOnly(res.fn)
         ? `${c.dim}  Live-linked to ${body.cwd}. Files are served by the daemon; no process starts.${c.reset}`
-        : `${c.dim}  Live-linked to ${body.cwd}. Starts on the first request, exits when idle.${c.reset}`)
+        : noUrl
+          ? `${c.dim}  Live-linked to ${body.cwd}. Runs from cron and events only. Add "http" to "handlers" in candy.json to give it a URL.${c.reset}`
+          : `${c.dim}  Live-linked to ${body.cwd}. Starts on the first request, exits when idle.${c.reset}`)
       for (const w of Array.isArray(res.warnings) ? safeDeep(res.warnings) : []) console.log(`${c.yellow}  ${w}${c.reset}`)
       return
     }
@@ -1732,6 +1737,7 @@ function printHelp() {
   console.log(`  ${c.cyan}candy dev${c.reset} <cmd> --name foo   Register and run with custom route name`)
   console.log(`  ${c.cyan}candy dev${c.reset} <cmd> --api        API mode: hold the first request while starting, then forward it`)
   console.log(`  ${c.cyan}candy api${c.reset} <name> [on|off]     Turn API mode on or off for a site`)
+  console.log(`  ${c.cyan}candy reload${c.reset} [name]             Read candy.json again (all your sites, or one); nothing restarts`)
   console.log(`  ${c.cyan}candy ttl${c.reset} <name> <minutes|off>  Stop a site after that many idle minutes (default 60)`)
   console.log(`  ${c.cyan}candy mem${c.reset} <name> <size|off>     Memory limit for a site (default 2G, at most 16G)`)
   console.log(`  ${c.cyan}candy env${c.reset} <name> <path|off>     Give a site its environment from a KEY=VALUE file`)
@@ -1840,6 +1846,19 @@ switch (command) {
     console.log(state === 'off'
       ? `${name}: API mode off. Browsers get the loading page again.`
       : `${name}: API mode on. The first request waits for the server and is forwarded to it.`)
+    break
+  }
+  case 'reload': {
+    // candy reload [name]: read candy.json again for every site (or one); nothing restarts
+    const res = await apiPost('/config/reload', args[1] ? { name: args[1] } : {})
+    if (!res || res.error) {
+      console.error(`${c.red}${res?.error || 'Daemon not running'}${c.reset}`)
+      process.exit(1)
+    }
+    const sites: any[] = Array.isArray(res.sites) ? safeDeep(res.sites) : []
+    for (const s of sites.filter(s => !s.ok)) console.error(`${c.red}${s.name}: ${s.error}${c.reset} ${c.dim}(keeps its old config)${c.reset}`)
+    console.log(`Reloaded candy.json for ${sites.filter(s => s.ok).length} of ${sites.length} site${sites.length === 1 ? '' : 's'}.`)
+    if (sites.some(s => !s.ok)) process.exit(1)
     break
   }
   case 'ttl': {

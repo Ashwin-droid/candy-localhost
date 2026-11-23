@@ -49,6 +49,27 @@ describe("cronJobsFor", () => {
   })
 })
 
+describe("tagged cron entries", () => {
+  it("run with their tag in argv, after the untagged ones", () => {
+    const jobs = cronJobsFor({ crons: ["@daily"] }, [{ name: "cleanup", schedule: "0 3 * * *", args: [], timeoutSec: 120 }])
+    expect(jobs.length).toBe(2)
+    expect(jobs[1]).toEqual({ name: "cleanup", schedule: "0 3 * * *", args: ["--scheduled", "0 3 * * *", "--tag", "cleanup"], timeoutSec: 120 })
+  })
+
+  it("can't bring args of their own, or go over the limit", () => {
+    expect(() => cronJobsFor({ crons: [] }, [{ name: "a", schedule: "@daily", args: ["--x"] }])).toThrow(/for servers/)
+    expect(() => cronJobsFor({ crons: ["@daily"] }, Array.from({ length: MAX_CRON_JOBS }, (_, i) => ({ name: `t${i}`, schedule: "@daily", args: [] })))).toThrow(/at most/)
+  })
+
+  it("the handler is told which one fired", async () => {
+    let seen: unknown
+    await runScheduled({ scheduled: (c: { tag: string | null }) => { seen = c.tag } }, {}, "@daily", undefined, "cleanup")
+    expect(seen).toBe("cleanup")
+    await runScheduled({ scheduled: (c: { tag: string | null }) => { seen = c.tag } }, {}, "@daily")
+    expect(seen).toBe(null)
+  })
+})
+
 describe("ExecutionContext", () => {
   let errSpy: ReturnType<typeof spyOn>
   beforeEach(() => { errSpy = spyOn(console, "error").mockImplementation(() => {}) })

@@ -10,17 +10,21 @@
 //   "idle": true            may ask to be kept past its idle limit (SDK setIdling)
 //   "pub": [{ "event": "built", "auth": "strict", "auth-users": ["bob"] }, "announce"]
 //                           events it may publish, and who may subscribe to each (events.ts)
-//   "sub": ["ci:built"]     events of other sites it gets; a publish wakes it, and it keeps them up
+//   "sub": ["ci:built"]     events of other sites it gets; a publish wakes it, and it keeps them up.
+//                           "candy:sub-request" is the daemon's own: an app waits for this site's approval
 //   "service": true         takes server-to-server tokens ("app x, running as user y, asks")
+//   "cron": [{ "tag": "cleanup", "schedule": "0 3 * * *" }]
+//                           scheduled runs; the run is told the tag (SDK cronJob(), or scheduled(controller).tag)
 //
 // Pure apart from loadSiteManifest reading the one file.
 import { join, resolve } from "node:path"
 import { parseJsonc } from "./fn-config.ts"
-import { EVENT_NAME, MAX_AUTH_USERS, MAX_EVENTS, MAX_SUBSCRIBE, PUB_AUTH, parseSubscription, type PubAuth, type PubEvent } from "./events.ts"
+import { MAX_CRON_JOBS, validateCronJob, type CronJob } from "./cron.ts"
+import { BUILTIN_EVENTS, BUILTIN_SITE, EVENT_NAME, MAX_AUTH_USERS, MAX_EVENTS, MAX_SUBSCRIBE, PUB_AUTH, parseSubscription, type PubAuth, type PubEvent } from "./events.ts"
 
 export const MANIFEST_FILE = "candy.json"
 // Keys every kind of site may set. fn-config.ts skips these without a warning.
-export const MANIFEST_KEYS = ["auth", "depends", "publish", "idle", "pub", "sub", "service"] as const
+export const MANIFEST_KEYS = ["auth", "depends", "publish", "idle", "pub", "sub", "service", "cron"] as const
 export const MAX_DEPENDS = 16
 const MAX_MANIFEST_BYTES = 256 * 1024
 // The same shape as a site name: a DNS label
@@ -40,12 +44,14 @@ export interface SiteManifest {
   sub: string[]
   // Takes server-to-server tokens (its own key, apart from "auth")
   service: boolean
+  // Scheduled runs, each named by its "tag" (CronJob.name)
+  cron: CronJob[]
   warnings: string[]
   // Path of the candy.json this came from; null when the site has none
   source: string | null
 }
 
-export const emptyManifest = (): SiteManifest => ({ auth: false, depends: [], publish: false, idle: false, pub: [], sub: [], service: false, warnings: [], source: null })
+export const emptyManifest = (): SiteManifest => ({ auth: false, depends: [], publish: false, idle: false, pub: [], sub: [], service: false, cron: [], warnings: [], source: null })
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v)
 
@@ -87,7 +93,7 @@ export const normalizeManifest = (raw: unknown): Omit<SiteManifest, "source"> =>
   const idle = flag("idle")
   const service = flag("service")
 
-  const list = (key: "pub" | "sub", max: number): unknown[] => {
+  const list = (key: "pub" | "sub" | "cron", max: number): unknown[] => {
     if (raw[key] === undefined) return []
     const v = Array.isArray(raw[key]) ? raw[key] as unknown[] : [raw[key]]
     if (v.length > max) throw new Error(`${MANIFEST_FILE}: at most ${max} entries in "${key}"`)
@@ -100,7 +106,7 @@ export const normalizeManifest = (raw: unknown): Omit<SiteManifest, "source"> =>
     const at = `"pub"[${pub.length}]`
     const o = typeof item === "string" ? { event: item } : item
     if (!isObject(o)) throw new Error(`${MANIFEST_FILE}: ${at} must be an event name or { "event": ..., "auth": ..., "auth-users": [...] }`)
-    for (const k of Object.keys(o)) if (k !== "event" && k !== "auth" && k !== "auth-users") throw new Error(`${MANIFEST_FILE}: ${at} has no "${k.slice(0, 40)}" (it takes "event", "auth" and "auth-users")`)
+    for (const k of Object.keys(o)) if (k !== "event" && k !== "auth" && k !== "auth-users" && k !== "ordered") throw new Error(`${MANIFEST_FILE}: ${at} has no "${k.slice(0, 40)}" (it takes "event", "auth", "auth-users" and "ordered")`)
     const event = typeof o.event === "string" ? o.event.trim().toLowerCase() : ""
     if (!EVENT_NAME.test(event)) throw new Error(`${MANIFEST_FILE}: ${at} needs an "event" name (letters, digits, dots, dashes and underscores)`)
     if (pub.some(e => e.event === event)) throw new Error(`${MANIFEST_FILE}: "pub" lists "${event}" twice`)
@@ -121,7 +127,8 @@ export const normalizeManifest = (raw: unknown): Omit<SiteManifest, "source"> =>
       // A list nobody reads is a mistake worth saying out loud
       if (auth === "none") throw new Error(`${MANIFEST_FILE}: ${at} "auth-users" does nothing with "auth": "none"`)
     }
-    pub.push({ event, auth, users })
+    if (o.ordered !== undefined && typeof o.ordered !== "boolean") throw new Error(`${MANIFEST_FILE}: ${at} "ordered" must be true or false`)
+    pub.push({ event, auth, users, ...(o.ordered === true ? { ordered: true as const } : {}) })
   }
 
   const sub: string[] = []
@@ -129,10 +136,26 @@ export const normalizeManifest = (raw: unknown): Omit<SiteManifest, "source"> =>
     const v = typeof item === "string" ? item.trim().toLowerCase() : ""
     const parsed = parseSubscription(v)
     if (!parsed || !SITE_NAME.test(parsed.site)) throw new Error(`${MANIFEST_FILE}: "sub"[${sub.length}] must be "<site>:<event>"`)
+    if (parsed.site === BUILTIN_SITE && !BUILTIN_EVENTS.includes(parsed.event)) {
+      throw new Error(`${MANIFEST_FILE}: "sub"[${sub.length}] "${BUILTIN_SITE}" has no event "${parsed.event}" (it has ${BUILTIN_EVENTS.map(e => `"${e}"`).join(", ")})`)
+    }
     if (!sub.includes(v)) sub.push(v)
   }
 
-  return { auth, depends, publish, idle, pub, sub, service, warnings }
+  // "cron": each entry { tag, schedule, args, timeout }. The tag is how a run knows which one fired.
+  const cron: CronJob[] = []
+  for (const item of list("cron", MAX_CRON_JOBS)) {
+    const at = `"cron"[${cron.length}]`
+    if (!isObject(item)) throw new Error(`${MANIFEST_FILE}: ${at} must be { "tag": ..., "schedule": ... }`)
+    for (const k of Object.keys(item)) if (!["tag", "schedule", "args", "timeout"].includes(k)) throw new Error(`${MANIFEST_FILE}: ${at} has no "${k.slice(0, 40)}" (it takes "tag", "schedule", "args" and "timeout")`)
+    if (typeof item.tag !== "string") throw new Error(`${MANIFEST_FILE}: ${at} needs a "tag"`)
+    const v = validateCronJob({ name: item.tag, schedule: item.schedule, ...(item.args !== undefined ? { args: item.args } : {}), ...(item.timeout !== undefined ? { timeoutSec: item.timeout } : {}) })
+    if (!v.ok) throw new Error(`${MANIFEST_FILE}: ${at} ${v.error.replace(/^name:/, '"tag":').replace(/^timeoutSec/, '"timeout"')}`)
+    if (cron.some(j => j.name === v.job.name)) throw new Error(`${MANIFEST_FILE}: "cron" uses the tag "${v.job.name}" twice`)
+    cron.push(v.job)
+  }
+
+  return { auth, depends, publish, idle, pub, sub, service, cron, warnings }
 }
 
 /** Reads <dir>/candy.json. A folder without one gets the empty manifest. */
@@ -153,8 +176,9 @@ export const loadSiteManifest = async (dir: string): Promise<SiteManifest> => {
 /** A manifest that came back from another process (fn-tool, run as the site's user): checked again, never trusted. */
 export const checkSiteManifest = (v: unknown): SiteManifest => {
   if (!isObject(v)) throw new Error("bad manifest")
-  const pub = Array.isArray(v.pub) ? v.pub.map(e => isObject(e) ? { event: e.event, auth: e.auth, ...(e.auth === "none" ? {} : { "auth-users": e.users }) } : e) : v.pub
-  const m = normalizeManifest({ auth: v.auth, depends: v.depends, publish: v.publish, idle: v.idle, pub, sub: v.sub, service: v.service })
+  const pub = Array.isArray(v.pub) ? v.pub.map(e => isObject(e) ? { event: e.event, auth: e.auth, ...(e.auth === "none" ? {} : { "auth-users": e.users }), ...(e.ordered === undefined ? {} : { ordered: e.ordered }) } : e) : v.pub
+  const cron = Array.isArray(v.cron) ? v.cron.map(j => isObject(j) ? { tag: j.name, schedule: j.schedule, args: j.args, ...(j.timeoutSec !== undefined ? { timeout: j.timeoutSec } : {}) } : j) : v.cron
+  const m = normalizeManifest({ auth: v.auth, depends: v.depends, publish: v.publish, idle: v.idle, pub, sub: v.sub, service: v.service, cron })
   const clean = (s: string) => s.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 500)
   const warnings = Array.isArray(v.warnings) ? v.warnings.filter((w): w is string => typeof w === "string").slice(0, 32).map(clean) : []
   const source = typeof v.source === "string" && v.source.length <= 4096 && !/[\x00-\x1f\x7f]/.test(v.source) ? v.source : null

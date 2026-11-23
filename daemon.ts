@@ -7,7 +7,7 @@
 
 import { $, spawn, type Subprocess } from "bun"
 import { chmodSync, closeSync, existsSync, openSync, readFileSync, statSync, watch, type FSWatcher } from "node:fs"
-import { appendFile, chmod, chown, lchown, lstat, mkdir, rename, stat, unlink, writeFile } from "node:fs/promises"
+import { appendFile, chmod, chown, lchown, lstat, mkdir, readdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
 import { randomBytes, timingSafeEqual } from "node:crypto"
 import { networkInterfaces, userInfo } from "node:os"
@@ -31,7 +31,7 @@ import { AssetServer, userCanRead, type AssetsConfig } from "./fn-assets.ts"
 import { isDeployId, type DeployInfo } from "./fn-deploy.ts"
 import { CONFIG_FILES as FN_CONFIG_FILES, type FnProjectConfig } from "./fn-config.ts"
 import { MANIFEST_FILE, emptyManifest, findDependencyLoop, type SiteManifest } from "./manifest.ts"
-import { EventQueue, SubClientStore, subAccess, eventData, parseSubscription, subscriptionKey, type SubAccess, type SubClient, EVENT_NAME, EVENT_RETRY_DELAYS_MS, MAX_QUEUED, type CandyEvent } from "./events.ts"
+import { EventQueue, SubClientStore, subAccess, eventData, parseSubscription, subscriptionKey, type SubAccess, type SubClient, EVENT_NAME, MAX_QUEUED, EVENT_ACK_TIMEOUT_MS, type CandyEvent, type Queued, publishTargets, BUILTIN_SITE, SUB_REQUEST_EVENT, type SubRequest } from "./events.ts"
 import { mintServiceToken } from "./service-auth.ts"
 import { RUNTIME_CREDENTIAL, RUNTIME_HEADER, type RuntimeRecord } from "./sdk-runtime.ts"
 import { apiHoldSeconds, createApiModeGate } from "./api-mode.ts"
@@ -2869,7 +2869,11 @@ const dropAppAuth = async (name: string, actor: Actor = 'System') => {
   const hadKeys = appKeys.drop(name)
   if (serviceKeys.drop(name)) auditLog('SERVICE_KEY_DROP', `${name}: service key removed`, actor)
   eventQueue.drop(name)
+  clearTimeout(eventWakeTimers.get(name))
+  eventWakeTimers.delete(name)
+  await rm(`${EVENT_QUEUE_DIR}/${name}`, { recursive: true, force: true }).catch(() => {})
   subClients.dropSite(name)
+  subRequestsTold.delete(name)
   await saveSubClients().catch(() => {})
   const n = appConsents.dropSite(name)
   await unlink(appAuthCredentialPath(name)).catch(() => {})
@@ -2957,7 +2961,7 @@ const launchSpec = async (config: ServerConfig, cron?: { job: string; args: stri
   // function instances (never cron runs). The key ring itself never goes into
   // `extra`: sandboxed units get it as a credential file, others in the spawn env.
   // Only for a site whose candy.json says "auth": true. A candy.json that can't be read stops the launch.
-  const manifest = name ? await siteManifest(config).catch(e => { throw new Error(`Refusing to start: ${fnErrorText(e)}`) }) : null
+  const manifest = name ? await siteManifest(config, 'check').catch(e => { throw new Error(`Refusing to start: ${fnErrorText(e)}`) }) : null
   const appAuth = !cron && name && manifest?.auth ? appAuthLaunch(name, configUser(config)) : null
   if (appAuth) Object.assign(extra, appAuth.env)
   const authKeysEnv: Record<string, string> = appAuth ? { CANDY_AUTH_KEYS: appAuth.keys } : {}
@@ -3209,13 +3213,20 @@ const fnTool = async <T>(config: Pick<ServerConfig, "user">, op: FnToolOp, args:
 const manifestStamp = (dir: string): Promise<string> =>
   stat(`${dir}/${MANIFEST_FILE}`).then(s => `${s.mtimeMs}:${s.size}:${s.ino}`, () => "")
 
-// The config's candy.json, read as the config's user (fn-tool) and cached until
-// the file changes. No file is the empty manifest. A file that can't be used
-// throws, every time, until it is fixed.
-const siteManifest = async (config: ServerConfig, force = false): Promise<SiteManifest> => {
-  const stamp = await manifestStamp(config.cwd)
+// The config's candy.json, read as the config's user (fn-tool). No file is the empty manifest.
+// A file that can't be used throws, every time, until it is fixed and read again.
+// The file is looked at in two moments only, like a unit file: when the site starts
+// ('check': read again if it changed) and on a reload ('force': `candy reload`, the SDK's
+// reloadServerConfig()). Everything else gets what was read then, without touching the disk;
+// the first ask after the daemon starts reads it once.
+const siteManifest = async (config: ServerConfig, mode: 'cached' | 'check' | 'force' = 'cached'): Promise<SiteManifest> => {
   const cached = siteManifests.get(config.id)
-  if (cached && !force && cached.stamp === stamp && cached.cwd === config.cwd) {
+  if (cached && mode === 'cached' && cached.cwd === config.cwd) {
+    if (cached.error) throw new Error(cached.error)
+    return cached.m
+  }
+  const stamp = await manifestStamp(config.cwd)
+  if (cached && mode !== 'force' && cached.stamp === stamp && cached.cwd === config.cwd) {
     if (cached.error) throw new Error(cached.error)
     return cached.m
   }
@@ -3237,11 +3248,44 @@ const siteManifest = async (config: ServerConfig, force = false): Promise<SiteMa
   }
   const summary = (x: SiteManifest) => `auth ${x.auth ? 'on' : 'off'}, depends ${x.depends.length ? x.depends.join(', ') : 'nothing'}${x.publish ? ', published' : ''}${x.idle ? ', may idle' : ''}${x.service ? ', takes service tokens' : ''}${x.pub.length ? `, publishes ${x.pub.map(e => `${e.event} (${e.auth}${e.users.length ? `: ${e.users.join(', ')}` : ''})`).join(', ')}` : ''}${x.sub.length ? `, subscribes to ${x.sub.join(', ')}` : ''}`
   if (summary(before) !== summary(m)) auditLog('MANIFEST', `${name}: ${summary(m)}`, 'System')
+  await applyManifest(name, config, m)
   return m
 }
 
-// Every config's manifest brought up to date (a stat each; fn-tool only for a
-// file that changed). The sign-in routes ask through isAuthSite, which can't wait.
+// What a freshly read candy.json changes on its config: the cron jobs (a server's are the
+// manifest's "cron" as it stands; a function's also come from its own "crons") and, for a
+// function, whether it has a URL. Runs once per change of the file.
+const applyManifest = async (name: string, config: ServerConfig, m: SiteManifest) => {
+  // A function being added isn't in place yet: /fn/add sets its jobs itself
+  if (config.fn && fnConfigOf(name) !== config) return
+  const before = JSON.stringify(config.cron ?? [])
+  try {
+    if (config.fn) {
+      const project = await fnProject(name, config)
+      if (project.main) {
+        const jobs = cronJobsFor(project, m.cron)
+        if (jobs.length > 0) config.cron = jobs
+        else delete config.cron
+      }
+    } else if (m.cron.length > 0) config.cron = m.cron
+    else delete config.cron
+  } catch (e) {
+    auditLog('CRON_BAD', `${name}: ${fnErrorText(e)}`, 'System')
+  }
+  if (JSON.stringify(config.cron ?? []) !== before) {
+    auditLog('CRON_SET', `${name}: ${(config.cron ?? []).map(j => `${j.name} "${j.schedule}"`).join(', ') || 'none'}`, 'System')
+    await saveServerConfigs()
+  }
+  if (config.fn && fnConfigOf(name) === config) await syncFnUrl(name).catch(() => {})
+  // Only for the config the name's manifest comes from: another config's file isn't what subscribes
+  if (manifestConfig(name) === config) {
+    const publishers = new Set([name, ...m.sub.map(e => parseSubscription(e)!.site).filter(s => s !== BUILTIN_SITE)])
+    for (const p of publishers) await announceSubRequests(p).catch(e => auditLog('EVENT_SUB_REQUEST_FAIL', `${p}: ${fnErrorText(e)}`, 'System'))
+  }
+}
+
+// Every config's manifest in memory (read once for one not read yet; never re-read here).
+// The sign-in routes ask through isAuthSite, which can't wait.
 let manifestsRefreshedAt = 0
 let manifestsRefreshing: Promise<void> | null = null
 const refreshManifests = (): Promise<void> => {
@@ -3421,12 +3465,19 @@ const startDependency = async (dep: string, forName: string): Promise<void> => {
 // /runtime/events once it connects, a function gets one run per event.
 
 const eventQueue = new EventQueue()
-// Subscriber name -> its open /runtime/events streams
-const eventStreams = new Map<string, Set<(ev: CandyEvent) => void>>()
+eventQueue.startAt(Date.now() * 1000)
+// Subscriber name -> its open /runtime/events streams. `acks`: it answers each event over /runtime/ack.
+interface EventStream { write: (ev: CandyEvent) => void; acks: boolean }
+const eventStreams = new Map<string, Set<EventStream>>()
 const FN_EVENT_CONCURRENCY = 4
 const FN_EVENT_TIMEOUT_S = 60
-const fnEventRunning = new Map<string, number>()
-const fnEventWaiting = new Map<string, CandyEvent[]>()
+// Every event not handled yet is a file, so a daemon restart loses none: <dir>/<subscriber>/<seq>-<id>.json
+const EVENT_QUEUE_DIR = `${AUTH_STATE_DIR}/events`
+const eventFile = (sub: string, item: Queued) => `${EVENT_QUEUE_DIR}/${sub}/${String(item.seq).padStart(16, "0")}-${item.ev.id}.json`
+const forgetEvent = (sub: string, item: Queued) => unlink(eventFile(sub, item)).catch(() => {})
+// Servers: event id -> the wait for its answer
+const eventAckTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const eventWakeTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 // What publishers decided, event by event, about the apps asking ("auth": "strict" in "pub")
 const SUB_CLIENTS_FILE = `${AUTH_STATE_DIR}/sub-clients.json`
@@ -3469,6 +3520,29 @@ const subClientsOf = async (publisher: string): Promise<SubClient[]> => {
   return [...out.values()].sort((a, b) => a.event.localeCompare(b.event) || a.app.localeCompare(b.app))
 }
 
+// "candy:sub-request": tell a publisher that listed it in "sub" about each app waiting for its
+// approval, once per app and event while it waits (again after a daemon restart: this is memory).
+// Runs when a candy.json is read, for the site itself and for the publishers it subscribes to.
+const subRequestsTold = new Map<string, Set<string>>()
+const announceSubRequests = async (publisher: string) => {
+  if (!manifestNow(publisher)?.sub.includes(subscriptionKey(BUILTIN_SITE, SUB_REQUEST_EVENT))) return
+  const told = subRequestsTold.get(publisher) ?? new Set<string>()
+  const waiting = new Set<string>()
+  for (const c of await subClientsOf(publisher)) {
+    if (c.status !== "pending") continue
+    const key = `${c.event} ${c.app} ${c.user}`
+    waiting.add(key)
+    if (told.has(key)) continue
+    const data: SubRequest = { app: c.app, user: c.user, event: c.event }
+    const ev: CandyEvent = { id: crypto.randomUUID(), from: BUILTIN_SITE, event: SUB_REQUEST_EVENT, data, time: Date.now() }
+    auditLog('EVENT', `${BUILTIN_SITE}:${SUB_REQUEST_EVENT} (${ev.id}) -> ${publisher}: ${c.app} (${c.user}) asks for ${c.event}`, 'System')
+    await deliverEvent(publisher, ev)
+  }
+  // Decided or gone: asking again later is news again
+  if (waiting.size) subRequestsTold.set(publisher, waiting)
+  else subRequestsTold.delete(publisher)
+}
+
 // The publishers `name` subscribes to, checked. Throws (and so stops the start) on one it can't have.
 const checkSubscriptions = async (name: string, config: ServerConfig): Promise<string[]> => {
   const fail = (text: string) => new Error(`Refusing to start ${name}: ${text}`)
@@ -3478,6 +3552,7 @@ const checkSubscriptions = async (name: string, config: ServerConfig): Promise<s
   const owner = configUser(config)
   for (const entry of manifest.sub) {
     const sub = parseSubscription(entry)!
+    if (sub.site === BUILTIN_SITE) continue   // the daemon's own events: nothing to check or start
     if (!serverConfigs.has(sub.site) || isReserved(sub.site)) throw fail(`it subscribes to '${entry}', but '${sub.site}' is not a site candy starts`)
     const pc = manifestConfig(sub.site)
     const pm = pc ? await siteManifest(pc).catch(() => null) : null
@@ -3508,7 +3583,7 @@ const subscriptionStatus = async (name: string, config: ServerConfig, manifest: 
   const out: { subscription: string; site: string; event: string; status: string }[] = []
   for (const entry of manifest.sub) {
     const sub = parseSubscription(entry)!
-    const access = await eventAccess(name, configUser(config), sub.site, sub.event)
+    const access = sub.site === BUILTIN_SITE ? "ok" : await eventAccess(name, configUser(config), sub.site, sub.event)
     out.push({ subscription: entry, ...sub, status: access === "user" ? "denied" : access })
   }
   return out
@@ -3556,68 +3631,117 @@ const runFnEventOnce = async (name: string, ev: CandyEvent): Promise<boolean> =>
   return code === 0 && !timedOut
 }
 
-// One event for a function: a run of its event() handler, tried again after a failure, then dropped
-const runFnEvent = async (name: string, ev: CandyEvent) => {
-  for (let attempt = 0; ; attempt++) {
-    let problem = ''
-    const ok = await runFnEventOnce(name, ev).catch(e => { problem = fnErrorText(e); return false })
-    if (ok) return
-    if (attempt >= EVENT_RETRY_DELAYS_MS.length) {
-      auditLog('EVENT_DROP', `${name}: ${ev.from}:${ev.event} (${ev.id}) failed ${attempt + 1} times${problem ? `: ${problem}` : ''}`, 'System')
-      await processLog(name, `[${new Date().toISOString()}] [event] ${ev.from}:${ev.event} (${ev.id}) dropped after ${attempt + 1} tries${problem ? `: ${problem}` : ''}\n`)
-      return
+// "ordered" in the publisher's "pub" entry: one at a time per subscriber, in the order published
+const eventOrdered = (ev: CandyEvent) => manifestNow(ev.from)?.pub.find(e => e.event === ev.event)?.ordered === true
+
+// How a try went. Handled: the event is gone. Failed: it waits for its next try, or was dropped after the last.
+const settleEvent = async (sub: string, id: string, ok: boolean, problem = '') => {
+  const timer = eventAckTimers.get(`${sub} ${id}`)
+  if (timer) { clearTimeout(timer); eventAckTimers.delete(`${sub} ${id}`) }
+  if (ok) {
+    const item = eventQueue.done(sub, id)
+    if (item) await forgetEvent(sub, item)
+  } else {
+    const r = eventQueue.fail(sub, id)
+    if (r && "dropped" in r) {
+      const ev = r.item.ev
+      await forgetEvent(sub, r.item)
+      auditLog('EVENT_DROP', `${sub}: ${ev.from}:${ev.event} (${ev.id}) failed ${r.item.attempts} times${problem ? `: ${problem}` : ''}`, 'System')
+      await processLog(sub, `[${new Date().toISOString()}] [event] ${ev.from}:${ev.event} (${ev.id}) dropped after ${r.item.attempts} tries${problem ? `: ${problem}` : ''}\n`).catch(() => {})
     }
-    await Bun.sleep(EVENT_RETRY_DELAYS_MS[attempt])
   }
-}
-const pumpFnEvents = (name: string) => {
-  const waiting = fnEventWaiting.get(name)
-  while (waiting?.length && (fnEventRunning.get(name) ?? 0) < FN_EVENT_CONCURRENCY) {
-    const ev = waiting.shift()!
-    fnEventRunning.set(name, (fnEventRunning.get(name) ?? 0) + 1)
-    runFnEvent(name, ev).catch(() => {}).finally(() => {
-      const left = (fnEventRunning.get(name) ?? 1) - 1
-      if (left > 0) fnEventRunning.set(name, left)
-      else fnEventRunning.delete(name)
-      pumpFnEvents(name)
-    })
-  }
-  if (waiting && waiting.length === 0) fnEventWaiting.delete(name)
+  pumpEvents(sub)
 }
 
-const deliverEvent = (subscriber: string, ev: CandyEvent) => {
-  if (fnConfigOf(subscriber)) {
-    const waiting = fnEventWaiting.get(subscriber) ?? []
-    waiting.push(ev)
-    if (waiting.length > MAX_QUEUED) {
-      waiting.shift()
-      auditLog('EVENT_DROP', `${subscriber}: more than ${MAX_QUEUED} events waiting, the oldest was dropped`, 'System')
+// Hands `sub` what it can take now: a function gets runs of event(), a connected server gets
+// one event at a time and answers each; a stopped server is started. Called on every change.
+const pumpEvents = (sub: string) => {
+  for (const old of eventQueue.expire(sub)) {
+    forgetEvent(sub, old)
+    auditLog('EVENT_DROP', `${sub}: ${old.ev.from}:${old.ev.event} (${old.ev.id}) waited too long`, 'System')
+  }
+  if (fnConfigOf(sub)) {
+    for (const item of eventQueue.take(sub, FN_EVENT_CONCURRENCY - eventQueue.inflight(sub), eventOrdered)) {
+      let problem = ''
+      runFnEventOnce(sub, item.ev).catch(e => { problem = fnErrorText(e); return false }).then(ok => settleEvent(sub, item.ev.id, ok, problem)).catch(() => {})
     }
-    fnEventWaiting.set(subscriber, waiting)
-    pumpFnEvents(subscriber)
-    return
+  } else if (getConfigsForName(sub).length === 0) {
+    for (const item of eventQueue.drop(sub)) forgetEvent(sub, item)   // the site is gone
+  } else {
+    const proc = processes.get(sub)
+    const up = proc && (proc.status === 'running' || proc.status === 'starting')
+    const streams = [...(eventStreams.get(sub) ?? [])]
+    if (up && streams.length) {
+      // A stream that doesn't answer (an SDK from before answers) is trusted with everything at once
+      const acks = streams.every(s => s.acks)
+      for (const item of eventQueue.take(sub, acks ? 1 - eventQueue.inflight(sub) : Infinity, eventOrdered)) {
+        proc.lastActivity = Date.now()
+        for (const s of streams) s.write(item.ev)
+        if (!acks) { settleEvent(sub, item.ev.id, true).catch(() => {}); continue }
+        const key = `${sub} ${item.ev.id}`
+        eventAckTimers.set(key, setTimeout(() => {
+          eventAckTimers.delete(key)
+          settleEvent(sub, item.ev.id, false, `no answer within ${EVENT_ACK_TIMEOUT_MS / 1000}s`).catch(() => {})
+        }, EVENT_ACK_TIMEOUT_MS))
+      }
+    } else if (!up && eventQueue.pending(sub) > eventQueue.inflight(sub) && !spawning.has(sub)) {
+      auditLog('EVENT_WAKE', `${sub}: started for ${eventQueue.pending(sub)} waiting event(s)`, 'System')
+      spawnProcess(sub, 'System').catch(e => auditLog('EVENT_WAKE_FAIL', `${sub}: ${fnErrorText(e)}`, 'System'))
+    }
   }
-  const proc = processes.get(subscriber)
-  const up = proc && (proc.status === 'running' || proc.status === 'starting')
-  if (up) proc.lastActivity = Date.now()
-  const streams = eventStreams.get(subscriber)
-  if (up && streams?.size) {
-    for (const write of streams) write(ev)
-    return
-  }
-  // Not listening yet: keep it, and start the server if it is stopped
-  if (eventQueue.push(subscriber, ev) > 0) auditLog('EVENT_DROP', `${subscriber}: more than ${MAX_QUEUED} events waiting, the oldest was dropped`, 'System')
-  if (!up) {
-    auditLog('EVENT_WAKE', `${subscriber}: started for ${ev.from}:${ev.event}`, 'System')
-    spawnProcess(subscriber, 'System').catch(e => auditLog('EVENT_WAKE_FAIL', `${subscriber}: ${fnErrorText(e)}`, 'System'))
-  }
+  const old = eventWakeTimers.get(sub)
+  if (old) { clearTimeout(old); eventWakeTimers.delete(sub) }
+  const at = eventQueue.nextWake(sub)
+  if (at !== null) eventWakeTimers.set(sub, setTimeout(() => { eventWakeTimers.delete(sub); pumpEvents(sub) }, Math.max(0, at - Date.now()) + 5))
 }
 
-const publishEvent = async (from: string, event: string, data: unknown): Promise<{ id: string; delivered: string[] }> => {
+// An event for `subscriber`: on disk first, then on its way
+const deliverEvent = async (subscriber: string, ev: CandyEvent) => {
+  const { item, dropped } = eventQueue.push(subscriber, ev)
+  for (const d of dropped) {
+    forgetEvent(subscriber, d)
+    auditLog('EVENT_DROP', `${subscriber}: more than ${MAX_QUEUED} events waiting, the oldest was dropped`, 'System')
+  }
+  try {
+    await mkdir(`${EVENT_QUEUE_DIR}/${subscriber}`, { recursive: true, mode: 0o700 })
+    const file = eventFile(subscriber, item)
+    await writeFile(`${file}.tmp`, JSON.stringify(ev), { mode: 0o600 })
+    await rename(`${file}.tmp`, file)
+  } catch (e) {
+    auditLog('EVENT_SAVE_FAIL', `${subscriber}: ${ev.from}:${ev.event} (${ev.id}) is in memory only: ${fnErrorText(e)}`, 'System')
+  }
+  pumpEvents(subscriber)
+}
+
+// At daemon start: what was waiting when it stopped goes back in the queues, and on its way
+const loadEventQueue = async () => {
+  let n = 0
+  for (const sub of await readdir(EVENT_QUEUE_DIR).catch(() => [] as string[])) {
+    const dir = `${EVENT_QUEUE_DIR}/${sub}`
+    if (isReserved(sub) || getConfigsForName(sub).length === 0) { await rm(dir, { recursive: true, force: true }).catch(() => {}); continue }
+    for (const file of (await readdir(dir).catch(() => [] as string[])).sort()) {
+      const seq = Number(file.split("-")[0])
+      let ev: CandyEvent | null = null
+      try { ev = JSON.parse(await readFile(`${dir}/${file}`, "utf8")) } catch {}
+      const good = ev && file.endsWith(".json") && Number.isInteger(seq) && typeof ev.id === "string" && typeof ev.from === "string" && typeof ev.event === "string" && typeof ev.time === "number" && file === `${String(seq).padStart(16, "0")}-${ev.id}.json`
+      if (!good) { await unlink(`${dir}/${file}`).catch(() => {}); continue }
+      eventQueue.push(sub, ev!, seq)
+      n++
+    }
+  }
+  if (n) auditLog('EVENT_RESTORE', `${n} event(s) were waiting when the daemon stopped`, 'System')
+  for (const sub of eventQueue.subscribers()) pumpEvents(sub)
+}
+
+// `to`: only those of its subscribers. Naming one that can't get the event sends nothing to anyone.
+const publishEvent = async (from: string, event: string, data: unknown, to: string[] | null = null): Promise<{ id: string; delivered: string[] }> => {
   await refreshManifests()
+  const all = await subscribersOf(from, event)
+  const missing = to?.filter(t => !all.includes(t)) ?? []
+  if (missing.length) throw new Error(`${missing.map(t => `'${t.slice(0, 80)}'`).join(', ')} can't get ${from}:${event}: not subscribed to it, or not allowed or approved for it`)
+  const delivered = to ?? all
   const ev: CandyEvent = { id: crypto.randomUUID(), from, event, data, time: Date.now() }
-  const delivered = await subscribersOf(from, event)
-  for (const sub of delivered) deliverEvent(sub, ev)
+  for (const sub of delivered) await deliverEvent(sub, ev)
   // Never the data: it is the apps' own
   auditLog('EVENT', `${from}:${event} (${ev.id}) -> ${delivered.length ? delivered.join(', ') : 'no subscribers'}`, 'System')
   return { id: ev.id, delivered }
@@ -3631,16 +3755,23 @@ const handleRuntimeApi = async (req: Request, url: URL): Promise<Response> => {
   if (!config || configUser(config) !== grant.user) return Response.json({ error: "That site is gone." }, { status: 401 })
 
   if (req.method === "POST" && url.pathname === "/runtime/publish") {
-    const body = await req.json().catch(() => null) as { event?: unknown; data?: unknown } | null
+    const body = await req.json().catch(() => null) as { event?: unknown; data?: unknown; to?: unknown } | null
     const event = typeof body?.event === "string" ? body.event.trim().toLowerCase() : ""
     if (!EVENT_NAME.test(event)) return Response.json({ error: "event must be a name: letters, digits, dots, dashes and underscores." }, { status: 400 })
     const manifest = await siteManifest(config).catch(() => null)
-    if (!manifest?.pub.some(e => e.event === event)) {
+    const rules = manifest?.pub.find(e => e.event === event)
+    if (!rules) {
       return Response.json({ error: `${grant.name} may not publish "${event}": list it in "pub" in its ${MANIFEST_FILE}.` }, { status: 403 })
     }
+    const to = publishTargets(body?.to)
+    if (to && "error" in to) return Response.json({ error: to.error }, { status: 400 })
     const checked = eventData(body?.data)
     if ("error" in checked) return Response.json({ error: checked.error }, { status: 413 })
-    return Response.json(await publishEvent(grant.name, event, JSON.parse(checked.json)))
+    try {
+      return Response.json(await publishEvent(grant.name, event, JSON.parse(checked.json), to))
+    } catch (e) {
+      return Response.json({ error: fnErrorText(e) }, { status: 409 })
+    }
   }
 
   if (req.method === "GET" && url.pathname === "/runtime/events") {
@@ -3651,25 +3782,32 @@ const handleRuntimeApi = async (req: Request, url: URL): Promise<Response> => {
     const subscriptions = await subscriptionStatus(grant.name, config, manifest)
     const name = grant.name
     const encoder = new TextEncoder()
-    let write: ((ev: CandyEvent) => void) | null = null
+    let mine: EventStream | null = null
     let beat: ReturnType<typeof setInterval> | null = null
+    const acks = url.searchParams.get("ack") === "1"
     const close = () => {
       if (beat) clearInterval(beat)
-      if (write) eventStreams.get(name)?.delete(write)
-      if (eventStreams.get(name)?.size === 0) eventStreams.delete(name)
+      if (!mine || !eventStreams.get(name)?.delete(mine)) return
+      if (eventStreams.get(name)?.size === 0) {
+        eventStreams.delete(name)
+        // Whatever it was handling comes again at its next connection; not a failed try
+        for (const key of [...eventAckTimers.keys()]) if (key.startsWith(`${name} `)) { clearTimeout(eventAckTimers.get(key)); eventAckTimers.delete(key) }
+        eventQueue.release(name)
+      }
     }
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
-        write = ev => {
+        const write = (ev: CandyEvent) => {
           try { controller.enqueue(encoder.encode(JSON.stringify(ev) + "\n")) } catch { close() }
         }
+        mine = { write, acks }
         // First line: where each subscription stands, so the app can act on a denial
         controller.enqueue(encoder.encode(JSON.stringify({ candy: "subscriptions", subscriptions }) + "\n"))
-        // What arrived while it was stopped or starting, oldest first
-        for (const ev of eventQueue.take(name)) write(ev)
         const set = eventStreams.get(name) ?? new Set()
-        set.add(write)
+        set.add(mine)
         eventStreams.set(name, set)
+        // What arrived while it was stopped or starting, oldest first
+        pumpEvents(name)
         beat = setInterval(() => {
           if (!runtimeGrantFor(req.headers.get(RUNTIME_HEADER))) { close(); try { controller.close() } catch {} return }
           try { controller.enqueue(encoder.encode("\n")) } catch { close() }
@@ -3679,6 +3817,35 @@ const handleRuntimeApi = async (req: Request, url: URL): Promise<Response> => {
     })
     req.signal.addEventListener("abort", close)
     return new Response(stream, { headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" } })
+  }
+
+  // A server's answer to an event it was handed: handled, or failed (it comes again later)
+  if (req.method === "POST" && url.pathname === "/runtime/ack") {
+    const body = await req.json().catch(() => null) as { id?: unknown; ok?: unknown; error?: unknown } | null
+    if (typeof body?.id !== "string" || typeof body.ok !== "boolean") return Response.json({ error: "id and ok (true or false) are required" }, { status: 400 })
+    if (!eventAckTimers.has(`${grant.name} ${body.id}`)) return Response.json({ success: true, known: false })
+    const problem = typeof body.error === "string" ? body.error.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 300) : ''
+    await settleEvent(grant.name, body.id, body.ok, problem)
+    return Response.json({ success: true, known: true })
+  }
+
+  // The site edited its own candy.json and wants it read now, not at the next minute's check
+  if (req.method === "POST" && url.pathname === "/runtime/reload-config") {
+    try {
+      const m = await siteManifest(config, 'force')
+      auditLog('CONFIG_RELOAD', grant.name, 'SDK')
+      // A function's own keys are in the same file: a bad one is the caller's to hear about too
+      const fn = config.fn ? await fnProject(grant.name, config) : null
+      return Response.json({
+        success: true,
+        cron: (config.cron ?? []).filter(j => m.cron.some(t => t.name === j.name)).map(j => ({ tag: j.name, schedule: j.schedule })),
+        ...(config.fn ? { handlers: fn?.handlers ?? null, url: config.fn.http !== false ? makeLocalhostUrl(grant.name) : null } : {}),
+        warnings: m.warnings,
+      })
+    } catch (e) {
+      // The file as it stands can't be used: what was in force stays in force
+      return Response.json({ error: fnErrorText(e) }, { status: 400 })
+    }
   }
 
   if (req.method === "POST" && url.pathname === "/runtime/subscriptions") {
@@ -3843,10 +4010,12 @@ const fnProject = async (name: string, config: ServerConfig, force = false): Pro
 }
 
 // Cron triggers become ordinary cron jobs; their args are fixed by candy
-const syncFnCron = (config: ServerConfig, project: FnProjectConfig) => {
+const syncFnCron = async (config: ServerConfig, project: FnProjectConfig) => {
+  // The tagged entries (candy.json "cron"); a manifest that can't be read throws here too
+  const tagged = (await siteManifest(config)).cron
   // fn-tool refuses this first; an assets-only function has nothing to run on a schedule
-  if (!project.main && project.crons.length > 0) throw new Error("cron triggers need a main module: an assets-only function never runs code")
-  const jobs = cronJobsFor(project)
+  if (!project.main && project.crons.length + tagged.length > 0) throw new Error("cron triggers need a main module: an assets-only function never runs code")
+  const jobs = cronJobsFor(project, tagged)
   if (jobs.length > 0) config.cron = jobs
   else delete config.cron
 }
@@ -4215,6 +4384,30 @@ const nameTakenWithoutConfig = (name: string, auth: RequestAuth): string | null 
 // The function's routes go to the daemon; called at startup and on add
 const routeFunction = (name: string) => routes.set(name, { target: { fn: name }, persistent: false })
 
+// A function gets a URL only when something answers on it: "http" among its candy.json
+// "handlers" (all of them when it declares none), or static assets. One that declares just
+// "cron" or "sub" runs from cron and events and has no route. Returns whether it has a URL now.
+const syncFnUrl = async (name: string): Promise<boolean> => {
+  const config = fnConfigOf(name)
+  if (!config?.fn) return false
+  const fn = config.fn
+  // A config that can't be read keeps what it had
+  const project = await fnProject(name, config).catch(() => null)
+  const http = project ? !project.handlers || project.handlers.includes('http') || !!project.assets || !project.main : fn.http !== false
+  const changed = http !== (fn.http !== false)
+  if (http) delete fn.http
+  else fn.http = false
+  const routed = typeof routes.get(name)?.target === 'object'
+  if (http && !routed) routeFunction(name)
+  if (!http && routed) routes.delete(name)
+  if (changed) await saveServerConfigs()
+  if (changed || http !== routed) {
+    await syncCaddy()
+    auditLog(http ? 'FN_URL_ON' : 'FN_URL_OFF', http ? `${name}: served at ${makeLocalhostUrl(name)}` : `${name}: "handlers" has no "http", so it has no URL (cron and events still run it)`, 'System')
+  }
+  return http
+}
+
 // From the routing in use (a pinned deploy's own config), opened here if it isn't yet
 const fnSummary = async (config: ServerConfig, name: string) => {
   if (!config.fn) return undefined
@@ -4312,18 +4505,17 @@ const handleFnApi = async (req: Request, url: URL, corsHeaders: Record<string, s
       else delete config.envFile
     }
     try {
-      syncFnCron(config, project)
+      await syncFnCron(config, project)
     } catch (e) {
       return fail(fnErrorText(e))
     }
     fnProjects.set(name, { cfg: project, stamp: await fnConfigStamp(cwd), cwd, entry: fn.entry })
     await saveServerConfigs()
-    routeFunction(name)
-    await syncCaddy()
     resetFnRouting(name)
+    const hasUrl = await syncFnUrl(name)
     await restartFn(name)
     auditLog('FN_ADD', `${name}: ${fn.entry ?? `assets ${project.assets!.directory}`} in ${cwd}${RUNNING_AS_ROOT ? ` as ${user}` : ''}`, actor)
-    return ok({ name, url: makeLocalhostUrl(name), warnings: project.warnings, fn: await fnSummary(config, name) })
+    return ok({ name, url: hasUrl ? makeLocalhostUrl(name) : null, warnings: project.warnings, fn: await fnSummary(config, name) })
   }
 
   if (!route.startsWith('/fn/')) return fail("Not found", 404)
@@ -4358,7 +4550,7 @@ const handleFnApi = async (req: Request, url: URL, corsHeaders: Record<string, s
     const logChanged = (next.log ?? true) !== (fn.log ?? true)
     config.fn = next
     try {
-      syncFnCron(config, await fnProject(name, config, true))
+      await syncFnCron(config, await fnProject(name, config, true))
     } catch (e) {
       auditLog('FN_CONFIG_FAIL', `${name}: ${fnErrorText(e)}`, actor)
     }
@@ -4384,7 +4576,7 @@ const handleFnApi = async (req: Request, url: URL, corsHeaders: Record<string, s
       // /fn/settings may have replaced config.fn while the bundle ran
       if (!config.fn) throw new Error(`${name} is no longer a function`)
       config.fn.deploy = info.id
-      syncFnCron(config, project)
+      await syncFnCron(config, project)
     } catch (e) {
       auditLog('FN_DEPLOY_FAIL', `${name}: ${fnErrorText(e).split('\n')[0]}`, actor)
       return fail(fnErrorText(e))
@@ -4392,6 +4584,7 @@ const handleFnApi = async (req: Request, url: URL, corsHeaders: Record<string, s
     await saveServerConfigs()
     await fnTool(config, 'prune', { stateDir, keep: FN_KEEP_DEPLOYS, pinned: info.id }).catch(e => auditLog('FN_PRUNE_FAIL', `${name}: ${fnErrorText(e)}`, 'System'))
     resetFnRouting(name)  // code and assets switch together
+    await syncFnUrl(name)
     await restartFn(name)
     auditLog('FN_DEPLOY', `${name}: ${info.id}${info.gitRev ? ` (${info.gitRev})` : ''}`, actor)
     return ok({ deploy: info })
@@ -4418,6 +4611,7 @@ const handleFnApi = async (req: Request, url: URL, corsHeaders: Record<string, s
     config.fn.deploy = target.id
     await saveServerConfigs()
     resetFnRouting(name)
+    await syncFnUrl(name)
     await restartFn(name)
     auditLog('FN_ROLLBACK', `${name}: ${target.id}`, actor)
     return ok({ deploy: target })
@@ -4425,9 +4619,10 @@ const handleFnApi = async (req: Request, url: URL, corsHeaders: Record<string, s
 
   if (req.method === 'POST' && route === '/fn/dev') {
     delete config.fn!.deploy
-    try { syncFnCron(config, await fnProject(name, config, true)) } catch {}
+    try { await syncFnCron(config, await fnProject(name, config, true)) } catch {}
     await saveServerConfigs()
     resetFnRouting(name)
+    await syncFnUrl(name)
     await restartFn(name)
     auditLog('FN_DEV', `${name}: live code`, actor)
     return ok({})
@@ -6325,14 +6520,15 @@ const ROUTE_TABLE: readonly RouteRule[] = [
   ["POST", "/domains/allowlist", "user"],
   ["POST", "/runtime/publish", "public"],
   ["GET", "/runtime/events", "public"],
+  ["POST", "/runtime/ack", "public"],
   ["POST", "/runtime/service-token", "public"],
   ["POST", "/runtime/sub-clients", "public"],
   ["POST", "/runtime/subscriptions", "public"],
+  ["POST", "/runtime/reload-config", "public"],
   ["POST", "/sdk/runtime", "user"],
   ["POST", "/sdk/register-port", "user"],
   ["POST", "/sdk/portal", "user"],
   ["POST", "/sdk/idle", "user"],
-  ["POST", "/sdk/cron", "user"],
   ["POST", "/sdk/auth/keys", "user"],
   ["*", "/fn/*", "user"],
   ["POST", "/register", "user"],
@@ -6364,6 +6560,7 @@ const ROUTE_TABLE: readonly RouteRule[] = [
   ["POST", "/config", "user"],
   ["POST", "/config/api", "user"],
   ["POST", "/config/ttl", "user"],
+  ["POST", "/config/reload", "user"],
   ["POST", "/config/memory", "user"],
   ["POST", "/config/env", "user"],
   ["POST", "/config/sandbox", "user"],
@@ -7275,10 +7472,10 @@ async function controlFetch(req: Request): Promise<Response> {
       return Response.json(result.body, { status: result.ok ? 200 : result.status, headers: corsHeaders })
     }
 
-    // Idling and cron come from inside a running server only: the caller's PID
+    // Idling comes from inside a running server only: the caller's PID
     // must be in that server's process tree, and the API key's user must be
     // allowed to change its config.
-    if (req.method === "POST" && (url.pathname === "/sdk/idle" || url.pathname === "/sdk/cron")) {
+    if (req.method === "POST" && url.pathname === "/sdk/idle") {
       const body = await req.json().catch(() => null) as Record<string, unknown> | null
       const configId = typeof body?.configId === "string" ? body.configId : ""
       const pid = typeof body?.pid === "number" ? body.pid : 0
@@ -7293,7 +7490,7 @@ async function controlFetch(req: Request): Promise<Response> {
         return Response.json({ error: "That server belongs to another user." }, { status: 403, headers: corsHeaders })
       }
 
-      if (url.pathname === "/sdk/idle") {
+      {
         const idling = body?.idling !== false
         // Staying up past the idle limit is asked for in candy.json, like every feature
         const manifest = await siteManifest(managed.config).catch(() => null)
@@ -7306,36 +7503,6 @@ async function controlFetch(req: Request): Promise<Response> {
         }
         return Response.json({ success: true, name: managed.name, idling }, { headers: corsHeaders })
       }
-
-      // /sdk/cron: list | set | remove
-      const config = getConfigById(managed.name, managed.config.id) ?? managed.config
-      const action = body?.action ?? "list"
-      let jobs = [...(config.cron ?? [])]
-      if (action === "set") {
-        const v = validateCronJob(body?.job)
-        if (!v.ok) return Response.json({ error: v.error }, { status: 400, headers: corsHeaders })
-        const i = jobs.findIndex(j => j.name === v.job.name)
-        if (i >= 0) jobs[i] = v.job
-        else if (jobs.length >= MAX_CRON_JOBS) {
-          return Response.json({ error: `A server can have at most ${MAX_CRON_JOBS} cron jobs.` }, { status: 400, headers: corsHeaders })
-        } else jobs.push(v.job)
-        auditLog('CRON_SET', `${managed.name}:${v.job.name} "${v.job.schedule}" ${JSON.stringify(v.job.args)}`, 'SDK')
-      } else if (action === "remove") {
-        const name = body?.name
-        const before = jobs.length
-        jobs = jobs.filter(j => j.name !== name)
-        if (jobs.length !== before) auditLog('CRON_REMOVE', `${managed.name}:${name}`, 'SDK')
-      } else if (action !== "list") {
-        return Response.json({ error: "action must be list, set or remove" }, { status: 400, headers: corsHeaders })
-      }
-      if (action !== "list") {
-        for (const target of new Set([config, managed.config])) {
-          if (jobs.length > 0) target.cron = jobs
-          else delete target.cron
-        }
-        await saveServerConfigs()
-      }
-      return Response.json({ success: true, name: managed.name, jobs }, { headers: corsHeaders })
     }
 
     // === Route Management ===
@@ -8124,7 +8291,10 @@ async function controlFetch(req: Request): Promise<Response> {
         await stopSite(name, actor)
       }
       else if (op === "start") await warmFn(name)  // never disturbs instances that are serving
-      else await restartFn(name)
+      else {
+        await syncFnUrl(name)
+        await restartFn(name)
+      }
       auditLog(`FN_${op.toUpperCase()}`, name, actor)
       return Response.json({
         success: true,
@@ -8317,7 +8487,7 @@ async function controlFetch(req: Request): Promise<Response> {
       const manifestOf = (config: ServerConfig) => {
         const cached = siteManifests.get(config.id)
         if (!cached || (!cached.stamp && !cached.error)) return null
-        return cached.error ? { error: cached.error } : { auth: cached.m.auth, depends: cached.m.depends, publish: cached.m.publish, idle: cached.m.idle, pub: cached.m.pub, sub: cached.m.sub, service: cached.m.service }
+        return cached.error ? { error: cached.error } : { auth: cached.m.auth, depends: cached.m.depends, publish: cached.m.publish, idle: cached.m.idle, pub: cached.m.pub, sub: cached.m.sub, service: cached.m.service, cron: cached.m.cron.map(j => ({ tag: j.name, schedule: j.schedule })) }
       }
       const configs: Record<string, any> = {}
       for (const [name, entries] of serverConfigs) {
@@ -8410,6 +8580,33 @@ async function controlFetch(req: Request): Promise<Response> {
       const actor = requestActor
       auditLog('CONFIG_API', `${name}: API mode ${api ? 'on' : 'off'}`, actor)
       return Response.json({ success: true, api, message: `API mode ${api ? 'on' : 'off'} for ${name}` }, { headers: corsHeaders })
+    }
+
+    // `candy reload`: read candy.json again for every site the caller may change (or just
+    // `name`), like `systemctl daemon-reload`. Nothing is restarted; a file that can't be
+    // used is reported and the site keeps what it had.
+    if (req.method === "POST" && url.pathname === "/config/reload") {
+      const body = await req.json().catch(() => ({})) as { name?: string }
+      if (body.name && getConfigsForName(body.name).length === 0) {
+        return Response.json({ error: `No site named '${body.name}' with a start command.` }, { status: 404, headers: corsHeaders })
+      }
+      const sites: { name: string; ok: boolean; error?: string; cron: string[]; url?: string | null }[] = []
+      for (const [name, configs] of [...serverConfigs]) {
+        if (body.name && name !== body.name) continue
+        for (const config of configs) {
+          if (!mayChangeConfig(auth, config)) continue
+          try {
+            await siteManifest(config, 'force')
+            if (config.fn) await fnProject(name, config)
+            sites.push({ name, ok: true, cron: (config.cron ?? []).map(j => j.name), ...(config.fn ? { url: config.fn.http !== false ? makeLocalhostUrl(name) : null } : {}) })
+          } catch (e) {
+            sites.push({ name, ok: false, error: fnErrorText(e), cron: (config.cron ?? []).map(j => j.name) })
+          }
+        }
+      }
+      if (body.name && sites.length === 0) return Response.json({ error: `${body.name} runs as another user. Only they can reload it.` }, { status: 403, headers: corsHeaders })
+      auditLog('CONFIG_RELOAD', `${sites.length} site${sites.length === 1 ? '' : 's'}${sites.some(s => !s.ok) ? `, ${sites.filter(s => !s.ok).map(s => s.name).join(', ')} failed` : ''}`, requestActor)
+      return Response.json({ success: true, sites }, { headers: corsHeaders })
     }
 
     if (req.method === "POST" && url.pathname === "/config/ttl") {
@@ -9241,8 +9438,8 @@ await loadPersistentRoutes()
 await loadRouteUsers()
 await assignBindingOwners()
 
-// Functions are routed to the daemon from the start
-for (const [name, configs] of serverConfigs) if (configs.some(c => c.fn)) routeFunction(name)
+// Functions are routed to the daemon from the start (not one without a fetch handler or assets: syncFnUrl)
+for (const [name, configs] of serverConfigs) if (configs.some(c => c.fn && c.fn.http !== false)) routeFunction(name)
 
 // Load remote advertisements from disk
 await loadAdvertisements()
@@ -9331,3 +9528,6 @@ setInterval(() => { refreshLanIp().catch(() => {}) }, LAN_IP_REFRESH_INTERVAL)
 setInterval(advertiseToHub, READVERTISE_INTERVAL)
 // Also advertise immediately on startup (with short delay for DNS to be ready)
 setTimeout(advertiseToHub, 5000)
+
+// Events that were waiting when the daemon stopped (after everything above is up)
+loadEventQueue().catch(e => auditLog('EVENT_RESTORE_FAIL', fnErrorText(e), 'System'))

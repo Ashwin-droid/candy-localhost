@@ -109,23 +109,19 @@ SDK behavior:
 From inside a server candy started, two more calls are available:
 
 ```ts
-import { cronJob, setCron, setIdling } from "candy-localhost"
+import { cronJob, setIdling } from "candy-localhost"
 
 // Waiting for events, not serving anything: don't stop me for inactivity
 // unless memory gets tight (>= 80% of RAM used, or high memory pressure).
 await setIdling(true)
 
-// Run this server's own command with extra args on a schedule (local time).
-await setCron({ name: "sync", schedule: "*/15 * * * *", args: ["--sync"] })
-
 if (cronJob() === "sync") {
-  // this process was started by the "sync" job
+  // this process was started by the candy.json cron entry tagged "sync"
 }
 ```
 
 - `setIdling(on = true)` marks the running server as idling until it stops or calls `setIdling(false)`. The site needs `"idle": true` in its [candy.json](#candyjson). Open connections and recent requests still count as activity as usual.
-- `setCron({ name, schedule, args?, timeoutSec? })` adds or replaces a job; `removeCron(name)` and `listCrons()` manage them. Schedules are 5-field cron or `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`.
-- A cron run is the server's command plus `args`, as the server's user, in its directory, whether or not the server is running. The base command can't be changed, and `args` are passed as separate argv entries (`"$@"`), so `;`, `&&`, `|` or `$(...)` in them are plain text. A run that is still going when the next one is due is skipped, and runs are stopped after `timeoutSec` (default 1 hour). Output goes to `<logs>/cron/<name>.log`, and runs are recorded in the audit log (`CRON_RUN`, `CRON_EXIT`).
+- `cronJob()` is the tag of the cron entry that started this process, or `null`. Cron jobs are declared in [candy.json](#cron); to change them from code, edit the file and call `reloadServerConfig()`.
 
 ### Use It
 
@@ -200,15 +196,23 @@ A site runs without any config file of its own: register it and candy starts it,
   "idle": true,               // may call setIdling() to stay up past its idle limit
   "pub": ["built"],           // events this site may publish (each can say who may subscribe)
   "sub": ["ci:built"],        // events of other sites it gets: "<site>:<event>"
-  "service": true             // takes server-to-server tokens (which app is calling)
+  "service": true,            // takes server-to-server tokens (which app is calling)
+  "cron": [{ "tag": "sync", "schedule": "*/15 * * * *" }]  // scheduled runs, each with a tag
 }
 ```
 
 Without the file a site gets none of it. `appAuth()` has no key and the portal refuses to sign anyone in to it. `setIdling()` is refused, it can't publish or receive events, and it can't check who is calling it. Nothing keeps another site up for it either: you can still poke the other site awake by hand, but it stops on its own idle limit like any other.
 
-For a function the same file also holds its own keys (`main`, `vars`, `kv`, `d1`, `crons`, `assets`; see [Bindings](#bindings)). Comments and trailing commas are fine.
+For a function the same file also holds its own keys (`main`, `handlers`, `vars`, `kv`, `d1`, `crons`, `assets`; see [Handlers](#handlers-and-a-url-only-with-something-to-serve) and [Bindings](#bindings)). Comments and trailing commas are fine.
 
-The file is read when the site starts, as the user the site runs as. A file that doesn't parse, or has a value candy can't use, stops the start with the reason, so a typo never quietly turns a feature off. Changes to `depends` apply at the next start; `auth` going off stops new sign-ins within seconds.
+The file is read as the user the site runs as, at two moments only: **when the site starts**, and **on a reload**. Between those, an edit does nothing, like a systemd unit file before `daemon-reload`.
+
+```bash
+candy reload          # read candy.json again for all your sites; nothing restarts
+candy reload vault    # just one
+```
+
+A site can also reload itself after editing its own file: `await reloadServerConfig()` from the SDK. A file that doesn't parse, or has a value candy can't use, stops a start with the reason and is reported by a reload (the site keeps what it had), so a typo never quietly turns a feature off. Changes to `depends` apply at the next start.
 
 **`depends`** takes the names of other sites candy starts (servers or functions; not plain port routes), at most 16:
 
@@ -241,8 +245,12 @@ export default {
 }
 ```
 
-- **A publish wakes its subscribers.** A stopped server is started, and gets what was published once it calls `subscribe()` (up to 1000 events, for 10 minutes). A function gets one run of its `event()` handler per event, up to 4 at a time, 60 seconds each.
-- **A failed function run is tried again** after 1 and then 5 seconds. After the third failure the event is dropped, with a line in the function's log. Events are held in memory: a daemon restart loses the ones not yet delivered.
+- **A publish wakes its subscribers.** A stopped server is started, and gets what was published once it calls `subscribe()`. A function gets one run of its `event()` handler per event, up to 4 at a time, 60 seconds each.
+- **Every subscriber has a queue, on disk.** An event stays in it until that subscriber handled it, so a daemon restart or a subscriber that is down loses nothing. A queue holds up to 1000 events (the oldest is dropped past that) and an event waits at most 24 hours.
+- **Handled means the handler finished.** A function run that exits cleanly, or a server's `subscribe()` handler that returns (the SDK tells candy). A server gets one event at a time and has 60 seconds to answer.
+- **A failed event comes again** after 1 s, 5 s, 30 s, 2 min and 10 min: a function run that fails or times out, a server handler that throws or doesn't answer in time. After the sixth failure it is dropped, with a line in the subscriber's log. Other events are not held up while one waits for its next try.
+- **Delivery is at least once.** A server that disconnects or is restarted while handling an event gets it again, so a handler should cope with seeing the same `event.id` twice.
+- **`"ordered": true`** on a `pub` entry (`{ "event": "message", "ordered": true }`) makes each subscriber handle that event one at a time, in the order published. A failing one holds the later ones back until it gets through or is dropped. Without it a function may run up to 4 events at once, in any order.
 - **A subscriber keeps its publishers up**, the way `depends` does: a publisher that is a server is started when the subscriber starts, and isn't stopped for being idle while the subscriber runs. Unlike `depends`, it isn't waited for, circles are fine, and stopping the publisher yourself leaves the subscriber running.
 - **A start is refused** when the site subscribes to a site candy doesn't start, or to an event that site doesn't list.
 
@@ -263,6 +271,13 @@ export default {
 | `"none"` | Any site candy runs, whoever runs it |
 | `"lax"` (the default) | Sites running as the publisher's own user, or as a user in `auth-users` |
 | `"strict"` | The same users, and only apps the publisher approved for that event |
+
+**Sending to named apps.** `publish(event, data, { to })` sends to those subscribers only; `to` is an app name or a list (up to 32). Without `to` a publish is a broadcast to everyone who may get the event, in every mode. If a named app can't get the event (not subscribed, not allowed, not approved), the publish is refused and nobody gets it. Delivery is the same queue as any event: a stopped server is started and gets it when it connects, a function run is retried.
+
+```ts
+// jobs' candy.json: { "pub": [{ "event": "run", "auth": "strict" }] }
+await publish("run", { job: 42 }, { to: "worker-a" })
+```
 
 An entry can be just the name (`"built"`), which is `lax` with no extra users: the publisher's own user's sites only. Nothing overrides the publisher: not `"publish": true` (that is for `depends`), not an administrator's site.
 
@@ -292,6 +307,16 @@ await approveSubClient("web")                // no event: every strict event web
   ```
 - A subscriber that isn't allowed never starts the publisher or keeps it up, and a publish never starts it.
 - An app shows up as `pending` for a strict event once its `candy.json` lists that event in `sub` and it runs as a user the event allows. Its own start is not held up: it runs, without those events, until it is approved.
+- To be told when that happens, list the built-in event `"candy:sub-request"` in the publisher's own `"sub"`. candy then sends it one event per waiting app and strict event, with `data` `{ app, user, event }`, and starts the publisher for it like any other event. It is optional: without it nothing is sent and `listSubClients()` is the only way to find out.
+  ```ts
+  // ci's candy.json: { "pub": [{ "event": "built", "auth": "strict" }], "sub": ["candy:sub-request"] }
+  subscribe(async ev => {
+    if (ev.from !== "candy" || ev.event !== "sub-request") return
+    const { app, user, event } = ev.data as SubRequest          // exported by the SDK
+    if (user === "bob") await approveSubClient(app, event)
+  })
+  ```
+  It is sent when candy reads the asking app's `candy.json` (its start, or `candy reload`), once while the app waits; after a daemon restart, apps still waiting are announced again.
 - A decision is for one event, and for that app as run by that user. If the name passes to another user it is `pending` again.
 - An app that isn't approved doesn't keep the publisher up and isn't started by a publish. After an approval, events flow from the next publish; the app starts holding the publisher up at its next start.
 - `rejectSubClient` turns down a waiting app, `revokeSubClient` takes an approval back, and `approveSubClient` can undo either. Decisions survive daemon restarts.
@@ -314,6 +339,26 @@ if (caller?.app !== "web") return new Response("no", { status: 403 })
 - The daemon knows the caller because it launched it: every launch gets a private runtime record (a credential file in the sandbox, never a command line). Nothing the caller says about itself is believed.
 - The receiver decides whom to trust from `app` and `user`. Any candy-run site can ask for a token to a site that takes them, including another user's.
 - The receiver gets its key at start: after adding `"service": true`, restart it. Inside a function: `env.CANDY.serviceHeaders(target)` and `env.CANDY.verifyService(request)`.
+
+#### Cron
+
+Scheduled runs are declared in candy.json, as many as 16 per site. Each has a tag, and the run is told which tag fired, so one app can keep several schedules and do only that job's work:
+
+```jsonc
+{
+  "cron": [
+    { "tag": "sync",    "schedule": "*/15 * * * *", "args": ["--sync"] },
+    { "tag": "cleanup", "schedule": "0 3 * * *", "timeout": 600 }
+  ]
+}
+```
+
+- `tag`: 1-64 letters, digits, dashes or underscores, unique in the file. `schedule`: 5-field cron or `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`, local time. `timeout`: seconds before a run is stopped (default 1 hour).
+- **A server's run** is its own command plus `args`, as its user, in its folder, whether or not the server is up. `cronJob()` from the SDK (or `CANDY_CRON_JOB` in the environment) is the tag. `args` are passed as separate argv entries, so `;`, `&&`, `|` or `$(...)` in them are plain text.
+- **A function's run** calls `scheduled(controller, env, ctx)` in a one-shot instance, with `controller.tag` set. `args` isn't allowed there. The wrangler-style `crons` / `triggers.crons` lists still work; their runs have `controller.tag` null.
+- A run still going when the next is due is skipped. Output goes to `<logs>/cron/<tag>.log`, and runs are in the audit log (`CRON_RUN`, `CRON_EXIT`).
+- An edit takes effect at the site's next start or on `candy reload`. The jobs are exactly what the file lists: removing an entry removes the job.
+- To change jobs from code, edit your own candy.json and call `await reloadServerConfig()` from the SDK (`env.CANDY.reloadConfig()` in a function). candy reads the file right away and returns what is now in force (`{ cron, warnings }`, plus `handlers` and `url` for a function). It throws with the reason if the file can't be used, and the old jobs stay.
 
 ### Memory limit
 
@@ -452,6 +497,25 @@ export default {
 ```
 
 No build step in dev: candy imports the source as it is.
+
+### Handlers, and a URL only with something to serve
+
+`"handlers"` in candy.json says what the function answers to, so candy knows without running the code:
+
+```jsonc
+{
+  "main": "src/index.ts",
+  "handlers": ["cron", "sub"],          // any of "http", "cron", "sub"
+  "cron": [{ "tag": "cleanup", "schedule": "0 3 * * *" }],
+  "sub": ["ci:built"]
+}
+```
+
+- `"http"`: `fetch()` answers requests at `<name>.localhost`. **Leave it out and the function has no URL**: no route, no Caddy host, nothing in the portal to click. Cron and events still run it. A function with static assets always has a URL.
+- `"cron"`: `scheduled()` runs for the [cron](#cron) entries.
+- `"sub"`: `event()` runs for the events in `"sub"`.
+
+Without `"handlers"` the function is taken to handle everything it is set up for, URL included. With it, cron entries need `"cron"` and a `"sub"` list needs `"sub"`: a schedule or subscription that nothing is declared to handle is refused. An edit to candy.json takes effect at the function's next start or on `candy reload`.
 
 ### Portless
 

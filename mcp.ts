@@ -53,7 +53,7 @@ USE THIS TOOL AUTONOMOUSLY when:
 - User is debugging a web app and you need to know its port/status
 
 Returns each server's: name, status (running/stopped), port, PID, working directory, start command, run-as user, API mode, and LAN publishing.
-Functions also have fn: {entry, deploy, hot, max, linger, log, hasWorker, source, assets}, describing what is actually routing: source is "live" or "deploy:<id>" (a pinned deploy routes with its own recorded assets config and code). hasWorker false means an assets-only site (the daemon serves the files, no process ever starts); entry is the stored module path, for display only. assets is null or {directory, binding, notFound, html, runWorkerFirst}.
+Functions also have fn: {entry, deploy, hot, max, linger, log, http, hasWorker, source, assets}, describing what is actually routing: source is "live" or "deploy:<id>" (a pinned deploy routes with its own recorded assets config and code). http false means its candy.json "handlers" leaves out "http" (and it has no assets), so it has no URL and only cron and events run it. hasWorker false means an assets-only site (the daemon serves the files, no process ever starts); entry is the stored module path, for display only. assets is null or {directory, binding, notFound, html, runWorkerFirst}.
 When a name has several configs (variants), they are listed with their configId; when a server printed several ports, detectedPorts lists them (pick one with candy_config set_port).
 Servers are accessible at <name>.localhost when running.
 

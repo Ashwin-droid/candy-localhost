@@ -16,7 +16,9 @@ export interface FnSettings {
   max?: number             // cap on concurrent instances (default 4)
   linger?: number          // seconds an idle instance waits for the next request (default 30)
   log?: false | "meta"     // request log off or metadata only; absent = full
+  http?: false             // candy.json "handlers" leaves out "http" (and there are no assets): no URL
 }
+
 
 export const FN_DEFAULT_MAX = 4
 export const FN_MAX_INSTANCES = 64
@@ -37,6 +39,7 @@ export const normalizeFnSettings = (raw: unknown): FnSettings | null => {
   if (Number.isInteger(r.max) && (r.max as number) >= 1 && (r.max as number) <= FN_MAX_INSTANCES) fn.max = r.max as number
   if (Number.isInteger(r.linger) && (r.linger as number) >= 0 && (r.linger as number) <= FN_MAX_LINGER_S) fn.linger = r.linger as number
   if (r.log === false || r.log === "meta") fn.log = r.log
+  if (r.http === false) fn.http = false
   return fn
 }
 
@@ -314,6 +317,8 @@ export const fnSummaryOf = (
   max: fnLimits(fn).max,
   linger: fn.linger ?? FN_DEFAULT_LINGER_S,
   log: fn.log === undefined ? true : fn.log,
+  // false: candy.json "handlers" has no "http", so cron and event runs only and no URL
+  http: fn.http !== false,
   hasWorker: routing ? routing.hasWorker : live ? !!live.main : fn.entry !== null,
   source: routing ? (routing.deploy ? `deploy:${routing.deploy}` : "live") : null,
   assets: fnAssetsSummary(routing ? routing.assetsConfig : live?.assets),

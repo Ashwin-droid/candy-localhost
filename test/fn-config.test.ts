@@ -80,7 +80,7 @@ describe("loadFnProjectConfig", () => {
 
   it("finds a default entry when there is no config", async () => {
     const cfg = await loadFnProjectConfig(project({ "src/index.ts": "export default {}" }))
-    expect(cfg).toEqual({ main: "src/index.ts", assets: null, vars: {}, kv: [], d1: [], crons: [], warnings: [], source: null })
+    expect(cfg).toEqual({ main: "src/index.ts", assets: null, vars: {}, kv: [], d1: [], crons: [], handlers: null, warnings: [], source: null })
 
     const empty = await loadFnProjectConfig(project({ "README.md": "" }))
     expect(empty.main).toBe("")
@@ -128,6 +128,28 @@ describe("loadFnProjectConfig", () => {
 
 const SPA = join(import.meta.dir, "fixtures", "fn-spa")
 const STATIC = join(import.meta.dir, "fixtures", "fn-static")
+
+describe("handlers", () => {
+  const load = (cfg: Record<string, unknown>) => loadFnProjectConfig(project({ "candy.json": JSON.stringify({ main: "a.ts", ...cfg }), "a.ts": "export default {}" }))
+
+  it("is null unless declared, and is kept in the order given without repeats", async () => {
+    expect((await load({})).handlers).toBe(null)
+    expect((await load({ handlers: ["sub", "http", "sub"] })).handlers).toEqual(["sub", "http"])
+    expect((await load({ handlers: "cron" })).handlers).toEqual(["cron"])
+  })
+
+  it("refuses names it doesn't know and an empty list", async () => {
+    await expect(load({ handlers: ["fetch"] })).rejects.toThrow(/handlers/)
+    await expect(load({ handlers: [] })).rejects.toThrow(/handlers/)
+  })
+
+  it("refuses a schedule or subscription nothing is declared to handle", async () => {
+    await expect(load({ handlers: ["http"], cron: [{ tag: "a", schedule: "@daily" }] })).rejects.toThrow(/no "cron"/)
+    await expect(load({ handlers: ["http"], crons: ["@daily"] })).rejects.toThrow(/no "cron"/)
+    await expect(load({ handlers: ["cron"], crons: ["@daily"], sub: ["ci:built"] })).rejects.toThrow(/no "sub"/)
+    expect((await load({ handlers: ["cron", "sub"], cron: [{ tag: "a", schedule: "@daily" }], sub: ["ci:built"] })).warnings).toEqual([])
+  })
+})
 
 describe("assets", () => {
   it("reads the SPA fixture's assets block", async () => {

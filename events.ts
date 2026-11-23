@@ -7,11 +7,13 @@ export const MAX_EVENTS = 32
 export const MAX_SUBSCRIBE = 32
 // The JSON of one event's data
 export const MAX_EVENT_BYTES = 64 * 1024
-// Events waiting for a subscriber that isn't connected (it is being started)
+// Events waiting for one subscriber (not connected, busy, or between tries). Kept on disk.
 export const MAX_QUEUED = 1000
-export const QUEUE_TTL_MS = 10 * 60 * 1000
-// A function that fails an event gets it again after each of these, then it is dropped
-export const EVENT_RETRY_DELAYS_MS: readonly number[] = [1000, 5000]
+export const QUEUE_TTL_MS = 24 * 60 * 60 * 1000
+// A subscriber that fails an event gets it again after each of these, then it is dropped
+export const EVENT_RETRY_DELAYS_MS: readonly number[] = [1000, 5000, 30_000, 2 * 60_000, 10 * 60_000]
+// A server that takes an event has this long to say how it went
+export const EVENT_ACK_TIMEOUT_MS = 60_000
 
 export interface CandyEvent {
   id: string
@@ -34,6 +36,15 @@ export const parseSubscription = (s: string): { site: string; event: string } | 
   return EVENT_NAME.test(event) ? { site, event } : null
 }
 
+// Events the daemon itself publishes, as the site "candy" (a reserved name, so never a real one).
+// Getting one is a choice: a site lists it in "sub" like any other, e.g. "candy:sub-request".
+//   sub-request   an app is waiting for this site's approval of one of its "strict" events;
+//                 data is { app, user, event }. Once per app and event while it waits.
+export const BUILTIN_SITE = "candy"
+export const SUB_REQUEST_EVENT = "sub-request"
+export const BUILTIN_EVENTS: readonly string[] = [SUB_REQUEST_EVENT]
+export interface SubRequest { app: string; user: string; event: string }
+
 /** Why `data` can't be published, or null. Returns the JSON too, so it is made once. */
 export const eventData = (data: unknown): { json: string } | { error: string } => {
   let json: string | undefined
@@ -48,10 +59,23 @@ export const eventData = (data: unknown): { json: string } | { error: string } =
 //   "none"    any site candy runs
 //   "lax"     sites running as the publisher's own user or one in "auth-users" (the default, with no extra users)
 //   "strict"  the same users, and the publisher approved that app for that event (approveSubClient)
+// A publish goes to everyone who may get the event, or with `to` only to the apps it names.
 export type PubAuth = "none" | "lax" | "strict"
 export const PUB_AUTH: readonly PubAuth[] = ["none", "lax", "strict"]
+// Apps one publish may name
+export const MAX_PUBLISH_TO = 32
+
+/** `to` of a publish as a list of names (lower case, no repeats), null when it wasn't given, or why it can't be used */
+export const publishTargets = (to: unknown): string[] | null | { error: string } => {
+  if (to === undefined || to === null) return null
+  const list = typeof to === "string" ? [to] : to
+  if (!Array.isArray(list) || list.length === 0 || list.some(t => typeof t !== "string" || !t.trim())) return { error: '"to" must be an app name or a list of them' }
+  if (list.length > MAX_PUBLISH_TO) return { error: `"to" takes at most ${MAX_PUBLISH_TO} apps` }
+  return [...new Set((list as string[]).map(t => t.trim().toLowerCase()))]
+}
 export const MAX_AUTH_USERS = 32
-export interface PubEvent { event: string; auth: PubAuth; users: string[] }
+// ordered: each subscriber handles this event one at a time, in the order published
+export interface PubEvent { event: string; auth: PubAuth; users: string[]; ordered?: true }
 
 export type SubDecision = "approved" | "rejected" | "revoked"
 // "user": runs as someone the publisher doesn't allow. "pending": allowed user, waiting for approveSubClient.
@@ -113,34 +137,122 @@ export class SubClientStore {
   }
 }
 
-/** Events held per subscriber until it connects: bounded, and old ones are dropped. */
+export interface Queued {
+  ev: CandyEvent
+  // Where it stands in its subscriber's queue (and in its file name: the order survives a restart)
+  seq: number
+  // Failed tries so far
+  attempts: number
+  // Not handed out before this (a retry waiting)
+  notBefore: number
+  inflight: boolean
+}
+
+/**
+ * Events waiting for each subscriber, oldest first, until it says it handled them.
+ * An event is handed out (take), then done or failed; a failed one waits and is
+ * handed out again, up to `retryDelays.length` more times. Bounded and aged out.
+ * This is the bookkeeping only: the daemon keeps the files and does the handing out.
+ */
 export class EventQueue {
-  private bySub = new Map<string, CandyEvent[]>()
-  constructor(private now: () => number = Date.now, private max = MAX_QUEUED, private ttlMs = QUEUE_TTL_MS) {}
+  private bySub = new Map<string, Queued[]>()
+  private seq = 0
+  constructor(private now: () => number = Date.now, private max = MAX_QUEUED, private ttlMs = QUEUE_TTL_MS, private retryDelays: readonly number[] = EVENT_RETRY_DELAYS_MS) {}
 
-  /** Returns how many old events were pushed out to make room. */
-  push(sub: string, ev: CandyEvent): number {
-    const q = this.fresh(sub)
-    q.push(ev)
-    const over = Math.max(0, q.length - this.max)
-    if (over) q.splice(0, over)
-    this.bySub.set(sub, q)
-    return over
-  }
-  /** Everything waiting for `sub`, oldest first; the queue is emptied. */
-  take(sub: string): CandyEvent[] {
-    const q = this.fresh(sub)
-    this.bySub.delete(sub)
-    return q
-  }
-  pending(sub: string): number { return this.fresh(sub).length }
-  drop(sub: string): void { this.bySub.delete(sub) }
-
-  private fresh(sub: string): CandyEvent[] {
-    const cutoff = this.now() - this.ttlMs
-    const q = (this.bySub.get(sub) ?? []).filter(e => e.time >= cutoff)
+  /** Number new events from here up (the daemon passes the clock, so they sort after anything an earlier run left on disk) */
+  startAt(seq: number): void { this.seq = Math.max(this.seq, seq) }
+  private list(sub: string): Queued[] { return this.bySub.get(sub) ?? [] }
+  private remove(sub: string, item: Queued): void {
+    const q = this.list(sub).filter(i => i !== item)
     if (q.length) this.bySub.set(sub, q)
     else this.bySub.delete(sub)
+  }
+
+  /** Adds an event (`seq` given: one read back from disk). `dropped`: the oldest ones not being handled, pushed out to make room. */
+  push(sub: string, ev: CandyEvent, seq?: number): { item: Queued; dropped: Queued[] } {
+    if (seq !== undefined) this.seq = Math.max(this.seq, seq)
+    const item: Queued = { ev, seq: seq ?? ++this.seq, attempts: 0, notBefore: 0, inflight: false }
+    const q = [...this.list(sub), item].sort((a, b) => a.seq - b.seq)
+    const dropped: Queued[] = []
+    while (q.length > this.max) {
+      const at = q.findIndex(i => !i.inflight && i !== item)
+      if (at < 0) break
+      dropped.push(...q.splice(at, 1))
+    }
+    this.bySub.set(sub, q)
+    return { item, dropped }
+  }
+
+  /** Removes and returns what has waited longer than the queue keeps events (never one being handled) */
+  expire(sub: string): Queued[] {
+    const cutoff = this.now() - this.ttlMs
+    const old = this.list(sub).filter(i => !i.inflight && i.ev.time < cutoff)
+    for (const i of old) this.remove(sub, i)
+    return old
+  }
+
+  /**
+   * Up to `limit` events to hand out now, oldest first, marked as being handled.
+   * An `ordered` event waits for every earlier one of the same publisher and name:
+   * one at a time, and a failed one holds the later ones back until it is through.
+   */
+  take(sub: string, limit: number, ordered: (ev: CandyEvent) => boolean = () => false): Queued[] {
+    const out: Queued[] = []
+    const held = new Set<string>()
+    const now = this.now()
+    for (const item of this.list(sub)) {
+      if (out.length >= limit) break
+      const key = subscriptionKey(item.ev.from, item.ev.event)
+      const inOrder = ordered(item.ev)
+      if (item.inflight || item.notBefore > now || (inOrder && held.has(key))) {
+        held.add(key)
+        continue
+      }
+      held.add(key)
+      item.inflight = true
+      out.push(item)
+    }
+    return out
+  }
+
+  private find(sub: string, id: string): Queued | null { return this.list(sub).find(i => i.ev.id === id) ?? null }
+  /** Handled: it leaves the queue. Null when it isn't there (already done, dropped, or never was). */
+  done(sub: string, id: string): Queued | null {
+    const item = this.find(sub, id)
+    if (item) this.remove(sub, item)
+    return item
+  }
+  /** A try failed: it waits for the next one (`retryAt`), or it was the last and the event is gone (`dropped`). */
+  fail(sub: string, id: string): { item: Queued; retryAt: number } | { item: Queued; dropped: true } | null {
+    const item = this.find(sub, id)
+    if (!item || !item.inflight) return null
+    item.inflight = false
+    const delay = this.retryDelays[item.attempts]
+    item.attempts++
+    if (delay === undefined) {
+      this.remove(sub, item)
+      return { item, dropped: true }
+    }
+    item.notBefore = this.now() + delay
+    return { item, retryAt: item.notBefore }
+  }
+  /** Whoever was handling these is gone without an answer: they are handed out again, and it isn't counted as a failure */
+  release(sub: string, id?: string): void {
+    for (const item of this.list(sub)) if (id === undefined || item.ev.id === id) item.inflight = false
+  }
+
+  pending(sub: string): number { return this.list(sub).length }
+  inflight(sub: string): number { return this.list(sub).filter(i => i.inflight).length }
+  /** When the next retry of `sub` is due, or null */
+  nextWake(sub: string): number | null {
+    const times = this.list(sub).filter(i => !i.inflight && i.notBefore > this.now()).map(i => i.notBefore)
+    return times.length ? Math.min(...times) : null
+  }
+  subscribers(): string[] { return [...this.bySub.keys()] }
+  /** Forgets a subscriber; returns what it still had */
+  drop(sub: string): Queued[] {
+    const q = this.list(sub)
+    this.bySub.delete(sub)
     return q
   }
 }

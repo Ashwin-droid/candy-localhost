@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { EventQueue, SubClientStore, subAccess, eventData, parseSubscription, EVENT_NAME, MAX_EVENT_BYTES, type CandyEvent } from "../events.ts"
+import { EventQueue, SubClientStore, subAccess, publishTargets, MAX_PUBLISH_TO, eventData, parseSubscription, EVENT_NAME, MAX_EVENT_BYTES, type CandyEvent } from "../events.ts"
 import { normalizeManifest, checkSiteManifest } from "../manifest.ts"
 import { generateKey, formatKeyRing, encryptCompact } from "../jwe.ts"
 import { mintServiceToken, openServiceToken, SERVICE_HEADER, SERVICE_TTL_S } from "../service-auth.ts"
@@ -29,17 +29,75 @@ describe("events", () => {
 
   it("the queue is bounded, per subscriber, and forgets old events", () => {
     let now = 1000
-    const q = new EventQueue(() => now, 2, 500)
-    expect(q.push("web", ev("1", now))).toBe(0)
-    expect(q.push("web", ev("2", now))).toBe(0)
-    expect(q.push("web", ev("3", now))).toBe(1)
+    const q = new EventQueue(() => now, 2, 500, [])
+    expect(q.push("web", ev("1", now)).dropped).toEqual([])
+    q.push("web", ev("2", now))
+    expect(q.push("web", ev("3", now)).dropped.map(d => d.ev.id)).toEqual(["1"])
     expect(q.pending("web")).toBe(2)
     expect(q.pending("other")).toBe(0)
-    expect(q.take("web").map(e => e.id)).toEqual(["2", "3"])
-    expect(q.take("web")).toEqual([])
+    expect(q.take("web", 10).map(i => i.ev.id)).toEqual(["2", "3"])
+    expect(q.take("web", 10)).toEqual([])   // handed out, not handled yet
+    expect(q.done("web", "2")?.ev.id).toBe("2")
+    expect(q.done("web", "2")).toBeNull()
+    q.done("web", "3")
+    expect(q.subscribers()).toEqual([])
     q.push("web", ev("4", now))
     now += 501
-    expect(q.take("web")).toEqual([])
+    expect(q.expire("web").map(i => i.ev.id)).toEqual(["4"])
+    expect(q.pending("web")).toBe(0)
+  })
+
+  it("a failed event comes again after each delay, then is dropped", () => {
+    let now = 0
+    const q = new EventQueue(() => now, 10, 1e9, [100, 500])
+    q.push("web", ev("1", now))
+    q.push("web", ev("2", now))
+    expect(q.take("web", 1).map(i => i.ev.id)).toEqual(["1"])
+    expect(q.inflight("web")).toBe(1)
+    expect(q.fail("web", "1")).toMatchObject({ retryAt: 100 })
+    expect(q.fail("web", "1")).toBeNull()   // not handed out: nothing to fail
+    expect(q.nextWake("web")).toBe(100)
+    // The one waiting for its retry doesn't hold the next one back
+    expect(q.take("web", 5).map(i => i.ev.id)).toEqual(["2"])
+    q.done("web", "2")
+    now = 100
+    expect(q.take("web", 5).map(i => i.ev.id)).toEqual(["1"])
+    expect(q.fail("web", "1")).toMatchObject({ retryAt: 600 })
+    now = 600
+    q.take("web", 5)
+    expect(q.fail("web", "1")).toMatchObject({ dropped: true, item: { attempts: 3 } })
+    expect(q.pending("web")).toBe(0)
+  })
+
+  it("release hands an event out again without counting a failure; seq keeps the order across a restart", () => {
+    const q = new EventQueue(() => 0, 10, 1e9, [])
+    q.push("web", ev("b"), 7)
+    q.push("web", ev("a"), 3)
+    expect(q.push("web", ev("c")).item.seq).toBe(8)
+    expect(q.take("web", 1).map(i => i.ev.id)).toEqual(["a"])
+    q.release("web")
+    const again = q.take("web", 5)
+    expect(again.map(i => i.ev.id)).toEqual(["a", "b", "c"])
+    expect(again[0].attempts).toBe(0)
+    expect(q.drop("web").length).toBe(3)
+  })
+
+  it("an ordered event goes one at a time, and a failed one holds the later ones back", () => {
+    let now = 0
+    const q = new EventQueue(() => now, 10, 1e9, [100])
+    const msg = (id: string): CandyEvent => ({ id, from: "wa", event: "message", data: null, time: 0 })
+    q.push("bot", msg("m1"))
+    q.push("bot", ev("x"))
+    q.push("bot", msg("m2"))
+    const ordered = (e: CandyEvent) => e.event === "message"
+    expect(q.take("bot", 4, ordered).map(i => i.ev.id)).toEqual(["m1", "x"])
+    expect(q.take("bot", 4, ordered)).toEqual([])
+    q.fail("bot", "m1")
+    expect(q.take("bot", 4, ordered)).toEqual([])   // m2 waits for m1's retry
+    now = 100
+    expect(q.take("bot", 4, ordered).map(i => i.ev.id)).toEqual(["m1"])
+    q.done("bot", "m1")
+    expect(q.take("bot", 4, ordered).map(i => i.ev.id)).toEqual(["m2"])
   })
 
   it("candy.json: idle, service, pub and sub", () => {
@@ -83,6 +141,20 @@ describe("who may subscribe", () => {
     expect(subAccess(strict, "alice", "bob", "rejected")).toBe("rejected")
     expect(subAccess(strict, "alice", "bob", "revoked")).toBe("revoked")
     expect(subAccess(strict, "alice", "mallory", "approved")).toBe("user")   // an approval never beats the user list
+  })
+
+  it("a publish can name the apps it is for", () => {
+    expect(publishTargets(undefined)).toBeNull()
+    expect(publishTargets(" Web ")).toEqual(["web"])
+    expect(publishTargets(["a", "A", "b"])).toEqual(["a", "b"])
+    for (const bad of [[], "", [1], {}, ["a", " "], Array(MAX_PUBLISH_TO + 1).fill("a")]) expect(publishTargets(bad)).toHaveProperty("error")
+  })
+
+  it("ordered is kept only when it is on", () => {
+    const m = normalizeManifest({ pub: [{ event: "message", auth: "strict", ordered: true }, { event: "status", ordered: false }] })
+    expect(m.pub).toEqual([{ event: "message", auth: "strict", users: [], ordered: true }, { event: "status", auth: "lax", users: [] }])
+    expect(checkSiteManifest(m).pub).toEqual(m.pub)
+    expect(() => normalizeManifest({ pub: [{ event: "a", ordered: "yes" }] })).toThrow(`"ordered" must be true or false`)
   })
 
   it("a decision is for one event, and for an app as run by one user", () => {
@@ -165,7 +237,10 @@ describe("the runtime client", () => {
 
   it("hands each event to the handler, in order, and reconnects", async () => {
     let connects = 0
-    const fetcher = (async () => {
+    const acks: unknown[] = []
+    const fetcher = (async (url: string, init: RequestInit) => {
+      if (url.endsWith("/runtime/ack")) { acks.push(JSON.parse(init.body as string)); return Response.json({ success: true }) }
+      expect(url.endsWith("/runtime/events?ack=1")).toBe(true)
       connects++
       const lines = connects === 1 ? `${JSON.stringify({ candy: "subscriptions", subscriptions: [{ subscription: "ci:built", site: "ci", event: "built", status: "denied" }] })}\n${JSON.stringify(ev("1"))}\n\n${JSON.stringify(ev("2"))}\n` : `${JSON.stringify(ev("3"))}\n`
       return new Response(lines, { headers: { "Content-Type": "application/x-ndjson" } })
@@ -173,10 +248,13 @@ describe("the runtime client", () => {
     const got: string[] = []
     const done = Promise.withResolvers<void>()
     const statuses: string[] = []
-    const sub = createRuntime(record, fetcher).subscribe(e => { got.push(e.id); if (e.id === "3") done.resolve() }, { onStatus: s => statuses.push(...s.map(x => `${x.subscription} ${x.status}`)) })
+    const sub = createRuntime(record, fetcher).subscribe(e => { got.push(e.id); if (e.id === "2") throw new Error("boom"); if (e.id === "3") done.resolve() }, { onStatus: s => statuses.push(...s.map(x => `${x.subscription} ${x.status}`)) })
     await done.promise
+    await Bun.sleep(10)   // the answer to the last one goes out after its handler returns
     sub.close()
     expect(got).toEqual(["1", "2", "3"])
     expect(statuses).toEqual(["ci:built denied"])
+    // Each event is answered: handled, or failed with why (candy sends that one again)
+    expect(acks).toEqual([{ id: "1", ok: true }, { id: "2", ok: false, error: "boom" }, { id: "3", ok: true }])
   })
 })

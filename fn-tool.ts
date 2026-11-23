@@ -8,7 +8,7 @@
 import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path"
 import { mkdirSync } from "node:fs"
 import type { DeployInfo } from "./fn-deploy.ts"
-import type { FnProjectConfig } from "./fn-config.ts"
+import { FN_HANDLER_KINDS, type FnHandlerKind, type FnProjectConfig } from "./fn-config.ts"
 import { checkSiteManifest } from "./manifest.ts"
 import { validateRunWorkerFirst, type AssetsConfig, type AssetsRouting } from "./fn-assets.ts"
 
@@ -133,10 +133,12 @@ export const checkProjectConfig = (v: unknown, dir?: string): FnProjectConfig =>
   }
   const crons = c.crons === undefined ? [] : c.crons
   if (!Array.isArray(crons) || crons.length > 100 || !crons.every(x => plain(x, 256))) throw new Error("fn-tool config: bad crons")
+  const handlers = c.handlers === null || c.handlers === undefined ? null : c.handlers
+  if (handlers !== null && !(Array.isArray(handlers) && handlers.length <= FN_HANDLER_KINDS.length && handlers.every(h => FN_HANDLER_KINDS.includes(h)))) throw new Error("fn-tool config: bad handlers")
   const warnings = Array.isArray(c.warnings)
     ? c.warnings.slice(0, 100).map(w => String(w).replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 1000))
     : []
-  return { main: c.main as string | null, assets, vars, kv: names(c.kv, "kv"), d1: names(c.d1, "d1"), crons: crons as string[], warnings, source: (c.source ?? null) as string | null }
+  return { main: c.main as string | null, assets, vars, kv: names(c.kv, "kv"), d1: names(c.d1, "d1"), crons: crons as string[], handlers: handlers as FnHandlerKind[] | null, warnings, source: (c.source ?? null) as string | null }
 }
 
 // The result of `op`, checked; throws on anything the daemon must not use

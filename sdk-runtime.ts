@@ -10,7 +10,7 @@ import { parseKeyRing, type JweKey } from "./jwe.ts"
 import { openServiceToken, SERVICE_HEADER, type ServiceCaller } from "./service-auth.ts"
 import type { CandyEvent, SubClient } from "./events.ts"
 
-export type { CandyEvent, SubClient } from "./events.ts"
+export type { CandyEvent, SubClient, SubRequest } from "./events.ts"
 export type { ServiceCaller } from "./service-auth.ts"
 export { SERVICE_HEADER } from "./service-auth.ts"
 
@@ -47,6 +47,7 @@ export const readRuntime = (env: Record<string, string | undefined> = process.en
 }
 
 export interface Subscription { close(): void }
+export interface PublishOptions { to?: string | string[] }
 /** Where one "sub" entry stands: "ok", "denied" (the publisher doesn't allow this site's user), "pending", "rejected" or "revoked" */
 export interface SubscriptionStatus { subscription: string; site: string; event: string; status: "ok" | "denied" | "pending" | "rejected" | "revoked" }
 export interface SubscribeOptions {
@@ -55,15 +56,26 @@ export interface SubscribeOptions {
   onStatus?: (subscriptions: SubscriptionStatus[]) => void
 }
 
+/** What is in force after a reload: the tagged cron jobs and, for a function, its handlers and URL */
+export interface ReloadedConfig {
+  cron: { tag: string; schedule: string }[]
+  handlers?: string[] | null
+  url?: string | null
+  warnings: string[]
+}
+
 export interface CandyRuntime {
   /** This site's name */
   site: string
   /** Publish one of the events this site's candy.json lists in "pub". Stopped subscribers are started. */
-  publish(event: string, data?: unknown): Promise<{ id: string; delivered: string[] }>
+  /** `to`: only these subscribers get it (without it: everyone who may); refused if one of them can't. */
+  publish(event: string, data?: unknown, opts?: PublishOptions): Promise<{ id: string; delivered: string[] }>
   /** Every event this site's candy.json "sub" lists, one at a time, for as long as the process lives. */
   subscribe(handler: (event: CandyEvent) => unknown, opts?: SubscribeOptions): Subscription
   /** Where each of this site's subscriptions stands with its publisher */
   subscriptions(): Promise<SubscriptionStatus[]>
+  /** Have candy read this site's candy.json again now (after editing it). Throws with the reason when the file can't be used. */
+  reloadConfig(): Promise<ReloadedConfig>
   /** For this site's "strict" events: each app asking, per event, with `status` "pending", "approved", "rejected" or "revoked" */
   listSubClients(): Promise<SubClient[]>
   /** Let `app` have `event` from now on. Without `event`: every strict event it asks for. */
@@ -97,7 +109,7 @@ export const createRuntime = (record: RuntimeRecord | null, fetcher: typeof fetc
 
   return {
     get site() { return (record ?? noRuntime()).site },
-    publish: (event, data) => call("/runtime/publish", { event, data: data ?? null }),
+    publish: (event, data, opts) => call("/runtime/publish", { event, data: data ?? null, ...(opts?.to !== undefined ? { to: opts.to } : {}) }),
     subscribe(handler, opts = {}) {
       const r = record ?? noRuntime()
       const stop = new AbortController()
@@ -106,7 +118,7 @@ export const createRuntime = (record: RuntimeRecord | null, fetcher: typeof fetc
         let wait = 500
         while (!stop.signal.aborted) {
           try {
-            const res = await fetcher(`${r.url}/runtime/events`, { headers: { [RUNTIME_HEADER]: r.token }, signal: stop.signal })
+            const res = await fetcher(`${r.url}/runtime/events?ack=1`, { headers: { [RUNTIME_HEADER]: r.token }, signal: stop.signal })
             if (!res.ok || !res.body) {
               const answer = await res.json().catch(() => null) as { error?: string } | null
               throw new Error(answer?.error ?? `candy answered ${res.status}`)
@@ -125,7 +137,10 @@ export const createRuntime = (record: RuntimeRecord | null, fetcher: typeof fetc
                   opts.onStatus?.(ev.subscriptions ?? [])
                   continue
                 }
-                try { await handler(ev) } catch (e) { fail(e) }
+                // The answer is what takes the event off candy's queue; a throw brings it back later
+                let problem: string | null = null
+                try { await handler(ev) } catch (e) { fail(e); problem = e instanceof Error ? e.message : String(e) }
+                call("/runtime/ack", { id: ev.id, ok: problem === null, ...(problem === null ? {} : { error: problem }) }).catch(fail)
               }
             }
           } catch (e) {
@@ -138,6 +153,7 @@ export const createRuntime = (record: RuntimeRecord | null, fetcher: typeof fetc
       })()
       return { close: () => stop.abort() }
     },
+    reloadConfig: () => call<ReloadedConfig>("/runtime/reload-config", {}),
     subscriptions: async () => (await call<{ subscriptions: SubscriptionStatus[] }>("/runtime/subscriptions", {})).subscriptions,
     listSubClients: async () => (await call<{ clients: SubClient[] }>("/runtime/sub-clients", { action: "list" })).clients,
     approveSubClient: async (app, event) => (await call<{ clients: SubClient[] }>("/runtime/sub-clients", { action: "approve", app, event })).clients,

@@ -547,6 +547,7 @@
     <div class="top-actions">
       <button class="btn quiet" id="system-btn" hidden onclick="showSystem()" title="CPU, memory, disks and every process on this machine">System</button>
       <button class="btn quiet" onclick="refreshAll(); refreshTraffic();">Refresh</button>
+      <button class="btn quiet" onclick="reloadConfigs()" title="Read candy.json again for every site. Nothing restarts. An edit otherwise waits for the site's next start.">Reload configs</button>
       <button class="btn primary" onclick="showAddRoute()">Add site</button>
     </div>
   </header>
@@ -992,6 +993,21 @@
 
     function goLogin() {
       location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
+    }
+
+    // candy.json is read at a site's start and here, nowhere else
+    async function reloadConfigs() {
+      try {
+        const res = await apiCall('/config/reload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const data = await res.json();
+        if (data.error) { toast(data.error, 'error'); return; }
+        const sites = Array.isArray(data.sites) ? data.sites : [];
+        for (const s of sites.filter(s => !s.ok)) toast(`${s.name}: ${s.error} (it keeps its old config)`, 'error');
+        toast(`Reloaded candy.json for ${sites.filter(s => s.ok).length} of ${sites.length} sites`, 'success');
+        refreshAll();
+      } catch (err) {
+        toast(err.message || 'Could not reload', 'error');
+      }
     }
 
     async function logout() {
@@ -1923,7 +1939,7 @@
       try {
         const data = await fnPost('/fn/add', body);
         const assetsOnly = data.fn && data.fn.hasWorker === false;
-        toast(`${data.name || name} added. ${assetsOnly ? 'The daemon serves its files; no process starts.' : 'It starts on the first request.'}`, 'success');
+        toast(`${data.name || name} added. ${assetsOnly ? 'The daemon serves its files; no process starts.' : data.url === null ? 'Its candy.json handlers leave out http, so it gets no URL: cron and events run it.' : 'It starts on the first request.'}`, 'success');
         for (const w of Array.isArray(data.warnings) ? data.warnings : []) toast(String(w), 'info');
         hideAddRoute();
         refreshAll();
@@ -2206,6 +2222,7 @@
       if (SUPER && s.config?.user && s.config.user !== ME.user) meta.push(`<span title="Runs as ${escapeHtml(s.config.user)}">${escapeHtml(s.config.user)}</span>`);
       if (fn) {
         // An assets-only function never starts a process, so hot/max mean nothing for it
+        if (fn.http === false) meta.push('<span title="Its candy.json handlers leave out http, so it has no URL. Cron and events run it.">no URL</span>');
         if (fn.hasWorker !== false) meta.push(`<span title="Warm instances / most at once">hot ${Number(fn.hot) || 0} / max ${Number(fn.max) || 4}</span>`);
         if (fn.assets) meta.push(`<span class="cmd" title="Static assets served by the daemon${fnWorkerFirstText(fn.assets) ? ' · worker first: ' + escapeHtml(fnWorkerFirstText(fn.assets)) : ''}">assets <b>${escapeHtml(shortPath(fn.assets.directory || ''))}</b></span>`);
         meta.push(`<span class="cmd" title="${fn.deploy ? 'Pinned deploy snapshot' : 'Live-linked to the source folder'}"><b>${escapeHtml(fn.deploy || 'dev')}</b></span>`);
@@ -2253,6 +2270,7 @@
       if (manifest?.idle) chips.push('<span class="chip" title="Its candy.json lets it ask to stay up past its idle limit">May idle</span>');
       if (manifest?.service) chips.push('<span class="chip on" title="Its candy.json takes server-to-server tokens: other sites can prove which app is calling">Service tokens</span>');
       if (manifest?.pub?.length) chips.push(`<span class="chip" title="Events it may publish, and who may subscribe to each: none = any site, lax = its own user and the listed ones, strict = those, once it approved the app">Publishes: ${escapeHtml(manifest.pub.map(e => `${e.event} (${e.auth}${e.users?.length ? ': ' + e.users.join(', ') : ''})`).join(', '))}</span>`);
+      if (manifest?.cron?.length) chips.push(`<span class="chip" title="Scheduled runs from its candy.json: ${escapeHtml(manifest.cron.map(j => `${j.tag} (${j.schedule})`).join(', '))}">Cron: ${escapeHtml(manifest.cron.map(j => j.tag).join(', '))}</span>`);
       if (manifest?.sub?.length) chips.push(`<span class="chip" title="A publish of these starts it, and it keeps their sites up while it runs">Subscribes: ${escapeHtml(manifest.sub.join(', '))}</span>`);
       if (heldBy.length) chips.push(`<span class="chip on" title="These sites depend on it or subscribe to its events, so it isn't stopped for being idle">Kept up by: ${escapeHtml(heldBy.join(', '))}</span>`);
       if (tsServe && tsServe !== lanHttps) chips.push(`<a class="chip-link" href="${escapeHtml(tsServe)}" target="_blank" title="Tailscale address with a trusted certificate. Only your tailnet can open it.">${escapeHtml(tsServe.replace(/^https:\/\//, ''))}</a>`);
@@ -2316,7 +2334,9 @@
           <span class="lamp ${st}" title="${escapeHtml(label)}"></span>
           <div style="min-width: 0;">
             <div class="host-line">
-              <a class="host" href="${href}" target="_blank"><span class="sub">${safe}</span><span class="tld">.${escapeHtml(TLD || '')}</span></a>
+              ${fn && fn.http === false
+                ? `<span class="host" title="No URL: its candy.json handlers leave out http, so cron and events are all that run it"><span class="sub">${safe}</span></span>`
+                : `<a class="host" href="${href}" target="_blank"><span class="sub">${safe}</span><span class="tld">.${escapeHtml(TLD || '')}</span></a>`}
               ${fn ? (fn.hasWorker === false
                 ? '<span class="badge-fn assets" title="Static site: the daemon serves the files, no process ever starts">assets-only</span>'
                 : '<span class="badge-fn" title="candy function: no port, started per request">fn</span>') : ''}

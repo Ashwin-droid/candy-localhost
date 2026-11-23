@@ -1,8 +1,17 @@
 import { describe, expect, it } from "bun:test"
 import {
   fnLaunchArgs, fnLaunchEnv, fnLimits, fnRequestHeaders, fnSocketPath, fnTargetForRequest, fnToolCommand,
-  normalizeFnSettings, pinnedBun,
+  normalizeFnSettings, pinnedBun, fnSummaryOf,
 } from "../fn-daemon.ts"
+
+describe("function URL", () => {
+  it("http: false is kept, anything else means it has a URL", () => {
+    expect(normalizeFnSettings({ entry: "a.ts", http: false })).toEqual({ entry: "a.ts", http: false })
+    expect(normalizeFnSettings({ entry: "a.ts", http: true })).toEqual({ entry: "a.ts" })
+    expect(fnSummaryOf({ entry: "a.ts", http: false }, null, null).http).toBe(false)
+    expect(fnSummaryOf({ entry: "a.ts" }, null, null).http).toBe(true)
+  })
+})
 
 describe("normalizeFnSettings", () => {
   it("keeps valid fields and drops bad optional ones", () => {

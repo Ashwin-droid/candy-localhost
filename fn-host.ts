@@ -61,12 +61,15 @@ export interface HostArgs {
   scheduled: string | null
   // An event run: the event itself is in the runtime record, never in argv
   event: boolean
+  // The "tag" of the candy.json cron entry behind a --scheduled run; null for an untagged one
+  tag: string | null
 }
 
 export const parseHostArgs = (argv: string[]): HostArgs => {
   let entry: string | null = null
   let scheduled: string | null = null
   let event = false
+  let tag: string | null = null
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === "--scheduled") {
@@ -74,18 +77,24 @@ export const parseHostArgs = (argv: string[]): HostArgs => {
       if (v === undefined) throw new Error("--scheduled needs a cron expression")
       scheduled = v
     } else if (a === "--event") event = true
+    else if (a === "--tag") {
+      const v = argv[++i]
+      if (v === undefined) throw new Error("--tag needs a cron tag")
+      tag = v
+    }
     else if (entry === null) entry = a
     else throw new Error(`unexpected argument: ${a}`)
   }
-  if (!entry) throw new Error("usage: fn-host.ts <entry> [--scheduled <cron> | --event]")
+  if (!entry) throw new Error("usage: fn-host.ts <entry> [--scheduled <cron> [--tag <tag>] | --event]")
   if (event && scheduled !== null) throw new Error("--event and --scheduled can't be used together")
-  return { entry, scheduled, event }
+  if (tag !== null && scheduled === null) throw new Error("--tag goes with --scheduled")
+  return { entry, scheduled, event, tag }
 }
 
 // `assets` is optional here so this also reads configs from before assets were wired up.
 export type HostConfig = FnProjectConfig & { assets?: AssetsConfig | null }
 
-const EMPTY_CONFIG: HostConfig = { main: "", vars: {}, kv: [], d1: [], crons: [], warnings: [], source: null, assets: null }
+const EMPTY_CONFIG: HostConfig = { main: "", vars: {}, kv: [], d1: [], crons: [], handlers: null, warnings: [], source: null, assets: null }
 
 export const configFromEnv = (raw: string | undefined): HostConfig => {
   if (!raw) return { ...EMPTY_CONFIG }
@@ -357,7 +366,7 @@ async function main(): Promise<void> {
       log(`candy auth is off: ${(e as Error).message}`)
     }
   }
-  // env.CANDY: publish(event, data), serviceToken(target), serviceHeaders(target), verifyService(request)
+  // env.CANDY: publish(event, data, { to }), serviceToken(target), serviceHeaders(target), verifyService(request)
   if (runtimeRecord && !Object.hasOwn(env, "CANDY")) {
     const runtime = createRuntime(runtimeRecord)
     env.CANDY = runtime
@@ -375,7 +384,7 @@ async function main(): Promise<void> {
   if (args.scheduled !== null) {
     if (!handler) finish(1)
     try {
-      await runScheduled(handler!, env, args.scheduled)
+      await runScheduled(handler!, env, args.scheduled, undefined, args.tag)
       finish(0)
     } catch (e) {
       log(`scheduled run failed: ${errorInfo(e).stack ?? errorInfo(e).message}`)

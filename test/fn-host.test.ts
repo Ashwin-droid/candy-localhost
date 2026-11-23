@@ -56,9 +56,11 @@ describe("loadHandler", () => {
 
 describe("host helpers", () => {
   it("parses argv", () => {
-    expect(parseHostArgs(["src/index.ts"])).toEqual({ entry: "src/index.ts", scheduled: null, event: false })
-    expect(parseHostArgs(["w.js", "--scheduled", "*/5 * * * *"])).toEqual({ entry: "w.js", scheduled: "*/5 * * * *", event: false })
-    expect(parseHostArgs(["w.js", "--event"])).toEqual({ entry: "w.js", scheduled: null, event: true })
+    expect(parseHostArgs(["src/index.ts"])).toEqual({ entry: "src/index.ts", scheduled: null, event: false, tag: null })
+    expect(parseHostArgs(["w.js", "--scheduled", "*/5 * * * *"])).toEqual({ entry: "w.js", scheduled: "*/5 * * * *", event: false, tag: null })
+    expect(parseHostArgs(["w.js", "--event"])).toEqual({ entry: "w.js", scheduled: null, event: true, tag: null })
+    expect(parseHostArgs(["w.js", "--scheduled", "@daily", "--tag", "cleanup"])).toEqual({ entry: "w.js", scheduled: "@daily", event: false, tag: "cleanup" })
+    expect(() => parseHostArgs(["w.js", "--tag", "cleanup"])).toThrow("--scheduled")
     expect(() => parseHostArgs(["w.js", "--event", "--scheduled", "* * * * *"])).toThrow("together")
     expect(loadHandler({ default: { event() {} } }).event).toBeFunction()
     expect(() => parseHostArgs([])).toThrow("usage")

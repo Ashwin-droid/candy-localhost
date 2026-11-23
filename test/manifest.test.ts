@@ -15,7 +15,7 @@ const project = (files: Record<string, string>): string => {
 describe("candy.json", () => {
   it("a site without one asks for nothing", async () => {
     expect(await loadSiteManifest(project({}))).toEqual(emptyManifest())
-    expect(emptyManifest()).toEqual({ auth: false, depends: [], publish: false, idle: false, pub: [], sub: [], service: false, warnings: [], source: null })
+    expect(emptyManifest()).toEqual({ auth: false, depends: [], publish: false, idle: false, pub: [], sub: [], service: false, cron: [], warnings: [], source: null })
   })
 
   it("reads auth and depends, comments and all", async () => {
@@ -26,7 +26,7 @@ describe("candy.json", () => {
       "publish": true,
     }` })
     const m = await loadSiteManifest(dir)
-    expect(m).toEqual({ auth: true, depends: ["db", "queue"], publish: true, idle: false, pub: [], sub: [], service: false, warnings: [], source: join(dir, "candy.json") })
+    expect(m).toEqual({ auth: true, depends: ["db", "queue"], publish: true, idle: false, pub: [], sub: [], service: false, cron: [], warnings: [], source: join(dir, "candy.json") })
     expect(normalizeManifest({}).publish).toBe(false)
     expect(normalizeManifest({ depends: "db" }).depends).toEqual(["db"])
     expect(normalizeManifest({}).auth).toBe(false)
@@ -40,13 +40,23 @@ describe("candy.json", () => {
     expect(normalizeManifest({ depends: Array.from({ length: MAX_DEPENDS }, (_, i) => `s${i}`) }).depends.length).toBe(MAX_DEPENDS)
   })
 
+  it("cron entries are tagged schedules", () => {
+    const m = normalizeManifest({ cron: [{ tag: "cleanup", schedule: " 0 3 * * * " }, { tag: "sync", schedule: "@hourly", args: ["--sync"], timeout: 600 }] })
+    expect(m.cron).toEqual([{ name: "cleanup", schedule: "0 3 * * *", args: [] }, { name: "sync", schedule: "@hourly", args: ["--sync"], timeoutSec: 600 }])
+    // what the daemon gets back from fn-tool reads the same
+    expect(checkSiteManifest({ ...m, source: null }).cron).toEqual(m.cron)
+    for (const bad of [{ cron: ["0 3 * * *"] }, { cron: [{ schedule: "@daily" }] }, { cron: [{ tag: "a b", schedule: "@daily" }] }, { cron: [{ tag: "a", schedule: "nope" }] }, { cron: [{ tag: "a", schedule: "@daily", cmd: "x" }] }, { cron: [{ tag: "a", schedule: "@daily" }, { tag: "a", schedule: "@hourly" }] }]) {
+      expect(() => normalizeManifest(bad)).toThrow(/candy\.json: "cron"/)
+    }
+  })
+
   it("names the file when it doesn't parse", async () => {
     await expect(loadSiteManifest(project({ "candy.json": `{ "auth": ` }))).rejects.toThrow(/^candy\.json: /)
   })
 
   it("what another process says a manifest is gets checked again", () => {
     expect(checkSiteManifest({ auth: true, depends: ["db"], warnings: ["a\u001b[31mb"], source: "/srv/x/candy.json", extra: 1 }))
-      .toEqual({ auth: true, depends: ["db"], publish: false, idle: false, pub: [], sub: [], service: false, warnings: ["a [31mb"], source: "/srv/x/candy.json" })
+      .toEqual({ auth: true, depends: ["db"], publish: false, idle: false, pub: [], sub: [], service: false, cron: [], warnings: ["a [31mb"], source: "/srv/x/candy.json" })
     expect(checkSiteManifest({ auth: false, depends: [], publish: true }).publish).toBe(true)
     expect(() => checkSiteManifest({ auth: false, depends: [], publish: 1 })).toThrow()
     expect(() => checkSiteManifest({ auth: "true", depends: [] })).toThrow()
@@ -144,5 +154,10 @@ describe("the daemon and candy.json", () => {
     expect(idle).not.toContain("stopDependents")
     const restart = daemon.slice(daemon.indexOf("const restartProcess = async"), daemon.indexOf("const restartProcess = async") + 600)
     expect(restart).not.toContain("stopDependents")
+  })
+
+  it("takes candy's own events in sub, and only the ones it has", () => {
+    expect(normalizeManifest({ sub: ["candy:sub-request", "ci:built"] }).sub).toEqual(["candy:sub-request", "ci:built"])
+    expect(() => normalizeManifest({ sub: ["candy:nope"] })).toThrow(/"candy" has no event "nope"/)
   })
 })

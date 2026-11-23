@@ -14,9 +14,15 @@ export interface FnProjectConfig {
   kv: string[]
   d1: string[]
   crons: string[]
+  // What the function answers to, as declared: null = not declared (everything it is set up for)
+  handlers: FnHandlerKind[] | null
   warnings: string[]
   source: string | null
 }
+
+// "http": requests at its URL. "cron": scheduled() runs. "sub": event() runs for the events in "sub".
+export const FN_HANDLER_KINDS = ["http", "cron", "sub"] as const
+export type FnHandlerKind = typeof FN_HANDLER_KINDS[number]
 
 // The one file read. A list because the daemon stamps every file in it.
 export const CONFIG_FILES = ["candy.json"] as const
@@ -33,9 +39,9 @@ export const BINDING_NAME = /^[A-Z_][A-Z0-9_]{0,63}$/i
 const QUIET_KEYS = new Set(["$schema", "name", "compatibility_date", "compatibility_flags", "account_id", "workers_dev", "preview_urls"])
 const WRANGLER_KEYS = new Set(["main", "vars", "kv_namespaces", "d1_databases", "triggers", "assets"])
 // Short forms too.
-const CANDY_KEYS = new Set([...WRANGLER_KEYS, "kv", "d1", "crons"])
+const CANDY_KEYS = new Set([...WRANGLER_KEYS, "kv", "d1", "crons", "handlers"])
 // The manifest's shared keys (MANIFEST_KEYS in manifest.ts): read there, not a function's business
-const SHARED_KEYS = new Set(["auth", "depends", "publish", "idle", "pub", "sub", "service"])
+const SHARED_KEYS = new Set(["auth", "depends", "publish", "idle", "pub", "sub", "service", "cron"])
 
 const MAX_VAR_BYTES = 64 * 1024
 
@@ -203,6 +209,22 @@ export const normalizeFnConfig = (raw: unknown, dir: string, file: string | null
   crons = [...new Set(crons)]
   if (crons.length > MAX_CRON_JOBS) throw new Error(`at most ${MAX_CRON_JOBS} crons`)
 
+  // "handlers": declared, so candy knows without running the code. Leaving "http" out means no URL.
+  let handlers: FnHandlerKind[] | null = null
+  if (obj.handlers !== undefined) {
+    const list = typeof obj.handlers === "string" ? [obj.handlers] : obj.handlers
+    if (!Array.isArray(list) || list.length === 0) throw new Error(`handlers must be a list of ${FN_HANDLER_KINDS.map(k => `"${k}"`).join(", ")}`)
+    handlers = []
+    for (const h of list) {
+      if (!FN_HANDLER_KINDS.includes(h as FnHandlerKind)) throw new Error(`handlers: ${JSON.stringify(h).slice(0, 60)} is not one of ${FN_HANDLER_KINDS.map(k => `"${k}"`).join(", ")}`)
+      if (!handlers.includes(h as FnHandlerKind)) handlers.push(h as FnHandlerKind)
+    }
+    // A schedule or a subscription nothing is declared to handle is a mistake, not a quiet no-op
+    const has = (v: unknown) => v !== undefined && (!Array.isArray(v) || v.length > 0)
+    if ((crons.length || has(obj.cron)) && !handlers.includes("cron")) throw new Error('there are cron entries but "handlers" has no "cron"')
+    if (has(obj.sub) && !handlers.includes("sub")) throw new Error('there is a "sub" list but "handlers" has no "sub"')
+  }
+
   // One env namespace: a name may only be used once across vars and bindings.
   const seen = new Map<string, string>()
   for (const [kind, names] of [["vars", Object.keys(vars)], ["kv", kv], ["d1", d1]] as const) {
@@ -245,9 +267,10 @@ export const normalizeFnConfig = (raw: unknown, dir: string, file: string | null
     }
     if (assets.binding) warnings.push(`assets.binding "${assets.binding}" has no effect without a main`)
     if (crons.length) throw new Error("crons need a main (there is no worker to run them)")
+    if (handlers) throw new Error("handlers need a main (assets are served without one)")
   }
 
-  return { main, assets, vars, kv, d1, crons, warnings }
+  return { main, assets, vars, kv, d1, crons, handlers, warnings }
 }
 
 const OLD_CONFIG_FILES = ["candy.fn.json", "wrangler.jsonc", "wrangler.json", "wrangler.toml"]

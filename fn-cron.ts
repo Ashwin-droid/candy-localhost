@@ -9,19 +9,30 @@ const hash6 = (s: string): string => new Bun.CryptoHasher("sha256").update(s).di
 
 // Throws on the first bad expression (or too many) so a broken config is
 // reported instead of silently dropping a schedule.
-export const cronJobsFor = (cfg: Pick<FnProjectConfig, "crons">): CronJob[] => {
+// `tagged` are the candy.json "cron" entries (manifest.ts): the run's controller carries the tag.
+export const cronJobsFor = (cfg: Pick<FnProjectConfig, "crons">, tagged: readonly CronJob[] = []): CronJob[] => {
   const crons = cfg.crons ?? []
   if (!Array.isArray(crons)) throw new Error("triggers.crons must be a list of cron expressions")
   if (crons.length > MAX_CRON_JOBS) {
     throw new Error(`triggers.crons has ${crons.length} entries; at most ${MAX_CRON_JOBS} are allowed`)
   }
-  return crons.map((raw, i) => {
+  if (crons.length + tagged.length > MAX_CRON_JOBS) throw new Error(`at most ${MAX_CRON_JOBS} cron jobs ("cron" and "crons" together)`)
+  const untagged = crons.map((raw, i) => {
     if (typeof raw !== "string") throw new Error(`triggers.crons[${i}] must be a string`)
     const expr = raw.trim()
     const v = validateCronJob({ name: `fn-${i}-${hash6(expr)}`, schedule: expr, args: ["--scheduled", expr] })
     if (!v.ok) throw new Error(`triggers.crons[${i}] "${raw}": ${v.error}`)
     return v.job
   })
+  const named = tagged.map(job => {
+    // A function's argv is candy's alone
+    if (job.args.length) throw new Error(`cron "${job.name}": "args" is for servers; a function gets the tag in scheduled(controller)`)
+    if (untagged.some(u => u.name === job.name)) throw new Error(`cron tag "${job.name}" is taken by an untagged cron`)
+    const v = validateCronJob({ ...job, args: ["--scheduled", job.schedule, "--tag", job.name] })
+    if (!v.ok) throw new Error(`cron "${job.name}": ${v.error}`)
+    return v.job
+  })
+  return [...untagged, ...named]
 }
 
 // Workers-style ctx. waitUntil work keeps the instance alive until it settles;
@@ -59,6 +70,8 @@ export class ExecutionContext {
 }
 
 export interface ScheduledController {
+  // The "tag" of the candy.json "cron" entry that fired; null for an untagged "crons" expression
+  tag: string | null
   cron: string
   scheduledTime: number
   type: "scheduled"
@@ -67,13 +80,14 @@ export interface ScheduledController {
 
 type ScheduledHandler = { scheduled?: (c: ScheduledController, env: unknown, ctx: ExecutionContext) => unknown }
 
-export const runScheduled = async (handler: unknown, env: unknown, cron: string, now?: Date): Promise<void> => {
+export const runScheduled = async (handler: unknown, env: unknown, cron: string, now?: Date, tag: string | null = null): Promise<void> => {
   const h = handler as ScheduledHandler | null | undefined
   if (!h || typeof h.scheduled !== "function") {
     throw new Error(`cron "${cron}" fired but the function has no scheduled() handler in its default export`)
   }
   const ctx = new ExecutionContext()
   const controller: ScheduledController = {
+    tag,
     cron,
     scheduledTime: (now ?? new Date()).getTime(),
     type: "scheduled",

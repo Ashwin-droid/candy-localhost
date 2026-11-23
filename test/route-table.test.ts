@@ -128,7 +128,8 @@ describe("ROUTE_TABLE", () => {
       "GET /runtime/events",
       "POST /auth/login", "POST /auth/logout", "POST /auth/passkey/finish",
       "POST /candy-auth/login", "POST /candy/advertise", "POST /mcp/auth",
-      "POST /runtime/publish", "POST /runtime/service-token", "POST /runtime/sub-clients", "POST /runtime/subscriptions",
+      "POST /runtime/ack",
+      "POST /runtime/publish", "POST /runtime/reload-config", "POST /runtime/service-token", "POST /runtime/sub-clients", "POST /runtime/subscriptions",
     ])
   })
 

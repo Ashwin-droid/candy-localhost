@@ -352,7 +352,7 @@ export async function setIdling(idling = true): Promise<IdlingResult> {
 // These act as the site candy started this process for. Inside a candy
 // function the same object is env.CANDY.
 import { createRuntime, readRuntime, type CandyRuntime, type CandyEvent, type ServiceCaller, type Subscription, type SubscribeOptions, type SubClient, type SubscriptionStatus, type PublishOptions } from "./sdk-runtime.ts"
-export type { CandyRuntime, CandyEvent, ServiceCaller, Subscription, SubscribeOptions, SubClient, SubRequest, SubscriptionStatus, PublishOptions } from "./sdk-runtime.ts"
+export type { CandyRuntime, CandyEvent, ServiceCaller, Subscription, SubscribeOptions, SubClient, SubRequest, SubscriptionStatus, PublishOptions, EventSender } from "./sdk-runtime.ts"
 export { SERVICE_HEADER } from "./sdk-runtime.ts"
 
 let cachedRuntime: CandyRuntime | null = null

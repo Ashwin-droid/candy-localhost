@@ -10,7 +10,7 @@ import { parseKeyRing, type JweKey } from "./jwe.ts"
 import { openServiceToken, SERVICE_HEADER, type ServiceCaller } from "./service-auth.ts"
 import type { CandyEvent, SubClient } from "./events.ts"
 
-export type { CandyEvent, SubClient, SubRequest } from "./events.ts"
+export type { CandyEvent, EventSender, SubClient, SubRequest } from "./events.ts"
 export type { ServiceCaller } from "./service-auth.ts"
 export { SERVICE_HEADER } from "./service-auth.ts"
 

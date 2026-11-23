@@ -31,7 +31,7 @@ import { AssetServer, userCanRead, type AssetsConfig } from "./fn-assets.ts"
 import { isDeployId, type DeployInfo } from "./fn-deploy.ts"
 import { CONFIG_FILES as FN_CONFIG_FILES, type FnProjectConfig } from "./fn-config.ts"
 import { MANIFEST_FILE, emptyManifest, findDependencyLoop, type SiteManifest } from "./manifest.ts"
-import { EventQueue, SubClientStore, subAccess, eventData, parseSubscription, subscriptionKey, type SubAccess, type SubClient, EVENT_NAME, MAX_QUEUED, EVENT_ACK_TIMEOUT_MS, type CandyEvent, type Queued, publishTargets, BUILTIN_SITE, SUB_REQUEST_EVENT, type SubRequest } from "./events.ts"
+import { EventQueue, SubClientStore, subAccess, eventData, parseSubscription, subscriptionKey, type SubAccess, type SubClient, EVENT_NAME, MAX_QUEUED, EVENT_ACK_TIMEOUT_MS, type CandyEvent, type Queued, type EventSender, ANY_SITE, inboundKey, boundEventName, publishTargets, BUILTIN_SITE, SUB_REQUEST_EVENT, type SubRequest } from "./events.ts"
 import { mintServiceToken } from "./service-auth.ts"
 import { RUNTIME_CREDENTIAL, RUNTIME_HEADER, type RuntimeRecord } from "./sdk-runtime.ts"
 import { apiHoldSeconds, createApiModeGate } from "./api-mode.ts"
@@ -3246,7 +3246,7 @@ const siteManifest = async (config: ServerConfig, mode: 'cached' | 'check' | 'fo
     if (cached?.error !== error) auditLog('MANIFEST_BAD', `${name}: ${error}`, 'System')
     throw new Error(error)
   }
-  const summary = (x: SiteManifest) => `auth ${x.auth ? 'on' : 'off'}, depends ${x.depends.length ? x.depends.join(', ') : 'nothing'}${x.publish ? ', published' : ''}${x.idle ? ', may idle' : ''}${x.service ? ', takes service tokens' : ''}${x.pub.length ? `, publishes ${x.pub.map(e => `${e.event} (${e.auth}${e.users.length ? `: ${e.users.join(', ')}` : ''})`).join(', ')}` : ''}${x.sub.length ? `, subscribes to ${x.sub.join(', ')}` : ''}`
+  const summary = (x: SiteManifest) => `auth ${x.auth ? 'on' : 'off'}, depends ${x.depends.length ? x.depends.join(', ') : 'nothing'}${x.publish ? ', published' : ''}${x.idle ? ', may idle' : ''}${x.service ? ', takes service tokens' : ''}${x.pub.length ? `, publishes ${x.pub.map(e => e.bind ? `${e.event} (to ${e.bind})` : `${e.event} (${e.auth}${e.users.length ? `: ${e.users.join(', ')}` : ''})`).join(', ')}` : ''}${x.sub.length ? `, subscribes to ${x.sub.join(', ')}` : ''}`
   if (summary(before) !== summary(m)) auditLog('MANIFEST', `${name}: ${summary(m)}`, 'System')
   await applyManifest(name, config, m)
   return m
@@ -3279,7 +3279,7 @@ const applyManifest = async (name: string, config: ServerConfig, m: SiteManifest
   if (config.fn && fnConfigOf(name) === config) await syncFnUrl(name).catch(() => {})
   // Only for the config the name's manifest comes from: another config's file isn't what subscribes
   if (manifestConfig(name) === config) {
-    const publishers = new Set([name, ...m.sub.map(e => parseSubscription(e)!.site).filter(s => s !== BUILTIN_SITE)])
+    const publishers = new Set([name, ...m.sub.map(e => parseSubscription(e)!.site).filter(s => s !== BUILTIN_SITE && s !== ANY_SITE)])
     for (const p of publishers) await announceSubRequests(p).catch(e => auditLog('EVENT_SUB_REQUEST_FAIL', `${p}: ${fnErrorText(e)}`, 'System'))
   }
 }
@@ -3552,7 +3552,7 @@ const checkSubscriptions = async (name: string, config: ServerConfig): Promise<s
   const owner = configUser(config)
   for (const entry of manifest.sub) {
     const sub = parseSubscription(entry)!
-    if (sub.site === BUILTIN_SITE) continue   // the daemon's own events: nothing to check or start
+    if (sub.site === BUILTIN_SITE || sub.site === ANY_SITE) continue   // the daemon's own events, or whoever binds one here: nothing to check or start
     if (!serverConfigs.has(sub.site) || isReserved(sub.site)) throw fail(`it subscribes to '${entry}', but '${sub.site}' is not a site candy starts`)
     const pc = manifestConfig(sub.site)
     const pm = pc ? await siteManifest(pc).catch(() => null) : null
@@ -3583,7 +3583,7 @@ const subscriptionStatus = async (name: string, config: ServerConfig, manifest: 
   const out: { subscription: string; site: string; event: string; status: string }[] = []
   for (const entry of manifest.sub) {
     const sub = parseSubscription(entry)!
-    const access = sub.site === BUILTIN_SITE ? "ok" : await eventAccess(name, configUser(config), sub.site, sub.event)
+    const access = sub.site === BUILTIN_SITE || sub.site === ANY_SITE ? "ok" : await eventAccess(name, configUser(config), sub.site, sub.event)
     out.push({ subscription: entry, ...sub, status: access === "user" ? "denied" : access })
   }
   return out
@@ -3632,7 +3632,8 @@ const runFnEventOnce = async (name: string, ev: CandyEvent): Promise<boolean> =>
 }
 
 // "ordered" in the publisher's "pub" entry: one at a time per subscriber, in the order published
-const eventOrdered = (ev: CandyEvent) => manifestNow(ev.from)?.pub.find(e => e.event === ev.event)?.ordered === true
+const eventOrdered = (sub: string) => (ev: CandyEvent) =>
+  manifestNow(ev.from)?.pub.some(e => e.ordered === true && (e.bind ? e.bind === sub && boundEventName(e as { event: string; bind: string }) === ev.event : e.event === ev.event)) === true
 
 // How a try went. Handled: the event is gone. Failed: it waits for its next try, or was dropped after the last.
 const settleEvent = async (sub: string, id: string, ok: boolean, problem = '') => {
@@ -3661,7 +3662,7 @@ const pumpEvents = (sub: string) => {
     auditLog('EVENT_DROP', `${sub}: ${old.ev.from}:${old.ev.event} (${old.ev.id}) waited too long`, 'System')
   }
   if (fnConfigOf(sub)) {
-    for (const item of eventQueue.take(sub, FN_EVENT_CONCURRENCY - eventQueue.inflight(sub), eventOrdered)) {
+    for (const item of eventQueue.take(sub, FN_EVENT_CONCURRENCY - eventQueue.inflight(sub), eventOrdered(sub))) {
       let problem = ''
       runFnEventOnce(sub, item.ev).catch(e => { problem = fnErrorText(e); return false }).then(ok => settleEvent(sub, item.ev.id, ok, problem)).catch(() => {})
     }
@@ -3674,7 +3675,7 @@ const pumpEvents = (sub: string) => {
     if (up && streams.length) {
       // A stream that doesn't answer (an SDK from before answers) is trusted with everything at once
       const acks = streams.every(s => s.acks)
-      for (const item of eventQueue.take(sub, acks ? 1 - eventQueue.inflight(sub) : Infinity, eventOrdered)) {
+      for (const item of eventQueue.take(sub, acks ? 1 - eventQueue.inflight(sub) : Infinity, eventOrdered(sub))) {
         proc.lastActivity = Date.now()
         for (const s of streams) s.write(item.ev)
         if (!acks) { settleEvent(sub, item.ev.id, true).catch(() => {}); continue }
@@ -3734,13 +3735,24 @@ const loadEventQueue = async () => {
 }
 
 // `to`: only those of its subscribers. Naming one that can't get the event sends nothing to anyone.
-const publishEvent = async (from: string, event: string, data: unknown, to: string[] | null = null): Promise<{ id: string; delivered: string[] }> => {
+// `bind`: an entry bound to one receiver, which takes that event name from anyone ("*::<event>" in its "sub").
+const publishEvent = async (sender: EventSender, event: string, data: unknown, to: string[] | null = null, bind: string | null = null): Promise<{ id: string; delivered: string[] }> => {
   await refreshManifests()
-  const all = await subscribersOf(from, event)
-  const missing = to?.filter(t => !all.includes(t)) ?? []
-  if (missing.length) throw new Error(`${missing.map(t => `'${t.slice(0, 80)}'`).join(', ')} can't get ${from}:${event}: not subscribed to it, or not allowed or approved for it`)
-  const delivered = to ?? all
-  const ev: CandyEvent = { id: crypto.randomUUID(), from, event, data, time: Date.now() }
+  const from = sender.name
+  let delivered: string[]
+  if (bind) {
+    const name = event.slice(bind.length + 1)
+    if (isReserved(bind) || !manifestConfig(bind)) throw new Error(`'${bind}' is not a site candy starts`)
+    if (!manifestNow(bind)?.sub.includes(inboundKey(name))) throw new Error(`'${bind}' doesn't take "${name}" from other sites: it needs "${inboundKey(name)}" in "sub" in its ${MANIFEST_FILE}`)
+    event = name
+    delivered = [bind]
+  } else {
+    const all = await subscribersOf(from, event)
+    const missing = to?.filter(t => !all.includes(t)) ?? []
+    if (missing.length) throw new Error(`${missing.map(t => `'${t.slice(0, 80)}'`).join(', ')} can't get ${from}:${event}: not subscribed to it, or not allowed or approved for it`)
+    delivered = to ?? all
+  }
+  const ev: CandyEvent = { id: crypto.randomUUID(), from, sender, event, data, time: Date.now() }
   for (const sub of delivered) await deliverEvent(sub, ev)
   // Never the data: it is the apps' own
   auditLog('EVENT', `${from}:${event} (${ev.id}) -> ${delivered.length ? delivered.join(', ') : 'no subscribers'}`, 'System')
@@ -3756,19 +3768,21 @@ const handleRuntimeApi = async (req: Request, url: URL): Promise<Response> => {
 
   if (req.method === "POST" && url.pathname === "/runtime/publish") {
     const body = await req.json().catch(() => null) as { event?: unknown; data?: unknown; to?: unknown } | null
-    const event = typeof body?.event === "string" ? body.event.trim().toLowerCase() : ""
-    if (!EVENT_NAME.test(event)) return Response.json({ error: "event must be a name: letters, digits, dots, dashes and underscores." }, { status: 400 })
+    const event = typeof body?.event === "string" ? body.event.trim().toLowerCase().slice(0, 200) : ""
     const manifest = await siteManifest(config).catch(() => null)
     const rules = manifest?.pub.find(e => e.event === event)
     if (!rules) {
+      if (!EVENT_NAME.test(event) && !/^[^:]+:[^:]+$/.test(event)) return Response.json({ error: "event must be a name: letters, digits, dots, dashes and underscores." }, { status: 400 })
       return Response.json({ error: `${grant.name} may not publish "${event}": list it in "pub" in its ${MANIFEST_FILE}.` }, { status: 403 })
     }
     const to = publishTargets(body?.to)
     if (to && "error" in to) return Response.json({ error: to.error }, { status: 400 })
+    if (to && rules.bind) return Response.json({ error: `"${event}" is bound to ${rules.bind}: it takes no "to".` }, { status: 400 })
+    const sender: EventSender = { name: grant.name, user: grant.user, kind: config.fn ? "function" : "server", url: config.fn && config.fn.http === false ? null : makeLocalhostUrl(grant.name) }
     const checked = eventData(body?.data)
     if ("error" in checked) return Response.json({ error: checked.error }, { status: 413 })
     try {
-      return Response.json(await publishEvent(grant.name, event, JSON.parse(checked.json), to))
+      return Response.json(await publishEvent(sender, event, JSON.parse(checked.json), to, rules.bind ?? null))
     } catch (e) {
       return Response.json({ error: fnErrorText(e) }, { status: 409 })
     }

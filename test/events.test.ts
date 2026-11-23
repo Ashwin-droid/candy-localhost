@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { EventQueue, SubClientStore, subAccess, publishTargets, MAX_PUBLISH_TO, eventData, parseSubscription, EVENT_NAME, MAX_EVENT_BYTES, type CandyEvent } from "../events.ts"
+import { EventQueue, SubClientStore, subAccess, publishTargets, boundEventName, MAX_PUBLISH_TO, eventData, parseSubscription, EVENT_NAME, MAX_EVENT_BYTES, type CandyEvent } from "../events.ts"
 import { normalizeManifest, checkSiteManifest } from "../manifest.ts"
 import { generateKey, formatKeyRing, encryptCompact } from "../jwe.ts"
 import { mintServiceToken, openServiceToken, SERVICE_HEADER, SERVICE_TTL_S } from "../service-auth.ts"
@@ -148,6 +148,27 @@ describe("who may subscribe", () => {
     expect(publishTargets(" Web ")).toEqual(["web"])
     expect(publishTargets(["a", "A", "b"])).toEqual(["a", "b"])
     for (const bad of [[], "", [1], {}, ["a", " "], Array(MAX_PUBLISH_TO + 1).fill("a")]) expect(publishTargets(bad)).toHaveProperty("error")
+  })
+
+  it("inbound: a receiver takes an event from any site, a sender binds a pub entry to it", () => {
+    expect(parseSubscription("*::reply")).toEqual({ site: "*", event: "reply" })
+    for (const bad of ["*:reply", "*::", "*::a b", "*reply", "**::reply", "*::a:b"]) expect(parseSubscription(bad)).toBeNull()
+    expect(normalizeManifest({ sub: ["*::Reply", "ci:built"] }).sub).toEqual(["*::reply", "ci:built"])
+    expect(() => normalizeManifest({ sub: ["*:reply"] })).toThrow(`"*::<event>"`)
+
+    const m = normalizeManifest({ pub: [{ event: "wa:reply", bind: "wa" }, { event: "wa:typing", bind: "WA", ordered: true }, "status"] })
+    expect(m.pub).toEqual([
+      { event: "wa:reply", auth: "none", users: [], bind: "wa" },
+      { event: "wa:typing", auth: "none", users: [], ordered: true, bind: "wa" },
+      { event: "status", auth: "lax", users: [] },
+    ])
+    expect(boundEventName({ event: "wa:reply", bind: "wa" })).toBe("reply")
+    expect(checkSiteManifest(m).pub).toEqual(m.pub)
+    expect(() => normalizeManifest({ pub: [{ event: "reply", bind: "wa" }] })).toThrow(`"event" must be "wa:<event>"`)
+    expect(() => normalizeManifest({ pub: [{ event: "bot:reply", bind: "wa" }] })).toThrow(`"event" must be "wa:<event>"`)
+    expect(() => normalizeManifest({ pub: [{ event: "wa:reply", bind: "wa", auth: "strict" }] })).toThrow(`takes no "auth"`)
+    expect(() => normalizeManifest({ pub: [{ event: "wa:reply", bind: "*" }] })).toThrow(`"bind" must be a site name`)
+    expect(() => normalizeManifest({ pub: ["wa:reply"] })).toThrow(`needs an "event" name`)   // a bound name needs its "bind"
   })
 
   it("ordered is kept only when it is on", () => {

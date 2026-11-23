@@ -11,6 +11,8 @@
 //   "pub": [{ "event": "built", "auth": "strict", "auth-users": ["bob"] }, "announce"]
 //                           events it may publish, and who may subscribe to each (events.ts)
 //   "sub": ["ci:built"]     events of other sites it gets; a publish wakes it, and it keeps them up.
+//                           "*::reply" takes "reply" from any site that binds one to it:
+//                           "pub": [{ "event": "wa:reply", "bind": "wa" }] on the sender (events.ts)
 //                           "candy:sub-request" is the daemon's own: an app waits for this site's approval
 //   "service": true         takes server-to-server tokens ("app x, running as user y, asks")
 //   "cron": [{ "tag": "cleanup", "schedule": "0 3 * * *" }]
@@ -20,7 +22,7 @@
 import { join, resolve } from "node:path"
 import { parseJsonc } from "./fn-config.ts"
 import { MAX_CRON_JOBS, validateCronJob, type CronJob } from "./cron.ts"
-import { BUILTIN_EVENTS, BUILTIN_SITE, EVENT_NAME, MAX_AUTH_USERS, MAX_EVENTS, MAX_SUBSCRIBE, PUB_AUTH, parseSubscription, type PubAuth, type PubEvent } from "./events.ts"
+import { ANY_SITE, BUILTIN_EVENTS, BUILTIN_SITE, EVENT_NAME, MAX_AUTH_USERS, MAX_EVENTS, MAX_SUBSCRIBE, PUB_AUTH, parseSubscription, type PubAuth, type PubEvent } from "./events.ts"
 
 export const MANIFEST_FILE = "candy.json"
 // Keys every kind of site may set. fn-config.ts skips these without a warning.
@@ -106,8 +108,20 @@ export const normalizeManifest = (raw: unknown): Omit<SiteManifest, "source"> =>
     const at = `"pub"[${pub.length}]`
     const o = typeof item === "string" ? { event: item } : item
     if (!isObject(o)) throw new Error(`${MANIFEST_FILE}: ${at} must be an event name or { "event": ..., "auth": ..., "auth-users": [...] }`)
-    for (const k of Object.keys(o)) if (k !== "event" && k !== "auth" && k !== "auth-users" && k !== "ordered") throw new Error(`${MANIFEST_FILE}: ${at} has no "${k.slice(0, 40)}" (it takes "event", "auth", "auth-users" and "ordered")`)
+    for (const k of Object.keys(o)) if (k !== "event" && k !== "auth" && k !== "auth-users" && k !== "ordered" && k !== "bind") throw new Error(`${MANIFEST_FILE}: ${at} has no "${k.slice(0, 40)}" (it takes "event", "auth", "auth-users", "ordered" and "bind")`)
     const event = typeof o.event === "string" ? o.event.trim().toLowerCase() : ""
+    if (o.ordered !== undefined && typeof o.ordered !== "boolean") throw new Error(`${MANIFEST_FILE}: ${at} "ordered" must be true or false`)
+    const ordered = o.ordered === true ? { ordered: true as const } : {}
+    // Bound to one receiver: { "event": "wa:reply", "bind": "wa" }
+    if (o.bind !== undefined) {
+      const bind = typeof o.bind === "string" ? o.bind.trim().toLowerCase() : ""
+      if (!SITE_NAME.test(bind)) throw new Error(`${MANIFEST_FILE}: ${at} "bind" must be a site name`)
+      if (!event.startsWith(`${bind}:`) || !EVENT_NAME.test(event.slice(bind.length + 1))) throw new Error(`${MANIFEST_FILE}: ${at} "event" must be "${bind}:<event>" when it binds to "${bind}"`)
+      if (o.auth !== undefined || o["auth-users"] !== undefined) throw new Error(`${MANIFEST_FILE}: ${at} takes no "auth" or "auth-users": it goes to "${bind}" only, which decides what to do with it`)
+      if (pub.some(e => e.event === event)) throw new Error(`${MANIFEST_FILE}: "pub" lists "${event}" twice`)
+      pub.push({ event, auth: "none", users: [], ...ordered, bind })
+      continue
+    }
     if (!EVENT_NAME.test(event)) throw new Error(`${MANIFEST_FILE}: ${at} needs an "event" name (letters, digits, dots, dashes and underscores)`)
     if (pub.some(e => e.event === event)) throw new Error(`${MANIFEST_FILE}: "pub" lists "${event}" twice`)
     let auth: PubAuth = "lax"
@@ -127,15 +141,14 @@ export const normalizeManifest = (raw: unknown): Omit<SiteManifest, "source"> =>
       // A list nobody reads is a mistake worth saying out loud
       if (auth === "none") throw new Error(`${MANIFEST_FILE}: ${at} "auth-users" does nothing with "auth": "none"`)
     }
-    if (o.ordered !== undefined && typeof o.ordered !== "boolean") throw new Error(`${MANIFEST_FILE}: ${at} "ordered" must be true or false`)
-    pub.push({ event, auth, users, ...(o.ordered === true ? { ordered: true as const } : {}) })
+    pub.push({ event, auth, users, ...ordered })
   }
 
   const sub: string[] = []
   for (const item of list("sub", MAX_SUBSCRIBE)) {
     const v = typeof item === "string" ? item.trim().toLowerCase() : ""
     const parsed = parseSubscription(v)
-    if (!parsed || !SITE_NAME.test(parsed.site)) throw new Error(`${MANIFEST_FILE}: "sub"[${sub.length}] must be "<site>:<event>"`)
+    if (!parsed || (parsed.site !== ANY_SITE && !SITE_NAME.test(parsed.site))) throw new Error(`${MANIFEST_FILE}: "sub"[${sub.length}] must be "<site>:<event>", or "*::<event>" to take that event from any site`)
     if (parsed.site === BUILTIN_SITE && !BUILTIN_EVENTS.includes(parsed.event)) {
       throw new Error(`${MANIFEST_FILE}: "sub"[${sub.length}] "${BUILTIN_SITE}" has no event "${parsed.event}" (it has ${BUILTIN_EVENTS.map(e => `"${e}"`).join(", ")})`)
     }
@@ -176,7 +189,7 @@ export const loadSiteManifest = async (dir: string): Promise<SiteManifest> => {
 /** A manifest that came back from another process (fn-tool, run as the site's user): checked again, never trusted. */
 export const checkSiteManifest = (v: unknown): SiteManifest => {
   if (!isObject(v)) throw new Error("bad manifest")
-  const pub = Array.isArray(v.pub) ? v.pub.map(e => isObject(e) ? { event: e.event, auth: e.auth, ...(e.auth === "none" ? {} : { "auth-users": e.users }), ...(e.ordered === undefined ? {} : { ordered: e.ordered }) } : e) : v.pub
+  const pub = Array.isArray(v.pub) ? v.pub.map(e => isObject(e) ? { event: e.event, ...(e.bind !== undefined ? { bind: e.bind } : { auth: e.auth, ...(e.auth === "none" ? {} : { "auth-users": e.users }) }), ...(e.ordered === undefined ? {} : { ordered: e.ordered }) } : e) : v.pub
   const cron = Array.isArray(v.cron) ? v.cron.map(j => isObject(j) ? { tag: j.name, schedule: j.schedule, args: j.args, ...(j.timeoutSec !== undefined ? { timeout: j.timeoutSec } : {}) } : j) : v.cron
   const m = normalizeManifest({ auth: v.auth, depends: v.depends, publish: v.publish, idle: v.idle, pub, sub: v.sub, service: v.service, cron })
   const clean = (s: string) => s.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 500)

@@ -15,10 +15,15 @@ export const EVENT_RETRY_DELAYS_MS: readonly number[] = [1000, 5000, 30_000, 2 *
 // A server that takes an event has this long to say how it went
 export const EVENT_ACK_TIMEOUT_MS = 60_000
 
+// The site an event came from, as candy knows it: for the receiver to judge by
+export interface EventSender { name: string; user: string; kind: "server" | "function"; url: string | null }
+
 export interface CandyEvent {
   id: string
   // The site that published it
   from: string
+  // That site in full. On every event an app published; not on candy's own.
+  sender?: EventSender
   event: string
   data: unknown
   // ms since the epoch, at publish
@@ -27,8 +32,21 @@ export interface CandyEvent {
 
 export const subscriptionKey = (site: string, event: string): string => `${site}:${event}`
 
-/** "site:event" -> its parts, or null. The site part is checked by the caller (manifest.ts). */
+// Inbound events: the receiver takes one event name from any site ("sub": ["*::reply"]), and a
+// sender binds an entry of its "pub" to that receiver ({ "event": "wa:reply", "bind": "wa" }).
+// A publish of it goes to that one site and nowhere else, so there is no "auth" on it: the
+// receiver sees who sent it (event.sender) and decides.
+export const ANY_SITE = "*"
+export const inboundKey = (event: string): string => `${ANY_SITE}::${event}`
+/** The name the receiver sees for a bound "pub" entry: "wa:reply" bound to "wa" is "reply" */
+export const boundEventName = (rule: { event: string; bind: string }): string => rule.event.slice(rule.bind.length + 1)
+
+/** "site:event" or "*::event" -> its parts, or null. The site part is checked by the caller (manifest.ts). */
 export const parseSubscription = (s: string): { site: string; event: string } | null => {
+  if (s.startsWith(ANY_SITE)) {
+    const event = s.slice(ANY_SITE.length + 2)
+    return s === inboundKey(event) && EVENT_NAME.test(event) ? { site: ANY_SITE, event } : null
+  }
   const at = s.indexOf(":")
   if (at <= 0) return null
   const site = s.slice(0, at)
@@ -75,7 +93,8 @@ export const publishTargets = (to: unknown): string[] | null | { error: string }
 }
 export const MAX_AUTH_USERS = 32
 // ordered: each subscriber handles this event one at a time, in the order published
-export interface PubEvent { event: string; auth: PubAuth; users: string[]; ordered?: true }
+// bind: the one site this entry goes to (the event is then "<bind>:<name>", and auth is "none")
+export interface PubEvent { event: string; auth: PubAuth; users: string[]; ordered?: true; bind?: string }
 
 export type SubDecision = "approved" | "rejected" | "revoked"
 // "user": runs as someone the publisher doesn't allow. "pending": allowed user, waiting for approveSubClient.

@@ -250,6 +250,7 @@ export default {
 - **Handled means the handler finished.** A function run that exits cleanly, or a server's `subscribe()` handler that returns (the SDK tells candy). A server gets one event at a time and has 60 seconds to answer.
 - **A failed event comes again** after 1 s, 5 s, 30 s, 2 min and 10 min: a function run that fails or times out, a server handler that throws or doesn't answer in time. After the sixth failure it is dropped, with a line in the subscriber's log. Other events are not held up while one waits for its next try.
 - **Delivery is at least once.** A server that disconnects or is restarted while handling an event gets it again, so a handler should cope with seeing the same `event.id` twice.
+- **Every event says who sent it.** `event.sender` is `{ name, user, kind, url }`: the publishing site, the unix user it runs as, `"server"` or `"function"`, and its URL (null for a function without one). candy fills it in, so an app can't fake it.
 - **`"ordered": true`** on a `pub` entry (`{ "event": "message", "ordered": true }`) makes each subscriber handle that event one at a time, in the order published. A failing one holds the later ones back until it gets through or is dropped. Without it a function may run up to 4 events at once, in any order.
 - **A subscriber keeps its publishers up**, the way `depends` does: a publisher that is a server is started when the subscriber starts, and isn't stopped for being idle while the subscriber runs. Unlike `depends`, it isn't waited for, circles are fine, and stopping the publisher yourself leaves the subscriber running.
 - **A start is refused** when the site subscribes to a site candy doesn't start, or to an event that site doesn't list.
@@ -280,6 +281,25 @@ await publish("run", { job: 42 }, { to: "worker-a" })
 ```
 
 An entry can be just the name (`"built"`), which is `lax` with no extra users: the publisher's own user's sites only. Nothing overrides the publisher: not `"publish": true` (that is for `depends`), not an administrator's site.
+
+**Inbound events: one receiver, any sender.** The other direction: a site takes one event name from whoever sends it, and each sender binds an entry to that site.
+
+```jsonc
+// wa (the receiver): takes "reply" from any site
+{ "sub": ["*::reply"] }
+
+// bot (a sender): this entry goes to wa and nowhere else
+{ "pub": [{ "event": "wa:reply", "bind": "wa" }] }
+```
+
+```ts
+await publish("wa:reply", { chat: "123", text: "on my way" })   // in bot
+// wa's handler gets { from: "bot", event: "reply", sender: { name: "bot", user: "alice", ... }, data }
+```
+
+- There is no `auth` on a bound entry and no approval: it reaches that one site only, and the receiver decides what to do with it from `event.sender`. **Any site on the machine, run by any user, can send one**, so a receiver must check `sender.user` or `sender.name` before acting.
+- The publish is refused when the receiver doesn't exist or doesn't list `"*::<event>"`. `to` is not taken.
+- Delivery, retries and `"ordered"` work as for any event; a stopped receiver is started.
 
 For a strict event the publishing app decides, app by app and event by event, through the SDK (`env.CANDY.*` in a function):
 

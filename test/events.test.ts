@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { EventQueue, SubClientStore, subAccess, publishTargets, boundEventName, MAX_PUBLISH_TO, eventData, parseSubscription, EVENT_NAME, MAX_EVENT_BYTES, type CandyEvent } from "../events.ts"
+import { EventQueue, SubClientStore, subAccess, publishTargets, publishToProblem, boundEventName, MAX_PUBLISH_TO, eventData, parseSubscription, EVENT_NAME, MAX_EVENT_BYTES, type CandyEvent } from "../events.ts"
 import { normalizeManifest, checkSiteManifest } from "../manifest.ts"
 import { generateKey, formatKeyRing, encryptCompact } from "../jwe.ts"
 import { mintServiceToken, openServiceToken, SERVICE_HEADER, SERVICE_TTL_S } from "../service-auth.ts"
@@ -150,6 +150,13 @@ describe("who may subscribe", () => {
     for (const bad of [[], "", [1], {}, ["a", " "], Array(MAX_PUBLISH_TO + 1).fill("a")]) expect(publishTargets(bad)).toHaveProperty("error")
   })
 
+  it("\"to\" names recipients of a strict event only", () => {
+    expect(publishToProblem({ event: "run", auth: "strict" })).toBeNull()
+    expect(publishToProblem({ event: "run", auth: "lax" })).toContain(`only works on a "strict" event`)
+    expect(publishToProblem({ event: "run", auth: "none" })).toContain(`only works on a "strict" event`)
+    expect(publishToProblem({ event: "wa:reply", auth: "none", bind: "wa" })).toContain(`takes no "to"`)
+  })
+
   it("inbound: a receiver takes an event from any site, a sender binds a pub entry to it", () => {
     expect(parseSubscription("*::reply")).toEqual({ site: "*", event: "reply" })
     for (const bad of ["*:reply", "*::", "*::a b", "*reply", "**::reply", "*::a:b"]) expect(parseSubscription(bad)).toBeNull()
@@ -169,6 +176,22 @@ describe("who may subscribe", () => {
     expect(() => normalizeManifest({ pub: [{ event: "wa:reply", bind: "wa", auth: "strict" }] })).toThrow(`takes no "auth"`)
     expect(() => normalizeManifest({ pub: [{ event: "wa:reply", bind: "*" }] })).toThrow(`"bind" must be a site name`)
     expect(() => normalizeManifest({ pub: ["wa:reply"] })).toThrow(`needs an "event" name`)   // a bound name needs its "bind"
+  })
+
+  it("a subscriber can give up order with :unordered, never ask for it", () => {
+    expect(parseSubscription("wa:message:unordered")).toEqual({ site: "wa", event: "message", unordered: true })
+    expect(parseSubscription("*::reply:unordered")).toEqual({ site: "*", event: "reply", unordered: true })
+    expect(parseSubscription("ci:unordered")).toEqual({ site: "ci", event: "unordered" })   // an event called "unordered"
+    expect(parseSubscription("ci:unordered:unordered")).toEqual({ site: "ci", event: "unordered", unordered: true })
+    for (const bad of ["wa:message:ordered", "wa::unordered", "wa:message:unordered:unordered", ":unordered"]) expect(parseSubscription(bad)).toBeNull()
+
+    const m = normalizeManifest({ sub: ["wa:message:unordered", "wa:edit", "*::reply:Unordered", "candy:sub-request"] })
+    expect(m.sub).toEqual(["wa:message", "wa:edit", "*::reply", "candy:sub-request"])
+    expect(m.unordered).toEqual(["wa:message", "*::reply"])
+    expect(checkSiteManifest(m)).toMatchObject({ sub: m.sub, unordered: m.unordered })   // survives the trip from fn-tool
+    expect(normalizeManifest({ sub: ["wa:message:unordered", "wa:message:unordered"] }).sub).toEqual(["wa:message"])
+    expect(() => normalizeManifest({ sub: ["wa:message", "wa:message:unordered"] })).toThrow(`both with and without ":unordered"`)
+    expect(() => normalizeManifest({ sub: ["wa:message:ordered"] })).toThrow(`can't ask for ":ordered"`)
   })
 
   it("ordered is kept only when it is on", () => {
@@ -256,12 +279,12 @@ describe("the runtime client", () => {
     await expect(createRuntime({ ...record, serviceKeys: undefined }).verifyService(token)).rejects.toThrow(`"service": true`)
   })
 
-  it("hands each event to the handler, in order, and reconnects", async () => {
+  it("hands each event to the handler as it arrives, and reconnects", async () => {
     let connects = 0
     const acks: unknown[] = []
     const fetcher = (async (url: string, init: RequestInit) => {
       if (url.endsWith("/runtime/ack")) { acks.push(JSON.parse(init.body as string)); return Response.json({ success: true }) }
-      expect(url.endsWith("/runtime/events?ack=1")).toBe(true)
+      expect(url.endsWith("/runtime/events?ack=1&parallel=1")).toBe(true)
       connects++
       const lines = connects === 1 ? `${JSON.stringify({ candy: "subscriptions", subscriptions: [{ subscription: "ci:built", site: "ci", event: "built", status: "denied" }] })}\n${JSON.stringify(ev("1"))}\n\n${JSON.stringify(ev("2"))}\n` : `${JSON.stringify(ev("3"))}\n`
       return new Response(lines, { headers: { "Content-Type": "application/x-ndjson" } })
@@ -275,7 +298,9 @@ describe("the runtime client", () => {
     sub.close()
     expect(got).toEqual(["1", "2", "3"])
     expect(statuses).toEqual(["ci:built denied"])
-    // Each event is answered: handled, or failed with why (candy sends that one again)
-    expect(acks).toEqual([{ id: "1", ok: true }, { id: "2", ok: false, error: "boom" }, { id: "3", ok: true }])
+    // Each event is answered: handled, or failed with why (candy sends that one again). Handlers run
+    // side by side (candy holds back ordered ones), so the answers may go out in any order.
+    const byId = (x: unknown) => (x as { id: string }).id
+    expect([...acks].sort((a, b) => byId(a).localeCompare(byId(b)))).toEqual([{ id: "1", ok: true }, { id: "2", ok: false, error: "boom" }, { id: "3", ok: true }])
   })
 })

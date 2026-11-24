@@ -255,7 +255,8 @@ export default {
 - **A failed event comes again** after 1 s, 5 s, 30 s, 2 min and 10 min: a function run that fails or times out, a server handler that throws or doesn't answer in time. After the sixth failure it is dropped, with a line in the subscriber's log. Other events are not held up while one waits for its next try.
 - **Delivery is at least once.** A server that disconnects or is restarted while handling an event gets it again, so a handler should cope with seeing the same `event.id` twice.
 - **Every event says who sent it.** `event.sender` is `{ name, user, kind, url }`: the publishing site, the unix user it runs as, `"server"` or `"function"`, and its URL (null for a function without one). candy fills it in, so an app can't fake it.
-- **`"ordered": true`** on a `pub` entry (`{ "event": "message", "ordered": true }`) makes each subscriber handle that event one at a time, in the order published. A failing one holds the later ones back until it gets through or is dropped. Without it a function may run up to 4 events at once, in any order.
+- **`"ordered": true`** on a `pub` entry (`{ "event": "message", "ordered": true }`) makes each subscriber handle that event one at a time, in the order published. A failing one holds the later ones back until it gets through or is dropped. Without it a function may run up to 4 events at once and a server's `subscribe()` handler up to 8, in any order.
+- **A subscriber can give order up, never ask for it.** `"sub": ["wa:message:unordered"]` (or `"*::reply:unordered"`) takes that event without waiting for the one before, even when the publisher marks it `"ordered"`. There is no `:ordered`: only the publisher decides that an event needs order.
 - **A subscriber keeps its publishers up**, the way `depends` does: a publisher that is a server is started when the subscriber starts, and isn't stopped for being idle while the subscriber runs. Unlike `depends`, it isn't waited for, circles are fine, and stopping the publisher yourself leaves the subscriber running.
 - **A start is refused** when the site subscribes to a site candy doesn't start, or to an event that site doesn't list.
 
@@ -277,7 +278,7 @@ export default {
 | `"lax"` (the default) | Sites running as the publisher's own user, or as a user in `auth-users` |
 | `"strict"` | The same users, and only apps the publisher approved for that event |
 
-**Sending to named apps.** `publish(event, data, { to })` sends to those subscribers only; `to` is an app name or a list (up to 32). Without `to` a publish is a broadcast to everyone who may get the event, in every mode. If a named app can't get the event (not subscribed, not allowed, not approved), the publish is refused and nobody gets it. Delivery is the same queue as any event: a stopped server is started and gets it when it connects, a function run is retried.
+**Sending to named apps.** `publish(event, data, { to })` sends to those subscribers only; `to` is an app name or a list (up to 32). It works on `strict` events only, the mode where the publisher knows its subscribers (`listSubClients()`, `candy:sub-request`); on a `none` or `lax` event a publish with `to` is refused. Without `to` a publish is a broadcast to everyone who may get the event, in every mode. If a named app can't get the event (not subscribed, not allowed, not approved), the publish is refused and nobody gets it. Delivery is the same queue as any event: a stopped server is started and gets it when it connects, a function run is retried.
 
 ```ts
 // jobs' candy.json: { "pub": [{ "event": "run", "auth": "strict" }] }

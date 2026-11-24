@@ -16,6 +16,20 @@ export interface ParsedSub { kind: "site" | "any" | "builtin"; publisher: string
 /** The daemon's own publisher name for built-in events ("candy:sub-request"). */
 export const BUILTIN_SITE = "candy"
 
+/**
+ * How a subscription's events arrive: in order only when the publisher marks the event "ordered" and the
+ * subscriber didn't give that up with ":unordered" (`unordered` holds those "sub" entries). The subscriber
+ * can never ask for order itself. Null when it can't be told (not one of the viewer's sites, inbound).
+ */
+export function subOrder(sub: ParsedSub, raw: string, unordered: readonly string[], all: Site[]): "in-order" | "opted-out" | "any" | null {
+  if (unordered.includes(raw)) return "opted-out"
+  if (sub.kind !== "site") return sub.kind === "builtin" ? "any" : null
+  const publisher = all.find(s => s.name === sub.publisher)
+  const entry = publisher?.manifest?.pub.find(p => !p.bind && p.event === sub.event)
+  if (!entry) return null
+  return entry.ordered ? "in-order" : "any"
+}
+
 /** "site:event", "*::event" (inbound from any site that binds to it) or "candy:<event>" (built-in). */
 export function parseSub(s: string): ParsedSub {
   const v = s.trim()

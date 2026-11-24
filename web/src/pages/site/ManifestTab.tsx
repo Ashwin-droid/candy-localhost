@@ -12,7 +12,7 @@ import {
   Button, Code, EmptyState, Icon, KeyValue, Link, Section, StatusDot, Table, type Column, type KVRow,
 } from "../../ui/index.ts"
 import { describeCron, formatRun, localZone, nextRun } from "./lib/cron.ts"
-import { accessWords, parseSub, subscribersOf, subscriptionRow, type ParsedSub } from "./lib/manifest.ts"
+import { accessWords, parseSub, subscribersOf, subscriptionRow, type ParsedSub, subOrder } from "./lib/manifest.ts"
 import "./manifest.css"
 
 type ReloadState = { kind: "ok"; text: string } | { kind: "error"; text: string } | null
@@ -160,6 +160,15 @@ function EventsSections(p: { site: Site; m: SiteManifestView; all: Site[] }): Re
       },
     },
     { key: "event", label: "Event", mono: true, render: r => r.parsed.event },
+    {
+      key: "order", label: "Order", priority: 2, render: r => {
+        const o = subOrder(r.parsed, r.raw, p.m.unordered ?? [], p.all)
+        if (o === "in-order") return <span title="The publisher marks it ordered: one at a time, in the order published">In order</span>
+        if (o === "opted-out") return <span title={`":unordered" in candy.json: it doesn't wait for the one before, even if the publisher marks it ordered`}>Any order (opted out)</span>
+        if (o === "any") return "Any order"
+        return "—"
+      },
+    },
     {
       key: "status", label: "Status (derived)", priority: 2, render: r => {
         const row = subscriptionRow(r.parsed, p.all)

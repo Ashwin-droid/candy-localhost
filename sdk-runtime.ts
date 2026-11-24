@@ -47,6 +47,7 @@ export const readRuntime = (env: Record<string, string | undefined> = process.en
 }
 
 export interface Subscription { close(): void }
+/** `to`: only these approved apps get it. A "strict" event only; on any other the publish is refused. */
 export interface PublishOptions { to?: string | string[] }
 /** Where one "sub" entry stands: "ok", "denied" (the publisher doesn't allow this site's user), "pending", "rejected" or "revoked" */
 export interface SubscriptionStatus { subscription: string; site: string; event: string; status: "ok" | "denied" | "pending" | "rejected" | "revoked" }
@@ -70,7 +71,7 @@ export interface CandyRuntime {
   /** Publish one of the events this site's candy.json lists in "pub". Stopped subscribers are started. */
   /** `to`: only these subscribers get it (without it: everyone who may); refused if one of them can't. */
   publish(event: string, data?: unknown, opts?: PublishOptions): Promise<{ id: string; delivered: string[] }>
-  /** Every event this site's candy.json "sub" lists, one at a time, for as long as the process lives. */
+  /** Every event this site's candy.json "sub" lists, for as long as the process lives. Up to 8 at once, except that an "ordered" event waits for the one before it to be handled. */
   subscribe(handler: (event: CandyEvent) => unknown, opts?: SubscribeOptions): Subscription
   /** Where each of this site's subscriptions stands with its publisher */
   subscriptions(): Promise<SubscriptionStatus[]>
@@ -118,7 +119,7 @@ export const createRuntime = (record: RuntimeRecord | null, fetcher: typeof fetc
         let wait = 500
         while (!stop.signal.aborted) {
           try {
-            const res = await fetcher(`${r.url}/runtime/events?ack=1`, { headers: { [RUNTIME_HEADER]: r.token }, signal: stop.signal })
+            const res = await fetcher(`${r.url}/runtime/events?ack=1&parallel=1`, { headers: { [RUNTIME_HEADER]: r.token }, signal: stop.signal })
             if (!res.ok || !res.body) {
               const answer = await res.json().catch(() => null) as { error?: string } | null
               throw new Error(answer?.error ?? `candy answered ${res.status}`)
@@ -137,10 +138,15 @@ export const createRuntime = (record: RuntimeRecord | null, fetcher: typeof fetc
                   opts.onStatus?.(ev.subscriptions ?? [])
                   continue
                 }
-                // The answer is what takes the event off candy's queue; a throw brings it back later
-                let problem: string | null = null
-                try { await handler(ev) } catch (e) { fail(e); problem = e instanceof Error ? e.message : String(e) }
-                call("/runtime/ack", { id: ev.id, ok: problem === null, ...(problem === null ? {} : { error: problem }) }).catch(fail)
+                // The answer is what takes the event off candy's queue; a throw brings it back later.
+                // Not awaited: candy holds back an "ordered" event until the one before it is answered,
+                // so anything that arrives meanwhile may run alongside.
+                const got = ev
+                void (async () => {
+                  let problem: string | null = null
+                  try { await handler(got) } catch (e) { fail(e); problem = e instanceof Error ? e.message : String(e) }
+                  call("/runtime/ack", { id: got.id, ok: problem === null, ...(problem === null ? {} : { error: problem }) }).catch(fail)
+                })()
               }
             }
           } catch (e) {

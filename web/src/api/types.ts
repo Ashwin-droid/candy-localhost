@@ -17,7 +17,9 @@ export interface ProcessesResponse { success: true; processes: Record<string, Pr
 export type PubAuth = "none" | "lax" | "strict"
 export interface PubEvent { event: string; auth: PubAuth; users: string[]; ordered?: true; bind?: string }
 export interface SiteManifestView { auth: boolean; depends: string[]; publish: boolean; idle: boolean; pub: PubEvent[];
-  sub: string[]; service: boolean; cron: { tag: string; schedule: string }[] }
+  sub: string[]; service: boolean; cron: { tag: string; schedule: string }[]
+  unordered?: string[]   // entries of sub that end in ":unordered" in candy.json (shown without it in sub)
+}
 export interface Variant { id: string; cwd: string; cmd: string; user: string; api: boolean }
 export interface AssetsSummary { directory: string; binding: string | null;
   notFound: "none" | "404-page" | "single-page-application";

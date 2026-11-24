@@ -371,7 +371,8 @@ export const publish = (event: string, data?: unknown, opts?: PublishOptions) =>
 
 /**
  * Receive the events this site's candy.json asks for ("sub":
- * ["<site>:<event>"]), one at a time: `{ id, from, event, data, time }`.
+ * ["<site>:<event>"]): `{ id, from, event, data, time }`. Up to 8 run at once; an event the
+ * publisher marks "ordered" waits for the one before it, unless "sub" says "<site>:<event>:unordered".
  * A server calls this once at start; events published while it was stopped
  * (which is what started it) arrive first. A function exports `event()` instead.
  */

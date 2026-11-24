@@ -22,7 +22,7 @@
 import { join, resolve } from "node:path"
 import { parseJsonc } from "./fn-config.ts"
 import { MAX_CRON_JOBS, validateCronJob, type CronJob } from "./cron.ts"
-import { ANY_SITE, BUILTIN_EVENTS, BUILTIN_SITE, EVENT_NAME, MAX_AUTH_USERS, MAX_EVENTS, MAX_SUBSCRIBE, PUB_AUTH, parseSubscription, type PubAuth, type PubEvent } from "./events.ts"
+import { ANY_SITE, BUILTIN_EVENTS, BUILTIN_SITE, EVENT_NAME, MAX_AUTH_USERS, MAX_EVENTS, MAX_SUBSCRIBE, PUB_AUTH, UNORDERED, inboundKey, parseSubscription, subscriptionKey, type PubAuth, type PubEvent } from "./events.ts"
 
 export const MANIFEST_FILE = "candy.json"
 // Keys every kind of site may set. fn-config.ts skips these without a warning.
@@ -42,8 +42,11 @@ export interface SiteManifest {
   idle: boolean
   // The events this site may publish, each with who may subscribe to it
   pub: PubEvent[]
-  // "site:event" it is subscribed to
+  // "site:event" (or "*::event") it is subscribed to, without any ":unordered"
   sub: string[]
+  // The entries of "sub" it asked to get without waiting (":unordered"): an "ordered" event of the
+  // publisher's comes to this site like a plain one. Never the other way round.
+  unordered: string[]
   // Takes server-to-server tokens (its own key, apart from "auth")
   service: boolean
   // Scheduled runs, each named by its "tag" (CronJob.name)
@@ -53,7 +56,7 @@ export interface SiteManifest {
   source: string | null
 }
 
-export const emptyManifest = (): SiteManifest => ({ auth: false, depends: [], publish: false, idle: false, pub: [], sub: [], service: false, cron: [], warnings: [], source: null })
+export const emptyManifest = (): SiteManifest => ({ auth: false, depends: [], publish: false, idle: false, pub: [], sub: [], unordered: [], service: false, cron: [], warnings: [], source: null })
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v)
 
@@ -145,14 +148,24 @@ export const normalizeManifest = (raw: unknown): Omit<SiteManifest, "source"> =>
   }
 
   const sub: string[] = []
-  for (const item of list("sub", MAX_SUBSCRIBE)) {
+  const unordered: string[] = []
+  for (const [i, item] of list("sub", MAX_SUBSCRIBE).entries()) {
     const v = typeof item === "string" ? item.trim().toLowerCase() : ""
     const parsed = parseSubscription(v)
-    if (!parsed || (parsed.site !== ANY_SITE && !SITE_NAME.test(parsed.site))) throw new Error(`${MANIFEST_FILE}: "sub"[${sub.length}] must be "<site>:<event>", or "*::<event>" to take that event from any site`)
-    if (parsed.site === BUILTIN_SITE && !BUILTIN_EVENTS.includes(parsed.event)) {
-      throw new Error(`${MANIFEST_FILE}: "sub"[${sub.length}] "${BUILTIN_SITE}" has no event "${parsed.event}" (it has ${BUILTIN_EVENTS.map(e => `"${e}"`).join(", ")})`)
+    if (!parsed && v.endsWith(":ordered") && parseSubscription(`${v.slice(0, -":ordered".length)}:${UNORDERED}`)) {
+      throw new Error(`${MANIFEST_FILE}: "sub"[${i}] can't ask for ":ordered": the publisher decides that with "ordered": true on its "pub" entry. A subscriber can only give it up, with ":${UNORDERED}"`)
     }
-    if (!sub.includes(v)) sub.push(v)
+    if (!parsed || (parsed.site !== ANY_SITE && !SITE_NAME.test(parsed.site))) throw new Error(`${MANIFEST_FILE}: "sub"[${i}] must be "<site>:<event>", or "*::<event>" to take that event from any site (either one may end in ":${UNORDERED}")`)
+    if (parsed.site === BUILTIN_SITE && !BUILTIN_EVENTS.includes(parsed.event)) {
+      throw new Error(`${MANIFEST_FILE}: "sub"[${i}] "${BUILTIN_SITE}" has no event "${parsed.event}" (it has ${BUILTIN_EVENTS.map(e => `"${e}"`).join(", ")})`)
+    }
+    const key = parsed.site === ANY_SITE ? inboundKey(parsed.event) : subscriptionKey(parsed.site, parsed.event)
+    if (sub.includes(key)) {
+      if (unordered.includes(key) !== !!parsed.unordered) throw new Error(`${MANIFEST_FILE}: "sub" lists "${key}" both with and without ":${UNORDERED}"`)
+      continue
+    }
+    sub.push(key)
+    if (parsed.unordered) unordered.push(key)
   }
 
   // "cron": each entry { tag, schedule, args, timeout }. The tag is how a run knows which one fired.
@@ -168,7 +181,7 @@ export const normalizeManifest = (raw: unknown): Omit<SiteManifest, "source"> =>
     cron.push(v.job)
   }
 
-  return { auth, depends, publish, idle, pub, sub, service, cron, warnings }
+  return { auth, depends, publish, idle, pub, sub, unordered, service, cron, warnings }
 }
 
 /** Reads <dir>/candy.json. A folder without one gets the empty manifest. */
@@ -191,7 +204,9 @@ export const checkSiteManifest = (v: unknown): SiteManifest => {
   if (!isObject(v)) throw new Error("bad manifest")
   const pub = Array.isArray(v.pub) ? v.pub.map(e => isObject(e) ? { event: e.event, ...(e.bind !== undefined ? { bind: e.bind } : { auth: e.auth, ...(e.auth === "none" ? {} : { "auth-users": e.users }) }), ...(e.ordered === undefined ? {} : { ordered: e.ordered }) } : e) : v.pub
   const cron = Array.isArray(v.cron) ? v.cron.map(j => isObject(j) ? { tag: j.name, schedule: j.schedule, args: j.args, ...(j.timeoutSec !== undefined ? { timeout: j.timeoutSec } : {}) } : j) : v.cron
-  const m = normalizeManifest({ auth: v.auth, depends: v.depends, publish: v.publish, idle: v.idle, pub, sub: v.sub, service: v.service, cron })
+  const unordered = Array.isArray(v.unordered) ? v.unordered : []
+  const sub = Array.isArray(v.sub) ? v.sub.map(s => typeof s === "string" && unordered.includes(s) ? `${s}:${UNORDERED}` : s) : v.sub
+  const m = normalizeManifest({ auth: v.auth, depends: v.depends, publish: v.publish, idle: v.idle, pub, sub, service: v.service, cron })
   const clean = (s: string) => s.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 500)
   const warnings = Array.isArray(v.warnings) ? v.warnings.filter((w): w is string => typeof w === "string").slice(0, 32).map(clean) : []
   const source = typeof v.source === "string" && v.source.length <= 4096 && !/[\x00-\x1f\x7f]/.test(v.source) ? v.source : null

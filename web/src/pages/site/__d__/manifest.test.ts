@@ -2,10 +2,10 @@ import { describe, expect, test } from "bun:test"
 import type { SiteManifestView } from "../../../api/types.ts"
 import { collectSites } from "../../../lib/site.ts"
 import { config, status } from "../../../test/fixtures.ts"
-import { accessWords, parseSub, subscribersOf, subscriptionRow } from "../lib/manifest.ts"
+import { accessWords, parseSub, subOrder, subscribersOf, subscriptionRow } from "../lib/manifest.ts"
 
 const manifest = (o: Partial<SiteManifestView> = {}): SiteManifestView => ({
-  auth: false, depends: [], publish: false, idle: false, pub: [], sub: [], service: false, cron: [], ...o,
+  auth: false, depends: [], publish: false, idle: false, pub: [], sub: [], unordered: [], service: false, cron: [], ...o,
 })
 
 // ci publishes three events (one per access level) and one bound to wa; app, bot and wa subscribe in different ways
@@ -57,6 +57,19 @@ describe("subscribersOf", () => {
   })
   test("nobody", () => {
     expect(subscribersOf(site("plain"), { event: "x", auth: "none", users: [] }, sites)).toEqual([])
+  })
+})
+
+describe("subOrder", () => {
+  const order = (s: string, unordered: string[] = []) => subOrder(parseSub(s), s, unordered, sites)
+  test("in order only when the publisher says so and the subscriber didn't opt out", () => {
+    expect(order("ci:deployed")).toBe("in-order")
+    expect(order("ci:deployed", ["ci:deployed"])).toBe("opted-out")
+    expect(order("ci:built")).toBe("any")
+    expect(order("ci:built", ["ci:built"])).toBe("opted-out")   // nothing to give up, but it's what candy.json says
+    expect(order("candy:sub-request")).toBe("any")
+    expect(order("other:x")).toBeNull()
+    expect(order("*::ping")).toBeNull()
   })
 })
 

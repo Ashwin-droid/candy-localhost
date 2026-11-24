@@ -41,8 +41,23 @@ export const inboundKey = (event: string): string => `${ANY_SITE}::${event}`
 /** The name the receiver sees for a bound "pub" entry: "wa:reply" bound to "wa" is "reply" */
 export const boundEventName = (rule: { event: string; bind: string }): string => rule.event.slice(rule.bind.length + 1)
 
-/** "site:event" or "*::event" -> its parts, or null. The site part is checked by the caller (manifest.ts). */
-export const parseSubscription = (s: string): { site: string; event: string } | null => {
+// A subscriber may turn an "ordered" event back into a plain one for itself: "wa:message:unordered".
+// It can only give order up, never ask for it: "ordered" is the publisher's call, on its "pub" entry.
+export const UNORDERED = "unordered"
+
+/**
+ * "site:event" or "*::event", either one optionally ending in ":unordered", -> its parts, or null.
+ * The site part is checked by the caller (manifest.ts). Event names have no ":", so an event called
+ * "unordered" ("ci:unordered") is still just that event.
+ */
+export const parseSubscription = (s: string): { site: string; event: string; unordered?: true } | null => {
+  const plain = parsePlainSubscription(s)
+  if (plain || !s.endsWith(`:${UNORDERED}`)) return plain
+  const base = parsePlainSubscription(s.slice(0, -(UNORDERED.length + 1)))
+  return base ? { ...base, unordered: true } : null
+}
+
+const parsePlainSubscription = (s: string): { site: string; event: string } | null => {
   if (s.startsWith(ANY_SITE)) {
     const event = s.slice(ANY_SITE.length + 2)
     return s === inboundKey(event) && EVENT_NAME.test(event) ? { site: ANY_SITE, event } : null
@@ -82,6 +97,17 @@ export type PubAuth = "none" | "lax" | "strict"
 export const PUB_AUTH: readonly PubAuth[] = ["none", "lax", "strict"]
 // Apps one publish may name
 export const MAX_PUBLISH_TO = 32
+
+/**
+ * Why a publish of `rules`' event can't name recipients, or null. Picking recipients goes with knowing
+ * them: only a "strict" event has a list of approved apps (listSubClients, candy:sub-request); a "none"
+ * or "lax" event is a broadcast, and a bound one has its one receiver already.
+ */
+export const publishToProblem = (rules: Pick<PubEvent, "event" | "auth" | "bind">): string | null => {
+  if (rules.bind) return `"${rules.event}" is bound to ${rules.bind}: it takes no "to".`
+  if (rules.auth !== "strict") return `"to" only works on a "strict" event, and "${rules.event}" is "${rules.auth}": it goes to everyone who may get it. Make it "strict" in "pub" to send to chosen apps.`
+  return null
+}
 
 /** `to` of a publish as a list of names (lower case, no repeats), null when it wasn't given, or why it can't be used */
 export const publishTargets = (to: unknown): string[] | null | { error: string } => {

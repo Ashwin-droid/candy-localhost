@@ -32,7 +32,7 @@ import { buildIsStale, createPortalApp } from "./portal-app.ts"
 import { isDeployId, type DeployInfo } from "./fn-deploy.ts"
 import { CONFIG_FILES as FN_CONFIG_FILES, type FnProjectConfig } from "./fn-config.ts"
 import { MANIFEST_FILE, emptyManifest, findDependencyLoop, type SiteManifest } from "./manifest.ts"
-import { EventQueue, SubClientStore, subAccess, eventData, parseSubscription, subscriptionKey, type SubAccess, type SubClient, EVENT_NAME, MAX_QUEUED, EVENT_ACK_TIMEOUT_MS, type CandyEvent, type Queued, type EventSender, ANY_SITE, inboundKey, boundEventName, publishTargets, BUILTIN_SITE, SUB_REQUEST_EVENT, type SubRequest } from "./events.ts"
+import { EventQueue, SubClientStore, subAccess, eventData, parseSubscription, subscriptionKey, type SubAccess, type SubClient, EVENT_NAME, MAX_QUEUED, EVENT_ACK_TIMEOUT_MS, type CandyEvent, type Queued, type EventSender, ANY_SITE, inboundKey, boundEventName, publishTargets, publishToProblem, BUILTIN_SITE, SUB_REQUEST_EVENT, type SubRequest } from "./events.ts"
 import { mintServiceToken } from "./service-auth.ts"
 import { RUNTIME_CREDENTIAL, RUNTIME_HEADER, type RuntimeRecord } from "./sdk-runtime.ts"
 import { apiHoldSeconds, createApiModeGate } from "./api-mode.ts"
@@ -3247,7 +3247,7 @@ const siteManifest = async (config: ServerConfig, mode: 'cached' | 'check' | 'fo
     if (cached?.error !== error) auditLog('MANIFEST_BAD', `${name}: ${error}`, 'System')
     throw new Error(error)
   }
-  const summary = (x: SiteManifest) => `auth ${x.auth ? 'on' : 'off'}, depends ${x.depends.length ? x.depends.join(', ') : 'nothing'}${x.publish ? ', published' : ''}${x.idle ? ', may idle' : ''}${x.service ? ', takes service tokens' : ''}${x.pub.length ? `, publishes ${x.pub.map(e => e.bind ? `${e.event} (to ${e.bind})` : `${e.event} (${e.auth}${e.users.length ? `: ${e.users.join(', ')}` : ''})`).join(', ')}` : ''}${x.sub.length ? `, subscribes to ${x.sub.join(', ')}` : ''}`
+  const summary = (x: SiteManifest) => `auth ${x.auth ? 'on' : 'off'}, depends ${x.depends.length ? x.depends.join(', ') : 'nothing'}${x.publish ? ', published' : ''}${x.idle ? ', may idle' : ''}${x.service ? ', takes service tokens' : ''}${x.pub.length ? `, publishes ${x.pub.map(e => e.bind ? `${e.event} (to ${e.bind})` : `${e.event} (${e.auth}${e.users.length ? `: ${e.users.join(', ')}` : ''})`).join(', ')}` : ''}${x.sub.length ? `, subscribes to ${x.sub.map(s => x.unordered.includes(s) ? `${s}:unordered` : s).join(', ')}` : ''}`
   if (summary(before) !== summary(m)) auditLog('MANIFEST', `${name}: ${summary(m)}`, 'System')
   await applyManifest(name, config, m)
   return m
@@ -3468,9 +3468,13 @@ const startDependency = async (dep: string, forName: string): Promise<void> => {
 const eventQueue = new EventQueue()
 eventQueue.startAt(Date.now() * 1000)
 // Subscriber name -> its open /runtime/events streams. `acks`: it answers each event over /runtime/ack.
-interface EventStream { write: (ev: CandyEvent) => void; acks: boolean }
+// `parallel`: it handles events as they come instead of one after another (?parallel=1), so more
+// than one may be out at once; an ordered event still waits for the answer to the one before it.
+interface EventStream { write: (ev: CandyEvent) => void; acks: boolean; parallel: boolean }
 const eventStreams = new Map<string, Set<EventStream>>()
 const FN_EVENT_CONCURRENCY = 4
+// How many events a server that takes them in parallel (the SDK's subscribe()) may have out at once
+const SERVER_EVENT_CONCURRENCY = 8
 const FN_EVENT_TIMEOUT_S = 60
 // Every event not handled yet is a file, so a daemon restart loses none: <dir>/<subscriber>/<seq>-<id>.json
 const EVENT_QUEUE_DIR = `${AUTH_STATE_DIR}/events`
@@ -3632,9 +3636,16 @@ const runFnEventOnce = async (name: string, ev: CandyEvent): Promise<boolean> =>
   return code === 0 && !timedOut
 }
 
-// "ordered" in the publisher's "pub" entry: one at a time per subscriber, in the order published
-const eventOrdered = (sub: string) => (ev: CandyEvent) =>
-  manifestNow(ev.from)?.pub.some(e => e.ordered === true && (e.bind ? e.bind === sub && boundEventName(e as { event: string; bind: string }) === ev.event : e.event === ev.event)) === true
+// "ordered" in the publisher's "pub" entry: one at a time per subscriber, in the order published,
+// unless that subscriber's "sub" entry ends in ":unordered". A subscriber can't make a plain event ordered.
+const eventOrdered = (sub: string) => {
+  const unordered = manifestNow(sub)?.unordered ?? []
+  return (ev: CandyEvent) => manifestNow(ev.from)?.pub.some(e => {
+    if (e.ordered !== true) return false
+    if (e.bind) return e.bind === sub && boundEventName(e as { event: string; bind: string }) === ev.event && !unordered.includes(inboundKey(ev.event))
+    return e.event === ev.event && !unordered.includes(subscriptionKey(ev.from, ev.event))
+  }) === true
+}
 
 // How a try went. Handled: the event is gone. Failed: it waits for its next try, or was dropped after the last.
 const settleEvent = async (sub: string, id: string, ok: boolean, problem = '') => {
@@ -3674,9 +3685,12 @@ const pumpEvents = (sub: string) => {
     const up = proc && (proc.status === 'running' || proc.status === 'starting')
     const streams = [...(eventStreams.get(sub) ?? [])]
     if (up && streams.length) {
-      // A stream that doesn't answer (an SDK from before answers) is trusted with everything at once
+      // A stream that doesn't answer (an SDK from before answers) is trusted with everything at once.
+      // One that answers gets one event at a time, or up to SERVER_EVENT_CONCURRENCY when it takes them
+      // in parallel; ordered ones still go one at a time (take()).
       const acks = streams.every(s => s.acks)
-      for (const item of eventQueue.take(sub, acks ? 1 - eventQueue.inflight(sub) : Infinity, eventOrdered(sub))) {
+      const limit = !acks ? Infinity : streams.every(s => s.parallel) ? SERVER_EVENT_CONCURRENCY : 1
+      for (const item of eventQueue.take(sub, limit - eventQueue.inflight(sub), eventOrdered(sub))) {
         proc.lastActivity = Date.now()
         for (const s of streams) s.write(item.ev)
         if (!acks) { settleEvent(sub, item.ev.id, true).catch(() => {}); continue }
@@ -3778,7 +3792,8 @@ const handleRuntimeApi = async (req: Request, url: URL): Promise<Response> => {
     }
     const to = publishTargets(body?.to)
     if (to && "error" in to) return Response.json({ error: to.error }, { status: 400 })
-    if (to && rules.bind) return Response.json({ error: `"${event}" is bound to ${rules.bind}: it takes no "to".` }, { status: 400 })
+    const toProblem = to ? publishToProblem(rules) : null
+    if (toProblem) return Response.json({ error: toProblem }, { status: 400 })
     const sender: EventSender = { name: grant.name, user: grant.user, kind: config.fn ? "function" : "server", url: config.fn && config.fn.http === false ? null : makeLocalhostUrl(grant.name) }
     const checked = eventData(body?.data)
     if ("error" in checked) return Response.json({ error: checked.error }, { status: 413 })
@@ -3815,7 +3830,7 @@ const handleRuntimeApi = async (req: Request, url: URL): Promise<Response> => {
         const write = (ev: CandyEvent) => {
           try { controller.enqueue(encoder.encode(JSON.stringify(ev) + "\n")) } catch { close() }
         }
-        mine = { write, acks }
+        mine = { write, acks, parallel: acks && url.searchParams.get("parallel") === "1" }
         // First line: where each subscription stands, so the app can act on a denial
         controller.enqueue(encoder.encode(JSON.stringify({ candy: "subscriptions", subscriptions }) + "\n"))
         const set = eventStreams.get(name) ?? new Set()
@@ -8574,7 +8589,7 @@ async function controlFetch(req: Request): Promise<Response> {
       const manifestOf = (config: ServerConfig) => {
         const cached = siteManifests.get(config.id)
         if (!cached || (!cached.stamp && !cached.error)) return null
-        return cached.error ? { error: cached.error } : { auth: cached.m.auth, depends: cached.m.depends, publish: cached.m.publish, idle: cached.m.idle, pub: cached.m.pub, sub: cached.m.sub, service: cached.m.service, cron: cached.m.cron.map(j => ({ tag: j.name, schedule: j.schedule })) }
+        return cached.error ? { error: cached.error } : { auth: cached.m.auth, depends: cached.m.depends, publish: cached.m.publish, idle: cached.m.idle, pub: cached.m.pub, sub: cached.m.sub, unordered: cached.m.unordered, service: cached.m.service, cron: cached.m.cron.map(j => ({ tag: j.name, schedule: j.schedule })) }
       }
       const configs: Record<string, any> = {}
       for (const [name, entries] of serverConfigs) {

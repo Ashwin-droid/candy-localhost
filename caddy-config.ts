@@ -386,6 +386,11 @@ export const mergeLowerCase = <V>(entries: Iterable<[string, V]>): { kept: Map<s
 // One site per address
 // ----------------------------------------------------------------------------
 
+// For a block that answers many names (a wildcard like *.candy, or a list of alias hosts): a
+// certificate per name, made at that name's first handshake, instead of one certificate that
+// names them all. Caddy's own CA signs them, so no "ask" endpoint is needed.
+export const TLS_PER_NAME = "tls internal {\n    on_demand\n  }"
+
 /** Put on the line before a block the daemon makes for itself (shortcut and alias hosts, catch-alls). */
 export const SYSTEM_BLOCK_MARK = "# candy:system"
 

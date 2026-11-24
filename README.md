@@ -149,7 +149,7 @@ Open `https://myapp.localhost` in your browser. candy spawns the process, detect
 
 ## Request and Routing Model
 
-Caddy terminates local TLS (`tls internal`) and proxies traffic to managed process ports or back to the daemon on `:9999` for UI pages.
+Caddy terminates local TLS (`tls internal`) and proxies traffic to managed process ports or back to the daemon on `:9999` for UI pages. Every name gets its own certificate from Caddy's internal CA: the catch-all blocks (`*.candy`, `*.localhost`, the `*.k.` / `*.p.` shortcuts) issue one per name at its first visit, never a wildcard certificate.
 
 ### Host Classes
 

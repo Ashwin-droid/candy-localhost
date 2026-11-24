@@ -40,7 +40,7 @@ import { apiHoldSeconds, createApiModeGate } from "./api-mode.ts"
 import { SystemMonitor, SIGNALS, isUnitName, killProblem, unitActionProblem } from "./sysmon.ts"
 import { PortalSessions, readSessionCookie, sessionCookieHeader, clearSessionCookieHeader } from "./portal-session.ts"
 import { attemptLogin, loginKeys, auditActor, auditSafe, cachedList, classifyRoute, clientIp, guardRequest, isPortalOrigin, LoginSlots, mayActOn, PageTokens, parseShortcutHost, safeNext, sameOrigin, shortcutConfirmUrl, SiteTokens, SoftLockout, SESSION_HEADER, userScopedFetch, wantsHtml, logSafe, type RequestAuth, type RouteRule, type ShortcutAction } from "./portal-auth.ts"
-import { candyHostFor, CANDY_SUBDOMAIN, coalesced, caddyGlobalBlock, checkBindings, cloudflaredYaml, dedupeSiteAddresses, isCaddyUpstream, isCredentialsPath, isDnsLabel, isHostName, isIpOrCidr, isQuickTunnelUrl, isTunnelId, isTunnelName, isZoneId, isZoneName, loopbackBind, lowerName, mergeLowerCase, newNameProblem, PROXY_TAG_HEADER, stripProxyHeaders, SYSTEM_BLOCK_MARK, tagDaemonUpstreams, TUNNEL_TAG_HEADER, tunnelSiteBlock } from "./caddy-config.ts"
+import { candyHostFor, CANDY_SUBDOMAIN, coalesced, caddyGlobalBlock, checkBindings, cloudflaredYaml, dedupeSiteAddresses, isCaddyUpstream, isCredentialsPath, isDnsLabel, isHostName, isIpOrCidr, isQuickTunnelUrl, isTunnelId, isTunnelName, isZoneId, isZoneName, loopbackBind, lowerName, mergeLowerCase, newNameProblem, PROXY_TAG_HEADER, stripProxyHeaders, SYSTEM_BLOCK_MARK, tagDaemonUpstreams, TLS_PER_NAME, TUNNEL_TAG_HEADER, tunnelSiteBlock } from "./caddy-config.ts"
 import { verifyPassword, pamAvailable, checkAccount } from "./pam.ts"
 import { isSuperuser, loginUsers } from "./superuser.ts"
 import { AppKeyStore, ConsentStore, PendingRequests, issuersFor, type SiteLookup } from "./app-auth.ts"
@@ -6147,7 +6147,7 @@ ${body}
   content += `${SYSTEM_BLOCK_MARK}
 *.kill.localhost, *.k.localhost {
   ${localBind}
-  tls internal
+  ${TLS_PER_NAME}
   reverse_proxy localhost:9999
   log
 }
@@ -6159,7 +6159,7 @@ ${body}
   content += `${SYSTEM_BLOCK_MARK}
 *.portal.localhost, *.p.localhost {
   ${localBind}
-  tls internal
+  ${TLS_PER_NAME}
   reverse_proxy localhost:9999
   log
 }
@@ -6171,7 +6171,7 @@ ${body}
     content += `${SYSTEM_BLOCK_MARK}
 *.kill.candy, *.k.candy {
   bind ${tailscaleIp}
-  tls internal
+  ${TLS_PER_NAME}
   reverse_proxy localhost:9999
   log
 }
@@ -6180,7 +6180,7 @@ ${body}
     content += `${SYSTEM_BLOCK_MARK}
 *.portal.candy, *.p.candy {
   bind ${tailscaleIp}
-  tls internal
+  ${TLS_PER_NAME}
   reverse_proxy localhost:9999
   log
 }
@@ -6190,7 +6190,7 @@ ${body}
       content += `${SYSTEM_BLOCK_MARK}
 ${[...new Set(candyKillAliasHosts)].filter(isHostName).join(", ")} {
   bind ${tailscaleIp}
-  tls internal
+  ${TLS_PER_NAME}
   reverse_proxy localhost:9999
   log
 }
@@ -6201,7 +6201,7 @@ ${[...new Set(candyKillAliasHosts)].filter(isHostName).join(", ")} {
       content += `${SYSTEM_BLOCK_MARK}
 ${[...new Set(candyPortalAliasHosts)].filter(isHostName).join(", ")} {
   bind ${tailscaleIp}
-  tls internal
+  ${TLS_PER_NAME}
   reverse_proxy localhost:9999
   log
 }
@@ -6214,7 +6214,7 @@ ${[...new Set(candyPortalAliasHosts)].filter(isHostName).join(", ")} {
   content += `${SYSTEM_BLOCK_MARK}
 *.localhost {
   ${localBind}
-  tls internal
+  ${TLS_PER_NAME}
   reverse_proxy localhost:9999
   log
 }
@@ -6227,7 +6227,7 @@ ${[...new Set(candyPortalAliasHosts)].filter(isHostName).join(", ")} {
       content += `${SYSTEM_BLOCK_MARK}
 ${[...new Set(candyAliasHosts)].filter(isHostName).join(", ")} {
   bind ${tailscaleIp}
-  tls internal
+  ${TLS_PER_NAME}
   reverse_proxy localhost:9999
   log
 }
@@ -6237,7 +6237,7 @@ ${[...new Set(candyAliasHosts)].filter(isHostName).join(", ")} {
     content += `${SYSTEM_BLOCK_MARK}
 *.candy {
   bind ${tailscaleIp}
-  tls internal
+  ${TLS_PER_NAME}
   reverse_proxy localhost:9999
   log
 }

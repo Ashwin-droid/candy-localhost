@@ -20,6 +20,37 @@ it("every wildcard and alias-list block the daemon writes asks for a certificate
   }
 })
 
+// Caddy doesn't manage a certificate for an explicit name that an on-demand wildcard block covers
+// ("wa.candy" next to "*.candy"): its handshake then fails. So a named block is on-demand too.
+it("no block is left on plain `tls internal`", () => {
+  expect(daemon).not.toMatch(/^\s*tls internal\s*$/m)
+})
+
+it.skipIf(!caddy)("a named block next to the wildcard still gets a certificate", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "candy-tls-"))
+  const port = 18000 + Math.floor(Math.random() * 1000)
+  const env = { ...process.env, HOME: dir, XDG_DATA_HOME: dir, XDG_CONFIG_HOME: dir }
+  writeFileSync(join(dir, "Caddyfile"), `{\n  admin off\n  auto_https disable_redirects\n  https_port ${port}\n  skip_install_trust\n}\nwa.candy {\n  bind 127.0.0.1\n  ${TLS_PER_NAME}\n  respond "wa"\n}\n*.candy {\n  bind 127.0.0.1\n  ${TLS_PER_NAME}\n  respond "any"\n}\n`)
+  const proc = Bun.spawn([caddy!, "run", "--config", join(dir, "Caddyfile"), "--adapter", "caddyfile"], { stdout: "ignore", stderr: "ignore", env })
+  try {
+    const san = async (name: string) => {
+      for (let i = 0; i < 40; i++) {
+        const r = Bun.spawnSync(["sh", "-c", `echo | openssl s_client -connect 127.0.0.1:${port} -servername ${name} 2>/dev/null | openssl x509 -noout -ext subjectAltName 2>/dev/null | tail -1`])
+        const out = r.stdout.toString().trim()
+        if (out) return out
+        await Bun.sleep(100)
+      }
+      return ""
+    }
+    expect(await san("wa.candy")).toBe("DNS:wa.candy")
+    expect(await san("other.candy")).toBe("DNS:other.candy")
+  } finally {
+    proc.kill()
+    await proc.exited
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 it.skipIf(!caddy)("Caddy takes it: on-demand, from its own CA, with no ask endpoint", () => {
   const dir = mkdtempSync(join(tmpdir(), "candy-tls-"))
   try {

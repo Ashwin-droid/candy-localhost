@@ -389,6 +389,8 @@ export const mergeLowerCase = <V>(entries: Iterable<[string, V]>): { kept: Map<s
 // For a block that answers many names (a wildcard like *.candy, or a list of alias hosts): a
 // certificate per name, made at that name's first handshake, instead of one certificate that
 // names them all. Caddy's own CA signs them, so no "ask" endpoint is needed.
+// Named blocks use it too: next to an on-demand wildcard, Caddy doesn't manage a certificate for a
+// name the wildcard covers ("wa.candy" under "*.candy"), and a plain `tls internal` there has none.
 export const TLS_PER_NAME = "tls internal {\n    on_demand\n  }"
 
 /**

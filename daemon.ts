@@ -5922,7 +5922,7 @@ ${caddyGlobalBlock({ adminSocket: CADDY_ADMIN_SOCKET, accessLog: CADDY_LOG.repla
     if (!okName(name) || !okUpstream(name, proxyTarget)) continue
     content += `${name}.localhost {
   ${localBind}
-  tls internal
+  ${TLS_PER_NAME}
   reverse_proxy ${proxyTarget}
   log
 }
@@ -5953,7 +5953,7 @@ ${caddyGlobalBlock({ adminSocket: CADDY_ADMIN_SOCKET, accessLog: CADDY_LOG.repla
     }
     content += `${candyHosts.filter(isHostName).join(", ")} {
   bind ${bindAddrs.join(" ")}
-  tls internal
+  ${TLS_PER_NAME}
   reverse_proxy ${proxyTarget}
   log
 }
@@ -5985,7 +5985,7 @@ ${caddyGlobalBlock({ adminSocket: CADDY_ADMIN_SOCKET, accessLog: CADDY_LOG.repla
       if (hasAlias) candyHosts.push(`${alias}.candy`)
       content += `${candyHosts.filter(isHostName).join(", ")} {
   bind ${bindAddrs.join(" ")}
-  tls internal
+  ${TLS_PER_NAME}
   reverse_proxy localhost:9999
   log
 }

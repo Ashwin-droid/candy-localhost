@@ -17,6 +17,7 @@ import { findCodeDir, parseEnvFile, stateDirPath, systemdRunCommand, unitName, u
 import { OAuthServer, type OAuthPersisted } from "./mcp-oauth.ts"
 import { handlePublicRequest as handlePublicMcpRequest } from "./mcp.ts"
 import { applyAdguardUpstreams, upstreamRule, type AdguardConfig } from "./adguard.ts"
+import { AlarmStore, alarmData, alarmNameProblem, alarmTime, cronAlarmTime, ALARM_EVENT, type Alarm, type AlarmFired } from "./alarms.ts"
 import { CRON_JOB_ENV, LAUNCH_WRAPPER, cronMatches, cronScript, DEFAULT_CRON_TIMEOUT_S, MAX_CRON_JOBS, parseCron, validateCronJob, type CronJob } from "./cron.ts"
 import { FnRuntime, type FnLaunched } from "./fn-runtime.ts"
 import { FnLog, replayRequest } from "./fn-log.ts"
@@ -2876,6 +2877,10 @@ const dropAppAuth = async (name: string, actor: Actor = 'System') => {
   subClients.dropSite(name)
   subRequestsTold.delete(name)
   await saveSubClients().catch(() => {})
+  if (alarms.dropSite(name)) {
+    await saveAlarms().catch(() => {})
+    scheduleAlarms()
+  }
   const n = appConsents.dropSite(name)
   await unlink(appAuthCredentialPath(name)).catch(() => {})
   if (hadKeys || n) auditLog('APP_AUTH_DROP', `${name}: key and ${n} approval(s) removed`, actor)
@@ -3548,6 +3553,44 @@ const announceSubRequests = async (publisher: string) => {
   else subRequestsTold.delete(publisher)
 }
 
+// Alarms (alarms.ts): one-off timers a site sets for itself over /runtime/alarms. A due one goes
+// into that site's event queue as "candy:alarm" (so it wakes the site, waits for the answer and
+// retries like any event), and only then leaves the file: a crash in between sends it twice, never zero times.
+const ALARMS_FILE = `${AUTH_STATE_DIR}/alarms.json`
+const alarms = new AlarmStore((() => { try { return JSON.parse(readFileSync(ALARMS_FILE, "utf8")) } catch { return null } })())
+const saveAlarms = async () => {
+  const tmp = `${ALARMS_FILE}.${process.pid}.tmp`
+  await writeFile(tmp, JSON.stringify(alarms), { mode: 0o600 })
+  await rename(tmp, ALARMS_FILE)
+}
+// Re-armed at least hourly, so a clock that jumps is caught up with
+const ALARM_REARM_MS = 60 * 60 * 1000
+let alarmTimer: ReturnType<typeof setTimeout> | null = null
+const scheduleAlarms = () => {
+  if (alarmTimer) clearTimeout(alarmTimer)
+  alarmTimer = null
+  const at = alarms.next()
+  if (at === null) return
+  alarmTimer = setTimeout(() => { alarmTimer = null; fireAlarms().catch(e => auditLog('ALARM_FAIL', fnErrorText(e), 'System')) }, Math.min(Math.max(0, at - Date.now()), ALARM_REARM_MS) + 5)
+}
+const fireAlarms = async () => {
+  const due = alarms.takeDue(Date.now())
+  for (const { site, user, alarm } of due) {
+    const config = manifestConfig(site)
+    if (!config || isReserved(site) || configUser(config) !== user) {
+      auditLog('ALARM_DROP', `${site}: ${alarm.name} (the site is gone or runs as someone else now)`, 'System')
+      continue
+    }
+    const data: AlarmFired = alarm
+    const ev: CandyEvent = { id: crypto.randomUUID(), from: BUILTIN_SITE, event: ALARM_EVENT, data, time: Date.now() }
+    // Never the data: it is the app's own
+    auditLog('ALARM', `${site}: ${alarm.name} (${ev.id})${Date.now() - alarm.at > 60_000 ? `, ${Math.round((Date.now() - alarm.at) / 1000)}s late` : ''}`, 'System')
+    await deliverEvent(site, ev)
+  }
+  if (due.length) await saveAlarms().catch(e => auditLog('ALARM_SAVE_FAIL', fnErrorText(e), 'System'))
+  scheduleAlarms()
+}
+
 // The publishers `name` subscribes to, checked. Throws (and so stops the start) on one it can't have.
 const checkSubscriptions = async (name: string, config: ServerConfig): Promise<string[]> => {
   const fail = (text: string) => new Error(`Refusing to start ${name}: ${text}`)
@@ -3807,7 +3850,8 @@ const handleRuntimeApi = async (req: Request, url: URL): Promise<Response> => {
   if (req.method === "GET" && url.pathname === "/runtime/events") {
     if (grant.kind !== 'srv') return Response.json({ error: "Only a server holds an event stream open. A function gets each event as a run of its event() handler." }, { status: 400 })
     const manifest = await siteManifest(config).catch(() => null)
-    if (!manifest?.sub.length) return Response.json({ error: `${grant.name} subscribes to nothing: list "<site>:<event>" in "sub" in its ${MANIFEST_FILE}.` }, { status: 403 })
+    // ?alarms=1: the SDK's onAlarm(), which needs no "sub"
+    if (!manifest?.sub.length && url.searchParams.get("alarms") !== "1") return Response.json({ error: `${grant.name} subscribes to nothing: list "<site>:<event>" in "sub" in its ${MANIFEST_FILE}.` }, { status: 403 })
     try { controlServer.timeout(req, 0) } catch {}
     const subscriptions = await subscriptionStatus(grant.name, config, manifest)
     const name = grant.name
@@ -3876,6 +3920,49 @@ const handleRuntimeApi = async (req: Request, url: URL): Promise<Response> => {
       // The file as it stands can't be used: what was in force stays in force
       return Response.json({ error: fnErrorText(e) }, { status: 400 })
     }
+  }
+
+  // The site's own alarms: list | set | cancel. Any launch of the site may (a server, a function
+  // run, a cron or event run); they all act as the site. No candy.json entry.
+  if (req.method === "POST" && url.pathname === "/runtime/alarms") {
+    const body = await req.json().catch(() => null) as { action?: unknown; name?: unknown; at?: unknown; in?: unknown; cron?: unknown; data?: unknown } | null
+    const action = body?.action ?? "list"
+    if (action === "list") return Response.json({ alarms: alarms.list(grant.name, grant.user) })
+    if (action !== "set" && action !== "cancel") return Response.json({ error: "action must be list, set or cancel" }, { status: 400 })
+    const nameProblem = alarmNameProblem(body?.name)
+    if (nameProblem) return Response.json({ error: nameProblem }, { status: 400 })
+    const name = body!.name as string
+    if (action === "cancel") {
+      const cancelled = alarms.cancel(grant.name, grant.user, name)
+      if (cancelled) {
+        await saveAlarms()
+        scheduleAlarms()
+        auditLog('ALARM_CANCEL', `${grant.name}: ${name}`, 'System')
+      }
+      return Response.json({ cancelled })
+    }
+    // A function gets it as a run of event(): refused when "handlers" leaves that out
+    if (config.fn) {
+      const handlers = (await fnProject(grant.name, config).catch(() => null))?.handlers
+      if (handlers && !handlers.includes("sub")) return Response.json({ error: `${grant.name} can't take alarms: an alarm runs its event() handler, and "handlers" in its ${MANIFEST_FILE} has no "sub".` }, { status: 400 })
+    }
+    const now = Date.now()
+    // "cron": a soft cron, set again after each run; otherwise "at" or "in", once
+    const hasCron = body!.cron !== undefined && body!.cron !== null
+    if (hasCron && ((body!.at ?? null) !== null || (body!.in ?? null) !== null)) return Response.json({ error: 'give "cron" or a time ("at" or "in"), not both' }, { status: 400 })
+    const when = hasCron ? cronAlarmTime(body!.cron, now) : alarmTime({ at: body!.at, in: body!.in }, now)
+    if (typeof when !== "number" && "error" in when) return Response.json({ error: when.error }, { status: 400 })
+    const at = typeof when === "number" ? when : when.at
+    const cron = typeof when === "number" ? undefined : when.cron
+    const checked = alarmData(body!.data)
+    if ("error" in checked) return Response.json({ error: checked.error }, { status: 413 })
+    const alarm: Alarm = { name, at, ...(cron ? { cron } : {}), data: JSON.parse(checked.json), setAt: now }
+    const r = alarms.set(grant.name, grant.user, alarm)
+    if ("error" in r) return Response.json({ error: r.error }, { status: 409 })
+    await saveAlarms()
+    scheduleAlarms()
+    auditLog('ALARM_SET', `${grant.name}: ${name} ${cron ? `"${cron}", next` : 'at'} ${new Date(at).toISOString()}${r.replaced ? ' (replaced)' : ''}`, 'System')
+    return Response.json({ alarm: { name, at, ...(cron ? { cron } : {}), setAt: now }, replaced: r.replaced })
   }
 
   if (req.method === "POST" && url.pathname === "/runtime/subscriptions") {
@@ -6573,6 +6660,7 @@ const ROUTE_TABLE: readonly RouteRule[] = [
   ["POST", "/runtime/service-token", "public"],
   ["POST", "/runtime/sub-clients", "public"],
   ["POST", "/runtime/subscriptions", "public"],
+  ["POST", "/runtime/alarms", "public"],
   ["POST", "/runtime/reload-config", "public"],
   ["POST", "/sdk/runtime", "user"],
   ["POST", "/sdk/register-port", "user"],
@@ -8614,6 +8702,11 @@ async function controlFetch(req: Request): Promise<Response> {
           lanHttps: isLanPublished(name) ? lanHttpsUrl(name) : null,
           tsServe: tsServeUrl(name),
           fn: fnSummaryNow(name),
+          // Alarms and soft crons the app set for itself (SDK); never their data
+          alarms: (() => {
+            const mine = alarms.ofSite(name)
+            return mine && mine.user === configUser(first) ? mine.alarms.map(a => ({ name: a.name, at: a.at, cron: a.cron ?? null, setAt: a.setAt })) : []
+          })(),
         }
       }
       return Response.json({ success: true, configs }, { headers: corsHeaders })
@@ -9620,3 +9713,5 @@ setTimeout(advertiseToHub, 5000)
 
 // Events that were waiting when the daemon stopped (after everything above is up)
 loadEventQueue().catch(e => auditLog('EVENT_RESTORE_FAIL', fnErrorText(e), 'System'))
+  // Alarms that came due while the daemon was down go off now, after what was already queued
+  .finally(() => fireAlarms().catch(e => auditLog('ALARM_FAIL', fnErrorText(e), 'System')))

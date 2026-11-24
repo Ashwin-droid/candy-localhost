@@ -156,6 +156,9 @@ export const normalizeManifest = (raw: unknown): Omit<SiteManifest, "source"> =>
       throw new Error(`${MANIFEST_FILE}: "sub"[${i}] can't ask for ":ordered": the publisher decides that with "ordered": true on its "pub" entry. A subscriber can only give it up, with ":${UNORDERED}"`)
     }
     if (!parsed || (parsed.site !== ANY_SITE && !SITE_NAME.test(parsed.site))) throw new Error(`${MANIFEST_FILE}: "sub"[${i}] must be "<site>:<event>", or "*::<event>" to take that event from any site (either one may end in ":${UNORDERED}")`)
+    if (parsed.site === BUILTIN_SITE && parsed.event === "alarm") {
+      throw new Error(`${MANIFEST_FILE}: "sub"[${i}] "${BUILTIN_SITE}:alarm" needs no entry: a site gets the alarms it sets itself (setAlarm, onAlarm)`)
+    }
     if (parsed.site === BUILTIN_SITE && !BUILTIN_EVENTS.includes(parsed.event)) {
       throw new Error(`${MANIFEST_FILE}: "sub"[${i}] "${BUILTIN_SITE}" has no event "${parsed.event}" (it has ${BUILTIN_EVENTS.map(e => `"${e}"`).join(", ")})`)
     }

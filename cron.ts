@@ -108,6 +108,25 @@ export const cronMatches = (spec: CronSpec, d: Date): boolean => {
   return domOk || dowOk
 }
 
+/** The first minute after `after` that `spec` matches (local time), or null when none comes within `years` */
+export const cronNext = (spec: CronSpec, after: Date, years = 5): Date | null => {
+  const d = new Date(after.getTime())
+  d.setSeconds(0, 0)
+  d.setMinutes(d.getMinutes() + 1)
+  const end = after.getTime() + years * 366 * 86_400_000
+  while (d.getTime() <= end) {
+    if (!spec.month.has(d.getMonth() + 1)) { d.setMonth(d.getMonth() + 1, 1); d.setHours(0, 0, 0, 0); continue }
+    const domOk = spec.dom.has(d.getDate())
+    const dowOk = spec.dow.has(d.getDay())
+    const dayOk = spec.domAny && spec.dowAny ? true : spec.domAny ? dowOk : spec.dowAny ? domOk : domOk || dowOk
+    if (!dayOk) { d.setDate(d.getDate() + 1); d.setHours(0, 0, 0, 0); continue }
+    if (!spec.hour.has(d.getHours())) { d.setHours(d.getHours() + 1, 0, 0, 0); continue }
+    if (!spec.minute.has(d.getMinutes())) { d.setMinutes(d.getMinutes() + 1, 0, 0); continue }
+    return d
+  }
+  return null
+}
+
 // ---------------------------------------------------------------------------
 // Validation and command building
 // ---------------------------------------------------------------------------

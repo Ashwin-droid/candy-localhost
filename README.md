@@ -383,7 +383,27 @@ Scheduled runs are declared in candy.json, as many as 16 per site. Each has a ta
 - **A function's run** calls `scheduled(controller, env, ctx)` in a one-shot instance, with `controller.tag` set. `args` isn't allowed there. The wrangler-style `crons` / `triggers.crons` lists still work; their runs have `controller.tag` null.
 - A run still going when the next is due is skipped. Output goes to `<logs>/cron/<tag>.log`, and runs are in the audit log (`CRON_RUN`, `CRON_EXIT`).
 - An edit takes effect at the site's next start or on `candy reload`. The jobs are exactly what the file lists: removing an entry removes the job.
-- To change jobs from code, edit your own candy.json and call `await reloadServerConfig()` from the SDK (`env.CANDY.reloadConfig()` in a function). candy reads the file right away and returns what is now in force (`{ cron, warnings }`, plus `handlers` and `url` for a function). It throws with the reason if the file can't be used, and the old jobs stay.
+- To change jobs from code, edit your own candy.json and call `await reloadServerConfig()` from the SDK (`env.CANDY.reloadConfig()` in a function). candy reads the file right away and returns what is now in force (`{ cron, warnings }`, plus `handlers` and `url` for a function). It throws with the reason if the file can't be used, and the old jobs stay. For schedules decided at run time, soft crons (next section) are usually simpler.
+
+#### Alarms and soft crons (SDK)
+
+Timers an app sets for itself from code, with no candy.json entry. When one goes off, candy sends it to the app as the event `candy:alarm`, through the same queue as every other event. The running server takes it in its own process, next to its other events, instead of in a separate command run.
+
+```ts
+import { setAlarm, setCron, cancelAlarm, listAlarms, onAlarm } from "candy-localhost"
+
+await setAlarm("remind:42", { in: 15 * 60_000 }, { chat: "..." })   // once; also a Date, ms, an ISO string, { at }
+await setCron(`digest:${userId}`, "0 8 * * 1-5", { userId })        // every match, until cancelled
+await cancelAlarm("remind:42")
+onAlarm(async ({ name, data, cron }) => { /* ... */ })
+```
+
+- **Delivery** is the event `{ from: "candy", event: "alarm", data: { name, at, cron?, data, setAt } }`. A server gets it through `onAlarm()`, or through `subscribe()` when it has no `onAlarm()`. Both share one connection, and `onAlarm()` works with nothing in `"sub"`. A function gets it in `event()`: use `alarmOf(event)` to tell it apart. Its `"handlers"`, if listed, must include `"sub"`.
+- **Delivery is guaranteed:** a stopped server is started for it, it waits in the queue across restarts, and it comes again until a handler finishes without throwing (same retries as events). If the daemon was down when one was due, it goes off when the daemon is back. A soft cron that missed several runs goes off once.
+- **Names** are 1-128 letters, digits, `.`, `_`, `:` and `-`. Alarms and soft crons share one namespace, and setting a name again replaces whatever had that name. `listAlarms()` returns what's still to go off. Any launch of the site may set them: the server, a function run, a cron run.
+- **Limits:** 256 per site. A one-off alarm can be set at most 366 days ahead, and one set in the past goes off now. `data` is JSON up to 64 KB. Soft crons use the same 5-field schedules as `"cron"`, in the daemon's local time.
+- **In the portal**, the site's Manifest tab lists them under *Alarms and soft crons*, with when each goes off next (not their data). The audit log has `ALARM_SET`, `ALARM` (gone off), `ALARM_CANCEL` and `ALARM_DROP`.
+- **candy.json `"cron"` vs soft crons:** `"cron"` runs the server's command as a separate process (or `scheduled()` in a function), and the file is the source of truth. Soft crons arrive as events in the running app, and the app is the source of truth.
 
 ### Memory limit
 

@@ -32,7 +32,11 @@ export interface FnSummary { entry: string | null; deploy: string | null; hot: n
 export interface ConfigInfo { id: string; cwd: string; cmd: string; user: string; api: boolean; sandbox: boolean;
   envFile: string | null; ttl: number | null; memory: number | null; memoryLimit: number;
   manifest: SiteManifestView | { error: string } | null; rw: string[]; count: number; variants: Variant[];
-  lan: boolean; lanHttps: string | null; tsServe: string | null; fn?: FnSummary }
+  lan: boolean; lanHttps: string | null; tsServe: string | null; fn?: FnSummary
+  alarms?: AlarmView[]   // set by the app through the SDK (setAlarm / setCron), not candy.json
+}
+// cron: a soft cron's schedule (it goes off again after each run); null for a one-off alarm. Times in ms.
+export interface AlarmView { name: string; at: number; cron: string | null; setAt: number }
 export interface ConfigsResponse { success: true; configs: Record<string, ConfigInfo> }
 export interface PortalInfo { port: number; url?: string }
 export type PortalsResponse = Record<string, PortalInfo>

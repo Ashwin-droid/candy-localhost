@@ -5,7 +5,7 @@ import { useEffect, useState } from "react"
 import { ApiError, getApi } from "../../api/client.ts"
 import { invalidate } from "../../api/resources.ts"
 import { KEYS, useSites } from "../../api/sites.ts"
-import type { PubEvent, ReloadResponse, SiteManifestView } from "../../api/types.ts"
+import type { AlarmView, PubEvent, ReloadResponse, SiteManifestView } from "../../api/types.ts"
 import type { Site, TabProps } from "../../lib/site.ts"
 import { AssetsFacts } from "../../shared/AssetsFacts.tsx"
 import {
@@ -237,6 +237,43 @@ function CronSection(p: { site: Site; m: SiteManifestView }): React.JSX.Element 
   )
 }
 
+// Not candy.json: what the app set for itself through the SDK. Shown here next to Cron because
+// it is the same question ("what runs it, when"); the section says where it comes from.
+export function AlarmsSection(p: { site: Site }): React.JSX.Element | null {
+  const now = useMinuteClock()
+  const list = p.site.config?.alarms ?? []
+  if (!list.length) return null
+  const zone = localZone()
+  const cols: Column<AlarmView>[] = [
+    { key: "name", label: "Name", mono: true, render: a => a.name },
+    {
+      key: "kind", label: "Repeats", render: a => {
+        if (!a.cron) return "Once"
+        const words = describeCron(a.cron)
+        return (
+          <span className="manifest-cron">
+            <code>{a.cron}</code>
+            {words ? <span className="small ink-2">{words}</span> : null}
+          </span>
+        )
+      },
+    },
+    {
+      key: "next", label: `Goes off (${zone})`, render: a => {
+        const at = new Date(a.at)
+        return <span className="tnum" title={at.toString()}>{a.at <= now.getTime() ? "Now" : formatRun(at, now)}</span>
+      },
+    },
+    { key: "set", label: "Set", priority: 3, render: a => <span className="tnum" title={new Date(a.setAt).toString()}>{new Date(a.setAt).toLocaleString()}</span> },
+  ]
+  return (
+    <Section id="alarms" title="Alarms and soft crons"
+      description={<>Set by the app itself with <code>setAlarm</code> and <code>setCron</code>, not in candy.json. Each one reaches it as the event <code>candy:alarm</code>.</>}>
+      <Table label="Alarms and soft crons" columns={cols} rows={list} rowKey={a => a.name} />
+    </Section>
+  )
+}
+
 function FunctionSections(p: { site: Site }): React.JSX.Element | null {
   const fn = p.site.fn
   if (!fn) return null
@@ -276,6 +313,7 @@ export default function ManifestTab(p: TabProps): React.JSX.Element {
     body = (
       <>
         <EmptyState>No candy.json in <code>{cfg.cwd}</code>. It runs with defaults.</EmptyState>
+        <AlarmsSection site={site} />
         <FunctionSections site={site} />
       </>
     )
@@ -287,6 +325,7 @@ export default function ManifestTab(p: TabProps): React.JSX.Element {
         <LifecycleSections site={site} m={m} all={all} />
         <EventsSections site={site} m={m} all={all} />
         <CronSection site={site} m={m} />
+        <AlarmsSection site={site} />
         <FunctionSections site={site} />
       </>
     )

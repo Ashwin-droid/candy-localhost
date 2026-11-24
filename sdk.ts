@@ -351,9 +351,9 @@ export async function setIdling(idling = true): Promise<IdlingResult> {
 // --- Events and server-to-server tokens (sdk-runtime.ts) ---
 // These act as the site candy started this process for. Inside a candy
 // function the same object is env.CANDY.
-import { createRuntime, readRuntime, type CandyRuntime, type CandyEvent, type ServiceCaller, type Subscription, type SubscribeOptions, type SubClient, type SubscriptionStatus, type PublishOptions } from "./sdk-runtime.ts"
-export type { CandyRuntime, CandyEvent, ServiceCaller, Subscription, SubscribeOptions, SubClient, SubRequest, SubscriptionStatus, PublishOptions, EventSender } from "./sdk-runtime.ts"
-export { SERVICE_HEADER } from "./sdk-runtime.ts"
+import { createRuntime, readRuntime, type CandyRuntime, type CandyEvent, type ServiceCaller, type Subscription, type SubscribeOptions, type SubClient, type SubscriptionStatus, type PublishOptions, type AlarmWhen, type AlarmFired } from "./sdk-runtime.ts"
+export type { CandyRuntime, CandyEvent, ServiceCaller, Subscription, SubscribeOptions, SubClient, SubRequest, SubscriptionStatus, PublishOptions, EventSender, Alarm, AlarmFired, AlarmWhen, SetAlarmResult } from "./sdk-runtime.ts"
+export { SERVICE_HEADER, alarmOf } from "./sdk-runtime.ts"
 
 let cachedRuntime: CandyRuntime | null = null
 /** This process as its candy site: `publish`, `subscribe`, `serviceToken`, `serviceHeaders`, `verifyService`. */
@@ -407,6 +407,28 @@ export const serviceToken = (target: string) => runtime().serviceToken(target)
 export const serviceHeaders = (target: string) => runtime().serviceHeaders(target)
 /** Which app a request is from (`{ app, user }`), or null. Needs "service": true in this site's candy.json. */
 export const verifyService = (from: Request | Headers | string | null | undefined): Promise<ServiceCaller | null> => runtime().verifyService(from)
+
+/**
+ * Alarms: this site's own timers, set from code, no candy.json entry. At `when` candy hands
+ * `data` back as the built-in event "candy:alarm" (onAlarm here; a function's event() gets it,
+ * see alarmOf). It survives restarts, wakes a stopped server, and comes again until a handler
+ * takes it without throwing. Setting a name again moves it.
+ *   await setAlarm("remind:42", { in: 15 * 60_000 }, { chat: "..." })
+ *   onAlarm(async ({ name, data }) => { ... })
+ */
+export const setAlarm = (name: string, when: AlarmWhen, data?: unknown) => runtime().setAlarm(name, when, data)
+/**
+ * A "soft cron": an alarm that goes off at every match of `schedule` until cancelled, for schedules
+ * decided at run time (say, ones a user picks). Same event, same names as setAlarm; shown in the portal.
+ *   await setCron(`digest:${user}`, "0 8 * * 1-5", { user })
+ */
+export const setCron = (name: string, schedule: string, data?: unknown) => runtime().setCron(name, schedule, data)
+/** Cancel an alarm or soft cron. Whether there was one by that name. */
+export const cancelAlarm = (name: string) => runtime().cancelAlarm(name)
+/** This site's alarms and soft crons still to go off, soonest first */
+export const listAlarms = () => runtime().listAlarms()
+/** This site's alarms as they go off: `(alarm, event)`. Shares subscribe()'s connection; works with nothing in "sub". */
+export const onAlarm = (handler: (alarm: AlarmFired, event: CandyEvent) => unknown, opts?: SubscribeOptions): Subscription => runtime().onAlarm(handler, opts)
 
 /**
  * Cron jobs are declared in candy.json: `"cron": [{ "tag": "sync", "schedule": "@hourly", "args": ["--sync"] }]`.
@@ -485,6 +507,11 @@ const candySdk = {
   serviceToken,
   serviceHeaders,
   verifyService,
+  setAlarm,
+  setCron,
+  cancelAlarm,
+  listAlarms,
+  onAlarm,
 }
 
 export default candySdk

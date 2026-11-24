@@ -391,6 +391,15 @@ export const mergeLowerCase = <V>(entries: Iterable<[string, V]>): { kept: Map<s
 // names them all. Caddy's own CA signs them, so no "ask" endpoint is needed.
 export const TLS_PER_NAME = "tls internal {\n    on_demand\n  }"
 
+/**
+ * Is this stored certificate (its folder under certificates/local, and "sans" from its .json) one
+ * that several names share: a wildcard, or one naming more than one host? Caddy serves a stored
+ * wildcard for any name it covers before it would issue a per-name one, so the daemon removes
+ * these before it starts Caddy. A block that still wants one gets it issued again at once.
+ */
+export const isSharedCert = (folder: string, sans: unknown): boolean =>
+  folder.startsWith("wildcard_") || (Array.isArray(sans) && (sans.length > 1 || sans.some(s => typeof s === "string" && s.includes("*"))))
+
 /** Put on the line before a block the daemon makes for itself (shortcut and alias hosts, catch-alls). */
 export const SYSTEM_BLOCK_MARK = "# candy:system"
 

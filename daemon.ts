@@ -40,7 +40,7 @@ import { apiHoldSeconds, createApiModeGate } from "./api-mode.ts"
 import { SystemMonitor, SIGNALS, isUnitName, killProblem, unitActionProblem } from "./sysmon.ts"
 import { PortalSessions, readSessionCookie, sessionCookieHeader, clearSessionCookieHeader } from "./portal-session.ts"
 import { attemptLogin, loginKeys, auditActor, auditSafe, cachedList, classifyRoute, clientIp, guardRequest, isPortalOrigin, LoginSlots, mayActOn, PageTokens, parseShortcutHost, safeNext, sameOrigin, shortcutConfirmUrl, SiteTokens, SoftLockout, SESSION_HEADER, userScopedFetch, wantsHtml, logSafe, type RequestAuth, type RouteRule, type ShortcutAction } from "./portal-auth.ts"
-import { candyHostFor, CANDY_SUBDOMAIN, coalesced, caddyGlobalBlock, checkBindings, cloudflaredYaml, dedupeSiteAddresses, isCaddyUpstream, isCredentialsPath, isDnsLabel, isHostName, isIpOrCidr, isQuickTunnelUrl, isTunnelId, isTunnelName, isZoneId, isZoneName, loopbackBind, lowerName, mergeLowerCase, newNameProblem, PROXY_TAG_HEADER, stripProxyHeaders, SYSTEM_BLOCK_MARK, tagDaemonUpstreams, TLS_PER_NAME, TUNNEL_TAG_HEADER, tunnelSiteBlock } from "./caddy-config.ts"
+import { candyHostFor, CANDY_SUBDOMAIN, coalesced, caddyGlobalBlock, checkBindings, cloudflaredYaml, dedupeSiteAddresses, isCaddyUpstream, isCredentialsPath, isDnsLabel, isHostName, isIpOrCidr, isSharedCert, isQuickTunnelUrl, isTunnelId, isTunnelName, isZoneId, isZoneName, loopbackBind, lowerName, mergeLowerCase, newNameProblem, PROXY_TAG_HEADER, stripProxyHeaders, SYSTEM_BLOCK_MARK, tagDaemonUpstreams, TLS_PER_NAME, TUNNEL_TAG_HEADER, tunnelSiteBlock } from "./caddy-config.ts"
 import { verifyPassword, pamAvailable, checkAccount } from "./pam.ts"
 import { isSuperuser, loginUsers } from "./superuser.ts"
 import { AppKeyStore, ConsentStore, PendingRequests, issuersFor, type SiteLookup } from "./app-auth.ts"
@@ -5481,6 +5481,24 @@ const getPidOwnedRoutePort = async (name: string, pid: number): Promise<number |
 }
 
 // Start Caddy in background
+// Certificates from Caddy's own CA that several names share (a "*.candy" from before TLS_PER_NAME,
+// a multi-name one) are removed before Caddy starts: a stored wildcard is served for every name it
+// covers, so no per-name one would ever be issued. Only leaf certificates; never the CA (pki/).
+const purgeSharedCerts = async () => {
+  const data = process.env.XDG_DATA_HOME ? `${process.env.XDG_DATA_HOME}/caddy` : process.env.HOME ? `${process.env.HOME}/.local/share/caddy` : null
+  if (!data) return
+  const dir = `${data}/certificates/local`
+  const gone: string[] = []
+  for (const folder of await readdir(dir).catch(() => [] as string[])) {
+    let sans: unknown = null
+    try { sans = JSON.parse(await readFile(`${dir}/${folder}/${folder}.json`, "utf8")).sans } catch {}
+    if (!isSharedCert(folder, sans)) continue
+    await rm(`${dir}/${folder}`, { recursive: true, force: true }).catch(() => {})
+    gone.push(folder)
+  }
+  if (gone.length) auditLog('CADDY_CERT_PURGE', `${gone.length} shared certificate(s) removed, each name gets its own: ${gone.slice(0, 20).join(', ')}`, 'System')
+}
+
 const startCaddy = async () => {
   await $`mkdir -p ${CADDY_CONFIG_DIR}`.quiet().nothrow()
 
@@ -5518,6 +5536,8 @@ const startCaddy = async () => {
       console.log(`\x1b[33mWarning:\x1b[0m Caddy ${ver.split(" ")[0]} is too old; candy needs Caddy >= 2.7 (install from caddyserver.com, not the distro package)`)
     }
   } catch {}
+
+  await purgeSharedCerts()
 
   try {
     caddyProc = spawn({

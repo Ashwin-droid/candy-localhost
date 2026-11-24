@@ -38,3 +38,15 @@ it.skipIf(!caddy)("Caddy takes it: on-demand, from its own CA, with no ask endpo
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+it("knows a stored certificate that several names share", async () => {
+  const { isSharedCert } = await import("../caddy-config.ts")
+  expect(isSharedCert("wildcard_.candy", ["*.candy"])).toBe(true)
+  expect(isSharedCert("wildcard_.k.candy", null)).toBe(true)        // unreadable .json: the folder name is enough
+  expect(isSharedCert("a.candy", ["a.candy", "a-host.candy"])).toBe(true)
+  expect(isSharedCert("odd", ["*.x"])).toBe(true)
+  expect(isSharedCert("deye.candy", ["deye.candy"])).toBe(false)
+  expect(isSharedCert("deye.candy", null)).toBe(false)
+  // and the daemon clears them before it starts Caddy
+  expect(daemon).toMatch(/await purgeSharedCerts\(\)\n\n  try \{\n    caddyProc = spawn/)
+})

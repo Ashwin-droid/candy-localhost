@@ -3631,9 +3631,20 @@ const describeBoxExit = (exit: BoxExit | null): string =>
     : exit.cause
 const boxes = new BoxHost({
   stopUnit: unit => stopUnit(unit),
+  // systemd stops a box the moment its site's unit goes, which can be before the site's exit is seen here
+  askedLate: async box => {
+    const parent = boxParents.get(box.id)
+    const gone = () => {
+      const managed = processes.get(box.site)
+      return !managed || managed.unit !== parent || (managed.status !== 'running' && managed.status !== 'starting')
+    }
+    if (!gone()) await Bun.sleep(500)
+    return gone() ? 'site-stopped' : null
+  },
   onExit: box => {
     unlink(boxEnvPath(box)).catch(() => {})
     unpinBox(box.id)
+    boxParents.delete(box.id)
     auditLog('BOX_RELEASE', `${box.site}: box ${box.id} (${box.unit}) ${describeBoxExit(box.exit)}`, 'System')
   },
 })
@@ -3645,6 +3656,7 @@ const unpinBox = (id: string) => {
   for (const fd of boxPins.get(id) ?? []) { try { closeSync(fd) } catch {} }
   boxPins.delete(id)
 }
+const boxParents = new Map<string, string>()   // box id -> the site unit it is bound to
 const boxRenting = new Map<string, number>()   // site -> rents under way, counted against the quota
 const boxMemoryUsed = async (unit: string): Promise<number | null> => {
   const n = Number((await Bun.file(`/sys/fs/cgroup/${SANDBOX_SLICE}/${unit}/memory.current`).text().catch(() => "")).trim() || NaN)
@@ -3736,6 +3748,7 @@ const rentBox = async (grant: RuntimeGrant, config: ServerConfig, body: unknown)
     }), { mode: 0o600, flag: 'wx' })
     const cmd = boxRunCommand({ site: grant.name, unit, uid: account.uid, gid: account.gid, parentUnit, request, hidden: BOX_HIDDEN.filter(path => existsSync(path)) }, boxEnvPath(box), SYSTEMD_RUN)
     let info: BoxInfo
+    boxParents.set(id, parentUnit)
     try {
       info = await boxes.start({
         id, site: grant.name, user: grant.user, unit, label: request.label, memory: request.memory,
@@ -3744,6 +3757,7 @@ const rentBox = async (grant: RuntimeGrant, config: ServerConfig, body: unknown)
         env: { PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", ...(process.env.LANG ? { LANG: process.env.LANG } : {}) },
       })
     } catch (e) {
+      boxParents.delete(id)
       await unlink(boxEnvPath(box)).catch(() => {})
       return refuse(`The box could not be started: ${(e as Error).message}`, 500)
     }

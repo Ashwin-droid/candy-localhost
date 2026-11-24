@@ -280,3 +280,25 @@ describe("BoxHost", () => {
     await host.wait("wa", s.id, 3000)
   }, 20000)
 })
+
+it("a box ended by TERM that nobody here stopped asks who did: its site going is 'site-stopped'", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "candy-box-late-"))
+  const script = `echo "Running as unit: x.service" >&2; trap 'echo "Finished with result: success" >&2; echo "Main processes terminated with: code=exited, status=143/n/a" >&2; exit 143' TERM; echo ready; while :; do sleep 0.05; done`
+  const asked: string[] = []
+  const host = new BoxHost({ askedLate: async box => { asked.push(box.id); return box.id === "gone" ? "site-stopped" : null } })
+  try {
+    const exits: Record<string, string | undefined> = {}
+    for (const id of ["gone", "stays"]) {
+      const info = await host.start({ id, site: "a", user: "u", unit: `${id}.service`, label: null, memory: 64, socket: join(dir, `${id}.sock`), cmd: ["/bin/sh", "-c", script], env: { PATH: "/usr/bin:/bin" } })
+      const pid = Number(Bun.spawnSync(["pgrep", "-f", "-n", "Running as unit: x.service"]).stdout.toString().trim())
+      await Bun.sleep(150)
+      process.kill(pid, "SIGTERM")   // not through host.stop: as systemd would
+      exits[id] = (await host.wait("a", info.id, 5000))?.exit?.cause
+    }
+    expect(exits).toEqual({ gone: "site-stopped", stays: "signal" })
+    expect(asked).toEqual(["gone", "stays"])
+  } finally {
+    await host.stopAll("stopped")
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

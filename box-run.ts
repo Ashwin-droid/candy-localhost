@@ -46,6 +46,11 @@ export type BoxAsked = "released" | "site-stopped" | "stopped"
 export interface BoxHostOptions {
   onExit?: (box: BoxInfo, stderr: string) => void
   stopUnit?: (unit: string) => Promise<void>
+  /**
+   * Asked when a box ended by TERM or never came up and nobody here stopped it: systemd may have
+   * stopped it because its site went (BindsTo), before the host heard of that.
+   */
+  askedLate?: (box: BoxInfo) => Promise<BoxAsked | null>
   keepExitedMs?: number
   stderrBytes?: number
 }
@@ -91,12 +96,14 @@ export class BoxHost {
   private boxes = new Map<string, Box>()
   private onExit: BoxHostOptions["onExit"]
   private stopUnit: BoxHostOptions["stopUnit"]
+  private readonly askedLate?: BoxHostOptions["askedLate"]
   private keepExitedMs: number
   private stderrMax: number
 
   constructor(opts: BoxHostOptions = {}) {
     this.onExit = opts.onExit
     this.stopUnit = opts.stopUnit
+    this.askedLate = opts.askedLate
     this.keepExitedMs = opts.keepExitedMs ?? KEEP_EXITED_MS
     this.stderrMax = Math.max(1, opts.stderrBytes ?? STDERR_BYTES)
   }
@@ -398,6 +405,12 @@ export class BoxHost {
       const parsed = parseRunSummary(this.stderrText(box))
       rest = parsed.rest
       box.info.exit = boxExitCause(parsed.summary, box.asked, code, rest)
+      const first = box.info.exit
+      if (!box.asked && this.askedLate && (first.cause === "failed" || (first.cause === "signal" && first.signal === "TERM"))) {
+        const late = await this.askedLate({ ...box.info }).catch(() => null)
+        if (late && !box.asked) box.asked = late
+        if (box.asked) box.info.exit = boxExitCause(parsed.summary, box.asked, code, rest, first.at)
+      }
     } catch (err) {
       box.info.exit = { cause: "failed", code, signal: null, detail: String(err).slice(0, 500), at: Date.now() }
     }

@@ -59,3 +59,23 @@ export function checkWhole(v: string, label: string, min: number): string | null
   const n = Number(s)
   return WHOLE.test(s) && Number.isInteger(n) && n >= min ? null : `${label} must be a whole number, ${min} or more`
 }
+
+export const BOXES_MAX = 64
+const BOX_MEMORY_MIN_MB = 64
+
+/**
+ * The operator's box quota (POST /config/boxes). Both empty = off. Otherwise `max` is 1..64 boxes and
+ * `memory` 64M..16G for each box (parsed like the memory limit, MB as a number).
+ */
+export function checkBoxes(max: string, memory: string):
+  { off: true } | { off: false; max: number; memory: number } | { field: "max" | "memory"; error: string } {
+  const m = max.trim(), mem = memory.trim()
+  if (!m && !mem) return { off: true }
+  const n = Number(m)
+  if (!WHOLE.test(m) || n < 1 || n > BOXES_MAX) return { field: "max", error: `Enter a number of boxes from 1 to ${BOXES_MAX}` }
+  if (!mem) return { field: "memory", error: "Enter the memory for each box, like 1G or 512M" }
+  const mb = parseMemory(mem)
+  if (typeof mb === "string") return { field: "memory", error: mb }
+  if (mb === null || mb < BOX_MEMORY_MIN_MB) return { field: "memory", error: "At least 64M" }
+  return { off: false, max: n, memory: mb }
+}

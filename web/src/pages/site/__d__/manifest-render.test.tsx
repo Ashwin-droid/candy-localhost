@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { ConfigInfo, ProcessInfo, SiteManifestView } from "../../../api/types.ts"
+import type { BoxView, ConfigInfo, ProcessInfo, SiteManifestView } from "../../../api/types.ts"
 import { collectSites } from "../../../lib/site.ts"
 import { config, fnSummary, proc, route, status } from "../../../test/fixtures.ts"
 import { renderWith } from "../../../test/render.tsx"
@@ -87,6 +87,68 @@ describe("ManifestTab", () => {
     const html = render("job", all)
     expect(html).toContain("No HTTP handler: no URL")
     expect(html).toContain("aren&#x27;t listed here yet.")
+  })
+  describe("boxes", () => {
+    const GB = 1024 * 1024 * 1024
+    const box = (o: Partial<BoxView> = {}): BoxView => ({
+      id: "b-1a2b", label: null, unit: "candy-box-api-b-1a2b.scope", memory: 4096, memoryUsed: null, startedAt: Date.now(), ...o,
+    })
+    test("nothing at all when the site doesn't use them", () => {
+      expect(render("api", sitesWith({ api: config({ manifest: manifest() }) }))).not.toContain('id="boxes"')
+      const off = render("api", sitesWith({ api: config({ manifest: manifest(), boxes: { wanted: false, quota: null, held: [] } }) }))
+      expect(off).not.toContain('id="boxes"')
+      expect(off).not.toContain("Boxes")
+    })
+    test("asks for boxes, none allowed", () => {
+      const html = render("api", sitesWith({ api: config({ manifest: manifest(), boxes: { wanted: true, quota: null, held: [] } }) }))
+      expect(html).toContain('id="boxes"')
+      expect(html).toContain("Its candy.json asks for boxes, and none are allowed yet.")
+      expect(html).toContain("<code>candy boxes api &lt;max&gt; &lt;memory&gt;</code>")
+      expect(html).not.toContain('href="/sites/api/settings#sandbox"')   // single-user: no such Settings section
+    })
+    test("asks for boxes, none allowed: multi-user points at Settings too", () => {
+      const all = sitesWith({ api: config({ manifest: manifest(), boxes: { wanted: true, quota: null, held: [] } }) })
+      const html = renderWith(<ManifestTab site={all[0]} />, { route: "/sites/api/manifest", resources: { sites: all }, session: { multiUser: true } })
+      expect(html).toContain('href="/sites/api/settings#sandbox"')
+      expect(html).toContain("Settings › Sandbox and memory</a>, or <code>candy boxes api &lt;max&gt; &lt;memory&gt;</code>")
+    })
+    test("allowed, but candy.json doesn't ask (also without a candy.json)", () => {
+      const boxes = { wanted: false, quota: { max: 12, memory: 4096 }, held: [] }
+      for (const cfg of [config({ manifest: manifest(), boxes }), config({ boxes })]) {
+        const html = render("api", sitesWith({ api: cfg }))
+        expect(html).toContain("Boxes are allowed, but its candy.json doesn&#x27;t ask for them.")
+        expect(html).toContain("<code>&quot;boxes&quot;: true</code>")
+        expect(html).toContain("Up to 12 boxes, 4G each. 0 of 12 held.")
+      }
+    })
+    test("summary and held boxes", () => {
+      const now = Date.now()
+      const held = [
+        box({ id: "b-1", label: "chrome", memoryUsed: GB, startedAt: now - (2 * 3600 + 5 * 60) * 1000 }),
+        box({ id: "b-2", memoryUsed: null, memory: 512, startedAt: now - 7 * 60 * 1000 }),
+        box({ id: "b-3", label: "ffmpeg", memoryUsed: 1.5 * GB, memory: 2048, startedAt: now - 3 * 86400 * 1000 }),
+      ]
+      const html = render("api", sitesWith({ api: config({ manifest: manifest(), boxes: { wanted: true, quota: { max: 12, memory: 4096 }, held } }) }))
+      expect(html).toContain("Up to 12 boxes, 4G each. 3 of 12 held.")
+      expect(html).not.toContain("none are allowed yet")
+      expect(html).not.toContain("doesn&#x27;t ask")
+      expect(html).toContain("chrome")
+      expect(html).toContain("b-1")
+      expect(html).toContain("1G of 4G")
+      expect(html).toContain('aria-label="25% of its memory limit"')
+      expect(html).toContain("2h 5m")
+      expect(html).toContain("— of 512M")                 // no reading yet: text only, no bar
+      expect(html).toContain("7m")
+      expect(html).toContain("1.5G of 2G")
+      expect(html).toContain('aria-label="75% of its memory limit"')
+      expect(html).toContain("3d 0h")
+      expect(html.match(/role="meter"/g)?.length).toBe(2)
+    })
+    test("one box allowed", () => {
+      const html = render("api", sitesWith({ api: config({ manifest: manifest(), boxes: { wanted: true, quota: { max: 1, memory: 1536 }, held: [] } }) }))
+      expect(html).toContain("Up to 1 box, 1.5G each. 0 of 1 held.")
+      expect(html).toContain("None held right now.")
+    })
   })
   test("a function route without a visible config", () => {
     const all = collectSites({ status, routes: { hook: route({ fn: "hook" }) } })

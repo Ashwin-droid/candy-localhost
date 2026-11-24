@@ -5,11 +5,13 @@ import { useEffect, useState } from "react"
 import { ApiError, getApi } from "../../api/client.ts"
 import { invalidate } from "../../api/resources.ts"
 import { KEYS, useSites } from "../../api/sites.ts"
-import type { AlarmView, PubEvent, ReloadResponse, SiteManifestView } from "../../api/types.ts"
+import type { AlarmView, BoxView, PubEvent, ReloadResponse, SiteManifestView } from "../../api/types.ts"
 import type { Site, TabProps } from "../../lib/site.ts"
+import { useSession } from "../../session.tsx"
+import { fmtMb, formatUptime } from "../../lib/format.ts"
 import { AssetsFacts } from "../../shared/AssetsFacts.tsx"
 import {
-  Button, Code, EmptyState, Icon, KeyValue, Link, Section, StatusDot, Table, type Column, type KVRow,
+  Button, Code, EmptyState, Icon, KeyValue, Link, Meter, Section, StatusDot, Table, type Column, type KVRow,
 } from "../../ui/index.ts"
 import { describeCron, formatRun, localZone, nextRun } from "./lib/cron.ts"
 import { accessWords, parseSub, subscribersOf, subscriptionRow, type ParsedSub, subOrder } from "./lib/manifest.ts"
@@ -274,6 +276,62 @@ export function AlarmsSection(p: { site: Site }): React.JSX.Element | null {
   )
 }
 
+const MB = 1024 * 1024
+const boxWord = (n: number) => n === 1 ? "box" : "boxes"
+
+// Not candy.json alone: candy.json asks ("boxes": true), the operator allows (`candy boxes`), the
+// daemon reports what is held now. Most sites never use boxes, so nothing at all shows then.
+export function BoxesSection(p: { site: Site }): React.JSX.Element | null {
+  const now = useMinuteClock()
+  // the Settings control lives in Sandbox and memory, which only a multi-user daemon shows
+  const { multiUser } = useSession()
+  const b = p.site.config?.boxes
+  if (!b) return null
+  const held = b.held ?? []
+  if (!b.wanted && !b.quota && !held.length) return null
+  const summary = b.quota
+    ? `Up to ${b.quota.max} ${boxWord(b.quota.max)}, ${fmtMb(b.quota.memory)} each. ${held.length} of ${b.quota.max} held.`
+    : `None allowed. ${held.length} held.`
+  const note = b.wanted && !b.quota
+    ? <>Its candy.json asks for boxes, and none are allowed yet. To allow them: {multiUser
+        ? <><Link to={`/sites/${encodeURIComponent(p.site.name)}/settings#sandbox`}>Settings › Sandbox and memory</Link>, or </>
+        : null}<code>candy boxes {p.site.name} &lt;max&gt; &lt;memory&gt;</code></>
+    : b.quota && !b.wanted
+      ? <>Boxes are allowed, but its candy.json doesn't ask for them. Add <code>"boxes": true</code> to use them.</>
+      : null
+  const cols: Column<BoxView>[] = [
+    { key: "box", label: "Box", mono: true, render: x => x.label ?? x.id },
+    { key: "id", label: "ID", mono: true, priority: 2, render: x => <span title={x.unit}>{x.id}</span> },
+    {
+      key: "memory", label: "Memory", render: x => {
+        const limit = fmtMb(x.memory)
+        if (x.memoryUsed === null) return <span className="mono">— of {limit}</span>
+        const ratio = x.memoryUsed / (x.memory * MB)
+        return (
+          <span className="manifest-memory">
+            <span className="mono">{fmtMb(x.memoryUsed / MB, true)} of {limit}</span>
+            <Meter value={ratio} label={`${Math.round(ratio * 100)}% of its memory limit`} />
+          </span>
+        )
+      },
+    },
+    {
+      key: "running", label: "Running for", render: x =>
+        <span className="tnum" title={new Date(x.startedAt).toString()}>{formatUptime((now.getTime() - x.startedAt) / 1000)}</span>,
+    },
+  ]
+  return (
+    <Section id="boxes" title="Boxes" description={summary}>
+      {held.length ? (
+        <>
+          {note ? <p className="help">{note}</p> : null}
+          <Table label="Boxes held" columns={cols} rows={held} rowKey={x => x.id} />
+        </>
+      ) : <EmptyState>{note ?? "None held right now."}</EmptyState>}
+    </Section>
+  )
+}
+
 function FunctionSections(p: { site: Site }): React.JSX.Element | null {
   const fn = p.site.fn
   if (!fn) return null
@@ -314,6 +372,7 @@ export default function ManifestTab(p: TabProps): React.JSX.Element {
       <>
         <EmptyState>No candy.json in <code>{cfg.cwd}</code>. It runs with defaults.</EmptyState>
         <AlarmsSection site={site} />
+        <BoxesSection site={site} />
         <FunctionSections site={site} />
       </>
     )
@@ -326,6 +385,7 @@ export default function ManifestTab(p: TabProps): React.JSX.Element {
         <EventsSections site={site} m={m} all={all} />
         <CronSection site={site} m={m} />
         <AlarmsSection site={site} />
+        <BoxesSection site={site} />
         <FunctionSections site={site} />
       </>
     )

@@ -133,6 +133,7 @@ describe("ROUTE_TABLE", () => {
       "POST /candy-auth/login", "POST /candy/advertise", "POST /mcp/auth",
       "POST /runtime/ack",
       "POST /runtime/alarms",
+      "POST /runtime/boxes",
       "POST /runtime/publish", "POST /runtime/reload-config", "POST /runtime/service-token", "POST /runtime/sub-clients", "POST /runtime/subscriptions",
     ])
   })

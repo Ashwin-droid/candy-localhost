@@ -50,7 +50,7 @@ export const memoryProperties = (mb: number): string[] => [`MemoryMax=${mb}M`, `
 
 // "wa" -> "candy-wa-3f9a1c.service". Names are DNS-safe labels already; the
 // suffix keeps a restart from colliding with a unit that is still stopping.
-export const unitName = (name: string, kind: "srv" | "cron" | "fn" = "srv"): string => {
+export const unitName = (name: string, kind: "srv" | "cron" | "fn" | "box" = "srv"): string => {
   const safe = name.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 80)
   const rand = [...crypto.getRandomValues(new Uint8Array(3))].map(b => b.toString(16).padStart(2, "0")).join("")
   return `candy-${kind === "srv" ? "" : `${kind}-`}${safe}-${rand}.service`
@@ -142,30 +142,38 @@ export const sandboxEnv = (name: string): Record<string, string> => {
 
 export const FN_STOP_TIMEOUT_S = 35
 
+/**
+ * What every sandboxed launch gets, whatever it is. A box (box.ts) starts from the same list, so
+ * anything added here reaches boxes too: a box is never less isolated than the site renting it.
+ */
+export const HARDENING: readonly string[] = [
+  "ProtectSystem=strict",
+  "PrivateTmp=yes",
+  "PrivateDevices=yes",
+  "NoNewPrivileges=yes",
+  "CapabilityBoundingSet=",
+  "AmbientCapabilities=",
+  "ProtectKernelTunables=yes",
+  "ProtectKernelModules=yes",
+  "ProtectKernelLogs=yes",
+  "ProtectControlGroups=yes",
+  "ProtectClock=yes",
+  "ProtectHostname=yes",
+  "RestrictSUIDSGID=yes",
+  "LockPersonality=yes",
+  "RestrictRealtime=yes",
+  "SystemCallArchitectures=native",
+  "KeyringMode=private",
+]
+
 export const sandboxProperties = (spec: SandboxSpec): string[] => {
   const props = [
-    // Everything read-only...
-    "ProtectSystem=strict",
+    // Everything read-only, with a private /tmp...
+    ...HARDENING,
     "ProtectHome=read-only",
-    // ...except the state folder (created and owned by the server's user) and a private /tmp
+    // ...except the state folder (created and owned by the server's user)
     `StateDirectory=${stateDirName(spec.name)}`,
     "StateDirectoryMode=0700",
-    "PrivateTmp=yes",
-    "PrivateDevices=yes",
-    "NoNewPrivileges=yes",
-    "CapabilityBoundingSet=",
-    "AmbientCapabilities=",
-    "ProtectKernelTunables=yes",
-    "ProtectKernelModules=yes",
-    "ProtectKernelLogs=yes",
-    "ProtectControlGroups=yes",
-    "ProtectClock=yes",
-    "ProtectHostname=yes",
-    "RestrictSUIDSGID=yes",
-    "LockPersonality=yes",
-    "RestrictRealtime=yes",
-    "SystemCallArchitectures=native",
-    "KeyringMode=private",
     // A function gets its 30s waitUntil grace (fn-host SHUTDOWN_WAIT_MS) before SIGKILL
     `TimeoutStopSec=${spec.fn ? FN_STOP_TIMEOUT_S : 10}`,
     // A hard memory limit: past it the kernel kills the unit, not the machine

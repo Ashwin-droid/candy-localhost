@@ -6,7 +6,7 @@
  */
 
 import { $, spawn, type Subprocess } from "bun"
-import { chmodSync, closeSync, existsSync, openSync, readFileSync, statSync, watch, type FSWatcher } from "node:fs"
+import { chmodSync, closeSync, existsSync, fstatSync, openSync, readFileSync, readlinkSync, realpathSync, statSync, watch, type FSWatcher } from "node:fs"
 import { appendFile, chmod, chown, lchown, lstat, mkdir, readdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
 import { randomBytes, timingSafeEqual, X509Certificate } from "node:crypto"
@@ -17,6 +17,8 @@ import { findCodeDir, parseEnvFile, stateDirPath, systemdRunCommand, unitName, u
 import { OAuthServer, type OAuthPersisted } from "./mcp-oauth.ts"
 import { handlePublicRequest as handlePublicMcpRequest } from "./mcp.ts"
 import { applyAdguardUpstreams, upstreamRule, type AdguardConfig } from "./adguard.ts"
+import { BOX_HIDDEN, BOX_RUN_DIR, MAX_BOXES, boxAuditLine, boxEnvFile, boxPathProblem, boxRunCommand, cwdProblem, grantProblem, parseBoxRequest, validateBoxQuota, type BoxExit, type BoxGrant, type BoxQuota } from "./box.ts"
+import { BoxHost, type BoxInfo } from "./box-run.ts"
 import { AlarmStore, alarmData, alarmNameProblem, alarmTime, cronAlarmTime, ALARM_EVENT, type Alarm, type AlarmFired } from "./alarms.ts"
 import { CRON_JOB_ENV, LAUNCH_WRAPPER, cronMatches, cronScript, DEFAULT_CRON_TIMEOUT_S, MAX_CRON_JOBS, parseCron, validateCronJob, type CronJob } from "./cron.ts"
 import { FnRuntime, type FnLaunched } from "./fn-runtime.ts"
@@ -28,7 +30,7 @@ import {
   normalizeFnSettings, pinnedBun, FN_DEFAULT_LINGER_S, FN_DEFAULT_MAX, FN_MAX_INSTANCES, FN_MAX_LINGER_S, type FnSettings,
   fnAssetsPlan, fnShimProject, fnSummaryOf, logAssetResponse, routeFunctionRequest, FnRoutingCache, type FnAssetsPlan,
 } from "./fn-daemon.ts"
-import { AssetServer, userCanRead, type AssetsConfig } from "./fn-assets.ts"
+import { AssetServer, modeAllows, userCanRead, type AssetsConfig } from "./fn-assets.ts"
 import { buildIsStale, createPortalApp } from "./portal-app.ts"
 import { isDeployId, type DeployInfo } from "./fn-deploy.ts"
 import { CONFIG_FILES as FN_CONFIG_FILES, type FnProjectConfig } from "./fn-config.ts"
@@ -97,6 +99,7 @@ interface ServerConfig {
   envFile?: string  // KEY=VALUE file handed to the server as environment at launch
   ttl?: number      // its own idle limit in minutes (default: one hour)
   memory?: number   // its own memory limit in MB (default 2048, at most 16384)
+  boxes?: BoxQuota  // what the operator lets it rent (box.ts): boxes at once, MB for each
   fn?: FnSettings   // a function (candy-functions): no port, dispatched by the daemon
 }
 
@@ -2642,6 +2645,8 @@ const loadServerConfigs = async () => {
           if (ttl) cfg.ttl = ttl
           const memory = validateMemoryMb((item as any).memory)
           if (memory) cfg.memory = memory
+          const boxQuota = validateBoxQuota((item as any).boxes)
+          if (boxQuota) cfg.boxes = boxQuota
           const envFile = validateEnvFilePath((item as any).envFile)
           if (envFile) cfg.envFile = envFile
           if (Array.isArray((item as any).cron)) {
@@ -3610,6 +3615,171 @@ const announceSubRequests = async (publisher: string) => {
   else subRequestsTold.delete(publisher)
 }
 
+// Boxes (box.ts, box-run.ts): sandboxes a sandboxed server rents for its own child processes.
+// candy.json "boxes": true asks, the operator's `candy boxes` setting (ServerConfig.boxes) allows,
+// and each box is its own unit bound to the server's, so it is gone when the server is.
+const SYSTEMD_RUN = Bun.which("systemd-run") ?? "systemd-run"
+const BOX_ENV_DIR = `${BOX_RUN_DIR}/.env`
+const boxEnvPath = (box: { site: string; id: string }) => `${BOX_ENV_DIR}/${fnFileName(box.site)}.${box.id}`
+const describeBoxExit = (exit: BoxExit | null): string =>
+  !exit ? 'ended'
+    : exit.cause === 'exit' ? `exited ${exit.code}`
+    : exit.cause === 'signal' ? `killed by ${exit.signal ?? 'a signal'}`
+    : exit.cause === 'oom' ? 'ran out of memory'
+    : exit.cause === 'lease' ? 'lease ended'
+    : exit.cause === 'failed' ? `failed to start: ${exit.detail ?? 'unknown'}`
+    : exit.cause
+const boxes = new BoxHost({
+  stopUnit: unit => stopUnit(unit),
+  onExit: box => {
+    unlink(boxEnvPath(box)).catch(() => {})
+    unpinBox(box.id)
+    auditLog('BOX_RELEASE', `${box.site}: box ${box.id} (${box.unit}) ${describeBoxExit(box.exit)}`, 'System')
+  },
+})
+// Each granted path is held open (O_PATH) from its check until the box is gone: the open file is
+// what was checked, whatever the path points at later, and its inode number can't be reused meanwhile.
+const O_PATH = 0o10000000
+const boxPins = new Map<string, number[]>()   // box id -> descriptors
+const unpinBox = (id: string) => {
+  for (const fd of boxPins.get(id) ?? []) { try { closeSync(fd) } catch {} }
+  boxPins.delete(id)
+}
+const boxRenting = new Map<string, number>()   // site -> rents under way, counted against the quota
+const boxMemoryUsed = async (unit: string): Promise<number | null> => {
+  const n = Number((await Bun.file(`/sys/fs/cgroup/${SANDBOX_SLICE}/${unit}/memory.current`).text().catch(() => "")).trim() || NaN)
+  return Number.isFinite(n) ? n : null
+}
+const boxView = async (box: BoxInfo) => ({ ...box, memoryUsed: box.state === 'running' ? await boxMemoryUsed(box.unit) : null })
+// Could this user open the folder or file at this real path? Read (and search, for a folder) on it, search on every parent.
+const userCanReach = (real: string, uid: number, gids: number[]): boolean => {
+  try {
+    const st = statSync(real)
+    if (!modeAllows(st, uid, gids, 4) || (st.isDirectory() && !modeAllows(st, uid, gids, 1))) return false
+    for (let d = dirname(real); ; d = dirname(d)) {
+      if (!modeAllows(statSync(d), uid, gids, 1)) return false
+      if (d === "/" || d === dirname(d)) return true
+    }
+  } catch {
+    return false
+  }
+}
+// Why this site can't rent right now, or null
+const boxBlocker = (name: string, config: ServerConfig): string | null => {
+  if (!manifestNow(name)?.boxes) return `${name} can't rent boxes: its ${MANIFEST_FILE} doesn't say "boxes": true.`
+  if (!validateBoxQuota(config.boxes)) return `${name} isn't allowed any boxes yet. Its operator sets that: candy boxes ${name} <max> <memory>`
+  if (!SANDBOX_AVAILABLE) return "Boxes need candy running as root under systemd."
+  const managed = processes.get(name)
+  if (!managed?.unit || managed.config.id !== config.id) return `Boxes are rented by a running, sandboxed server, and ${name} isn't one${config.sandbox === false ? ' (its sandbox is off)' : ''}.`
+  return null
+}
+const rentBox = async (grant: RuntimeGrant, config: ServerConfig, body: unknown): Promise<Response> => {
+  const refuse = (error: string, status = 400) => Response.json({ error }, { status })
+  const blocker = boxBlocker(grant.name, config)
+  if (blocker) return refuse(blocker, 403)
+  const quota = validateBoxQuota(config.boxes)!
+  const parentUnit = processes.get(grant.name)!.unit!
+  const request = parseBoxRequest(body, quota)
+  if ("error" in request) return refuse(request.error)
+  const busy = boxes.held(grant.name) + (boxRenting.get(grant.name) ?? 0)
+  if (busy >= quota.max) return refuse(`${grant.name} holds ${busy} of its ${quota.max} boxes. Stop one first.`, 409)
+  boxRenting.set(grant.name, (boxRenting.get(grant.name) ?? 0) + 1)
+  let started: string | null = null   // the box id, until the box is running and owns its pins
+  try {
+    const account = await lookupUser(grant.user)
+    if (!account || account.uid === 0) return refuse(`'${grant.user}' is not a usable non-root account`, 403)
+    const gids = await fnUserGids(account)
+    const real = (path: string): string | null => { try { return realpathSync(path) } catch { return null } }
+    // What the site itself may write, as launchSpec gave it: code folder, state folder, "rw" paths
+    const writable = [findCodeDir(config.cwd, account.home, dir => existsSync(`${dir}/.git`)), stateDirPath(grant.name), ...(config.rw ?? [])]
+      .map(real).filter((p): p is string => !!p)
+    const unit = unitName(grant.name, 'box')
+    const id = unit.slice(0, -".service".length).split("-").pop()!
+    const box = { site: grant.name, id }
+    const pins: number[] = []
+    boxPins.set(id, pins)
+    started = id
+    const grants: BoxGrant[] = []
+    for (const g of request.grants) {
+      let fd: number
+      try { fd = openSync(g.path, O_PATH) } catch { return refuse(`${g.path} doesn't exist, so it can't be granted`) }
+      pins.push(fd)
+      // Where the thing we now hold really is, and which one it is: the box checks the same from inside (BOX_INIT)
+      const source = readlinkSync(`/proc/self/fd/${fd}`)
+      const st = fstatSync(fd, { bigint: true })
+      if (!st.isDirectory() && !st.isFile()) return refuse(`${g.path} is neither a folder nor a file`, 403)
+      // The real path goes into a systemd property too
+      const problem = boxPathProblem(source, `the real path of ${g.path}`) ?? grantProblem(source, g.mode, { writable, privateTmp: true }, userCanReach(source, account.uid, gids))
+      if (problem) return refuse(problem, 403)
+      grants.push({ path: g.path, mode: g.mode, source, check: `${st.dev}:${st.ino}` })
+    }
+    request.grants = grants
+    const badCwd = cwdProblem(request.cwd, grants)
+    if (badCwd) return refuse(badCwd)
+
+    // The folder the socket is in: the site's user may look inside, only root may add to it
+    const dir = `${BOX_RUN_DIR}/${fnFileName(grant.name)}`
+    await mkdir(dir, { recursive: true, mode: 0o750 })
+    await chown(dir, 0, account.gid)
+    await chmod(dir, 0o750)
+    await mkdir(BOX_ENV_DIR, { recursive: true, mode: 0o700 })
+    await chmod(BOX_ENV_DIR, 0o700)
+    await unlink(boxEnvPath(box)).catch(() => {})
+    await writeFile(boxEnvPath(box), boxEnvFile({
+      HOME: account.home, USER: account.name, LOGNAME: account.name, SHELL: account.shell,
+      PATH: `${account.home}/.bun/bin:${account.home}/.local/bin:/opt/bun/bin:/usr/local/bin:/usr/bin:/bin`,
+      ...(process.env.LANG ? { LANG: process.env.LANG } : {}),
+      ...request.env,
+    }), { mode: 0o600, flag: 'wx' })
+    const cmd = boxRunCommand({ site: grant.name, unit, uid: account.uid, gid: account.gid, parentUnit, request, hidden: BOX_HIDDEN.filter(path => existsSync(path)) }, boxEnvPath(box), SYSTEMD_RUN)
+    let info: BoxInfo
+    try {
+      info = await boxes.start({
+        id, site: grant.name, user: grant.user, unit, label: request.label, memory: request.memory,
+        socket: `${dir}/${id}.sock`, cmd, owner: { uid: account.uid, gid: account.gid },
+        // systemd-run's own environment: nothing of the site's
+        env: { PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", ...(process.env.LANG ? { LANG: process.env.LANG } : {}) },
+      })
+    } catch (e) {
+      await unlink(boxEnvPath(box)).catch(() => {})
+      return refuse(`The box could not be started: ${(e as Error).message}`, 500)
+    }
+    // Never the environment or the arguments
+    started = null
+    auditLog('BOX_RENT', `${grant.name}: box ${id} (${unit})${request.label ? ` "${request.label}"` : ''} ${boxAuditLine(request)}`, 'System')
+    return Response.json({ box: await boxView(info) })
+  } finally {
+    if (started) unpinBox(started)
+    const n = (boxRenting.get(grant.name) ?? 1) - 1
+    if (n > 0) boxRenting.set(grant.name, n)
+    else boxRenting.delete(grant.name)
+  }
+}
+const handleBoxApi = async (grant: RuntimeGrant, config: ServerConfig, body: Record<string, unknown> | null): Promise<Response> => {
+  // Only the server itself: a cron run or an event run ends, and a box lives as long as its site's unit
+  if (grant.kind !== 'srv') return Response.json({ error: "Only a site's running server can rent boxes, not a function, a cron run or an event run." }, { status: 403 })
+  const action = body?.action ?? "quota"
+  if (action === "quota") {
+    const quota = validateBoxQuota(config.boxes)
+    const reason = boxBlocker(grant.name, config)
+    return Response.json({ boxes: { enabled: !!manifestNow(grant.name)?.boxes, available: !reason, reason, max: quota?.max ?? 0, memory: quota?.memory ?? 0, held: boxes.held(grant.name) } })
+  }
+  if (action === "list") return Response.json({ boxes: await Promise.all(boxes.list(grant.name).map(boxView)) })
+  if (action === "rent") return rentBox(grant, config, body)
+  if (action !== "get" && action !== "wait" && action !== "stop") return Response.json({ error: "action must be quota, list, rent, get, wait or stop" }, { status: 400 })
+  const id = typeof body?.id === "string" ? body.id : ""
+  if (!boxes.get(grant.name, id)) return Response.json({ error: `${grant.name} has no box ${JSON.stringify(id.slice(0, 40))} (a box is forgotten ten minutes after it ends).` }, { status: 404 })
+  if (action === "stop") return Response.json({ stopped: await boxes.stop(grant.name, id, "released") })
+  if (action === "wait") {
+    // Under Bun.serve's idle timeout: the SDK asks again
+    const ms = Math.min(typeof body?.timeout === "number" && body.timeout >= 0 ? body.timeout : 8000, 8000)
+    await boxes.wait(grant.name, id, ms)
+  }
+  const box = boxes.get(grant.name, id)
+  if (!box) return Response.json({ error: `${grant.name} has no box ${JSON.stringify(id.slice(0, 40))}.` }, { status: 404 })
+  return Response.json({ box: await boxView(box), stderr: boxes.stderr(grant.name, id) })
+}
+
 // Alarms (alarms.ts): one-off timers a site sets for itself over /runtime/alarms. A due one goes
 // into that site's event queue as "candy:alarm" (so it wakes the site, waits for the answer and
 // retries like any event), and only then leaves the file: a crash in between sends it twice, never zero times.
@@ -3977,6 +4147,11 @@ const handleRuntimeApi = async (req: Request, url: URL): Promise<Response> => {
       // The file as it stands can't be used: what was in force stays in force
       return Response.json({ error: fnErrorText(e) }, { status: 400 })
     }
+  }
+
+  // Boxes the site rents for its own child processes: quota | list | rent | get | wait | stop
+  if (req.method === "POST" && url.pathname === "/runtime/boxes") {
+    return handleBoxApi(grant, config, await req.json().catch(() => null) as Record<string, unknown> | null)
   }
 
   // The site's own alarms: list | set | cancel. Any launch of the site may (a server, a function
@@ -5123,6 +5298,8 @@ const spawnProcessNow = async (name: string, actor: Actor = 'System', configId?:
   // Handle process exit
   proc.exited.then((exitCode) => {
     resetJtiBloom(name)
+    // Its boxes go with it. systemd does this too (BindsTo); this records why they ended.
+    boxes.stopSite(name, 'site-stopped').catch(() => {})
     // If already marked dead (intentional kill), don't overwrite with errored
     if (managed.status === 'dead') {
       managed.proc = null
@@ -5699,6 +5876,7 @@ const stopCaddy = async (force = false) => {
         await terminateProcessTree(pid, 2000)
       }
     }
+    await Promise.race([boxes.stopAll('stopped'), Bun.sleep(3000)])
     await cleanupManagedProcesses()
     // Functions: ask instances to finish, but don't hold the shutdown for long
     await Promise.race([Promise.all([...fnRuntimes.keys()].map(teardownFn)), Bun.sleep(3000)])
@@ -6772,6 +6950,7 @@ const ROUTE_TABLE: readonly RouteRule[] = [
   ["POST", "/runtime/sub-clients", "public"],
   ["POST", "/runtime/subscriptions", "public"],
   ["POST", "/runtime/alarms", "public"],
+  ["POST", "/runtime/boxes", "public"],
   ["POST", "/runtime/reload-config", "public"],
   ["POST", "/sdk/runtime", "user"],
   ["POST", "/sdk/register-port", "user"],
@@ -6810,6 +6989,7 @@ const ROUTE_TABLE: readonly RouteRule[] = [
   ["POST", "/config/ttl", "user"],
   ["POST", "/config/reload", "user"],
   ["POST", "/config/memory", "user"],
+  ["POST", "/config/boxes", "user"],
   ["POST", "/config/env", "user"],
   ["POST", "/config/sandbox", "user"],
   ["DELETE", "/config/*", "user"],
@@ -8809,9 +8989,10 @@ async function controlFetch(req: Request): Promise<Response> {
       const manifestOf = (config: ServerConfig) => {
         const cached = siteManifests.get(config.id)
         if (!cached || (!cached.stamp && !cached.error)) return null
-        return cached.error ? { error: cached.error } : { auth: cached.m.auth, depends: cached.m.depends, publish: cached.m.publish, idle: cached.m.idle, pub: cached.m.pub, sub: cached.m.sub, unordered: cached.m.unordered, service: cached.m.service, cron: cached.m.cron.map(j => ({ tag: j.name, schedule: j.schedule })) }
+        return cached.error ? { error: cached.error } : { auth: cached.m.auth, depends: cached.m.depends, publish: cached.m.publish, idle: cached.m.idle, boxes: cached.m.boxes, pub: cached.m.pub, sub: cached.m.sub, unordered: cached.m.unordered, service: cached.m.service, cron: cached.m.cron.map(j => ({ tag: j.name, schedule: j.schedule })) }
       }
       const configs: Record<string, any> = {}
+      const boxMemory = new Map(await Promise.all(boxes.list().filter(b => b.state === 'running').map(async b => [b.unit, await boxMemoryUsed(b.unit)] as const)))
       for (const [name, entries] of serverConfigs) {
         if (entries.length === 0 || !mayUse(name)) continue
         const first = entries[0]
@@ -8834,6 +9015,12 @@ async function controlFetch(req: Request): Promise<Response> {
           lanHttps: isLanPublished(name) ? lanHttpsUrl(name) : null,
           tsServe: tsServeUrl(name),
           fn: fnSummaryNow(name),
+          // Boxes: what its candy.json asks, what the operator allows, and what it holds now
+          boxes: {
+            wanted: !!manifestNow(name)?.boxes,
+            quota: validateBoxQuota(first.boxes),
+            held: boxes.list(name).filter(b => b.state === 'running').map(b => ({ id: b.id, label: b.label, unit: b.unit, memory: b.memory, memoryUsed: boxMemory.get(b.unit) ?? null, startedAt: b.startedAt })),
+          },
           // Alarms and soft crons the app set for itself (SDK); never their data
           alarms: (() => {
             const mine = alarms.ofSite(name)
@@ -8960,6 +9147,44 @@ async function controlFetch(req: Request): Promise<Response> {
       const actor = requestActor
       auditLog('CONFIG_TTL', `${name}: stops after ${minutes ?? IDLE_TIMEOUT / 60000}min idle${minutes ? '' : ' (default)'}`, actor)
       return Response.json({ success: true, minutes, defaultMinutes: IDLE_TIMEOUT / 60000 }, { headers: corsHeaders })
+    }
+
+    // What a site may rent (box.ts): how many boxes at once, and how much memory each
+    if (req.method === "POST" && url.pathname === "/config/boxes") {
+      const body = await req.json().catch(() => ({})) as { name?: string, max?: unknown, memory?: unknown, off?: unknown }
+      const { name } = body
+      if (!name) return Response.json({ error: "name is required" }, { status: 400, headers: corsHeaders })
+      const targets = getConfigsForName(name)
+      if (targets.length === 0) {
+        return Response.json({ error: `No site named '${name}' with a start command.` }, { status: 404, headers: corsHeaders })
+      }
+      const denied = targets.find(cfg => !mayChangeConfig(auth, cfg))
+      if (denied) {
+        return Response.json({ error: `${name} runs as ${configUser(denied)}. Only they can change it.` }, { status: 403, headers: corsHeaders })
+      }
+      if (targets.some(cfg => cfg.fn)) {
+        return Response.json({ error: `${name} is a function. Only a server can rent boxes.` }, { status: 400, headers: corsHeaders })
+      }
+      const off = body.off === true
+      const quota = off ? null : validateBoxQuota({ max: body.max, memory: body.memory })
+      if (!off && !quota) {
+        return Response.json({ error: `Give a number of boxes from 1 to ${MAX_BOXES} and the memory each may have, between ${formatMemory(MIN_MEMORY_MB)} and ${formatMemory(MAX_MEMORY_MB)}, like 12 and 4G.` }, { status: 400, headers: corsHeaders })
+      }
+      for (const cfg of targets) {
+        if (quota) cfg.boxes = quota
+        else delete cfg.boxes
+      }
+      await saveServerConfigs()
+      // Boxes already running keep what they were rented with
+      const text = quota ? `${quota.max} box${quota.max === 1 ? '' : 'es'} of up to ${formatMemory(quota.memory)} each` : 'no boxes'
+      auditLog('CONFIG_BOXES', `${name}: may rent ${text}`, requestActor)
+      return Response.json({
+        success: true,
+        boxes: quota,
+        text,
+        wanted: !!manifestNow(name)?.boxes,
+        sandboxed: SANDBOX_AVAILABLE && targets.every(cfg => cfg.sandbox !== false),
+      }, { headers: corsHeaders })
     }
 
     if (req.method === "POST" && url.pathname === "/config/memory") {

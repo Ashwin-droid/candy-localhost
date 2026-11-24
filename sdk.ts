@@ -351,8 +351,8 @@ export async function setIdling(idling = true): Promise<IdlingResult> {
 // --- Events and server-to-server tokens (sdk-runtime.ts) ---
 // These act as the site candy started this process for. Inside a candy
 // function the same object is env.CANDY.
-import { createRuntime, readRuntime, type CandyRuntime, type CandyEvent, type ServiceCaller, type Subscription, type SubscribeOptions, type SubClient, type SubscriptionStatus, type PublishOptions, type AlarmWhen, type AlarmFired } from "./sdk-runtime.ts"
-export type { CandyRuntime, CandyEvent, ServiceCaller, Subscription, SubscribeOptions, SubClient, SubRequest, SubscriptionStatus, PublishOptions, EventSender, Alarm, AlarmFired, AlarmWhen, SetAlarmResult } from "./sdk-runtime.ts"
+import { createRuntime, readRuntime, type CandyRuntime, type CandyEvent, type ServiceCaller, type Subscription, type SubscribeOptions, type SubClient, type SubscriptionStatus, type PublishOptions, type AlarmWhen, type AlarmFired, type RentBoxOptions } from "./sdk-runtime.ts"
+export type { CandyRuntime, CandyEvent, ServiceCaller, Subscription, SubscribeOptions, SubClient, SubRequest, SubscriptionStatus, PublishOptions, EventSender, Alarm, AlarmFired, AlarmWhen, SetAlarmResult, Box, BoxInfo, BoxExit, BoxExitCause, BoxQuotaInfo, RentBoxOptions } from "./sdk-runtime.ts"
 export { SERVICE_HEADER, alarmOf } from "./sdk-runtime.ts"
 
 let cachedRuntime: CandyRuntime | null = null
@@ -429,6 +429,23 @@ export const cancelAlarm = (name: string) => runtime().cancelAlarm(name)
 export const listAlarms = () => runtime().listAlarms()
 /** This site's alarms as they go off: `(alarm, event)`. Shares subscribe()'s connection; works with nothing in "sub". */
 export const onAlarm = (handler: (alarm: AlarmFired, event: CandyEvent) => unknown, opts?: SubscribeOptions): Subscription => runtime().onAlarm(handler, opts)
+
+/**
+ * Boxes: sandboxes this site rents from candy for its own child processes (a build, a user's
+ * code, an agent's tool run). Each gets its own memory, CPU and task limits and only the
+ * folders granted to it, runs as this site's user, and ends with the site. The site asks with
+ * "boxes": true in its candy.json; how many and how big is the operator's call (candy boxes).
+ *   const box = await rentBox({ cmd: ["/usr/bin/python3", "job.py"], cwd: "/srv/jobs", grants: [{ path: "/srv/jobs", mode: "rw" }] })
+ *   Bun.connect({ unix: box.socket, socket: { data: (_, d) => ... } })   // its stdin and stdout
+ *   const { cause, code } = await box.exited()
+ */
+export const rentBox = (opts: RentBoxOptions) => runtime().rentBox(opts)
+/** A box of this site by id, or null when candy doesn't know it */
+export const getBox = (id: string) => runtime().getBox(id)
+/** This site's boxes, running and recently exited */
+export const listBoxes = () => runtime().listBoxes()
+/** What this site may rent, whether it can now, and why not */
+export const boxQuota = () => runtime().boxQuota()
 
 /**
  * Cron jobs are declared in candy.json: `"cron": [{ "tag": "sync", "schedule": "@hourly", "args": ["--sync"] }]`.
@@ -512,6 +529,10 @@ const candySdk = {
   cancelAlarm,
   listAlarms,
   onAlarm,
+  rentBox,
+  getBox,
+  listBoxes,
+  boxQuota,
 }
 
 export default candySdk

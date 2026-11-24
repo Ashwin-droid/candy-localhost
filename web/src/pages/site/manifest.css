@@ -27,3 +27,5 @@
 .manifest-site { font: var(--t-host); font-stretch: 87.5%; font-size: 13px; color: var(--ink); }
 .manifest-cron { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .manifest-cron code { color: var(--ink); }
+.manifest-memory { display: inline-flex; align-items: center; gap: var(--s-3); flex-wrap: wrap; }
+.manifest-memory .ui-meter { width: 120px; }

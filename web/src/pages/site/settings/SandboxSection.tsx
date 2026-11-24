@@ -1,24 +1,28 @@
 // Settings › Sandbox and memory (SPEC §5.5): multi-user only. The sandbox switch saves on change (Confirm before
-// turning it off); the memory limit and writable folders are saved together, in order.
+// turning it off); the memory limit, writable folders and box quota are saved together, in order.
 
 import type React from "react"
 import { useState } from "react"
 import { getApi } from "../../../api/client.ts"
 import { invalidate } from "../../../api/resources.ts"
 import { KEYS } from "../../../api/sites.ts"
-import type { MemoryResponse, SandboxResponse } from "../../../api/types.ts"
+import type { BoxesResponse, MemoryResponse, SandboxResponse } from "../../../api/types.ts"
 import { fmtMb } from "../../../lib/format.ts"
-import { checkAbsPath, parseMemory } from "../../../lib/validate.ts"
+import { BOXES_MAX, checkAbsPath, checkBoxes, parseMemory } from "../../../lib/validate.ts"
 import { Field, Input, ListEditor, SettingsSection, useConfirm } from "../../../ui/index.ts"
 import { runSteps, sentences, SwitchField, useDraftSet, useSettings, useToggle, type Line, type Step } from "./common.tsx"
 
-type Key = "memory" | "rw"
+type Key = "memory" | "rw" | "boxesMax" | "boxesMemory"
 
 export function SandboxSection(): React.JSX.Element {
   const { site, offline } = useSettings()
   const cfg = site.config!
   const confirm = useConfirm()
-  const d = useDraftSet<Key, string | string[]>({ memory: cfg.memory ? fmtMb(cfg.memory) : "", rw: cfg.rw ?? [] })
+  const quota = cfg.boxes?.quota ?? null
+  const d = useDraftSet<Key, string | string[]>({
+    memory: cfg.memory ? fmtMb(cfg.memory) : "", rw: cfg.rw ?? [],
+    boxesMax: quota ? String(quota.max) : "", boxesMemory: quota ? fmtMb(quota.memory) : "",
+  })
   const [errors, setErrors] = useState<Partial<Record<Key, string>>>({})
   const [status, setStatus] = useState<{ kind: "ok" | "error"; text: string } | null>(null)
   const [saving, setSaving] = useState(false)
@@ -36,6 +40,10 @@ export function SandboxSection(): React.JSX.Element {
 
   const memory = d.draft.memory as string
   const rw = d.draft.rw as string[]
+  const boxesMax = d.draft.boxesMax as string
+  const boxesMemory = d.draft.boxesMemory as string
+  // only servers rent boxes: a function's instances are the daemon's to start
+  const showBoxes = !site.fn
   const edit = (k: Key, v: string | string[]) => { d.set(k, v); setErrors(e => ({ ...e, [k]: undefined })); setStatus(null) }
 
   const save = async () => {
@@ -48,6 +56,9 @@ export function SandboxSection(): React.JSX.Element {
       const bad = folders.map(f => checkAbsPath(f)).find(Boolean)
       if (bad) errs.rw = bad
     }
+    const boxesDirty = dirty.has("boxesMax") || dirty.has("boxesMemory")
+    const boxes = checkBoxes(boxesMax, boxesMemory)
+    if (boxesDirty && "error" in boxes) errs[boxes.field === "max" ? "boxesMax" : "boxesMemory"] = boxes.error
     setErrors(errs)
     if (Object.keys(errs).length) return
     const steps: Step<Key>[] = []
@@ -63,11 +74,27 @@ export function SandboxSection(): React.JSX.Element {
         return r.rw?.length ? `${site.name} can also write to ${r.rw.join(", ")}` : `${site.name}: no extra writable folders`
       },
     })
+    const quotaNext = "error" in boxes ? null : boxes
+    if (boxesDirty && quotaNext) steps.push({
+      key: "boxesMax", run: async () => {
+        const body = quotaNext.off ? { name: site.name, off: true } : { name: site.name, max: quotaNext.max, memory: quotaNext.memory }
+        const r = await getApi().post<BoxesResponse>("/config/boxes", body)
+        if (!r.boxes) return `${site.name} may not rent boxes`
+        const line = `${site.name} may rent up to ${r.boxes.max} ${r.boxes.max === 1 ? "box" : "boxes"}, ${fmtMb(r.boxes.memory)} each`
+        return r.wanted ? line : `${line}. Its candy.json also needs "boxes": true`
+      },
+    })
     setSaving(true)
     setStatus(null)
-    const r = await runSteps(steps, { memory: "Could not save the memory limit", rw: "Could not save the writable folders" })
+    const boxesFail = "Could not save the boxes"
+    const r = await runSteps(steps, {
+      memory: "Could not save the memory limit", rw: "Could not save the writable folders", boxesMax: boxesFail, boxesMemory: boxesFail,
+    })
     setSaving(false)
-    if (r.saved.length) { invalidate([KEYS.sites]); d.commit(r.saved) }
+    if (r.saved.length) {
+      invalidate([KEYS.sites])
+      d.commit(r.saved.includes("boxesMax") ? [...r.saved, "boxesMemory"] : r.saved)
+    }
     if (r.failed) {
       setErrors({ [r.failed.key]: r.failed.message })
       if (r.saved.length) setStatus({ kind: "error", text: `${sentences(r.messages)} The rest wasn’t saved.` })
@@ -97,6 +124,25 @@ export function SandboxSection(): React.JSX.Element {
       ) : (
         <p className="help">Memory limit and writable folders apply only in the sandbox.</p>
       )}
+      {showBoxes ? (
+        <>
+          <div className="fields-2">
+            <Field label="Boxes it may rent" htmlFor="set-boxes-max" error={errors.boxesMax}
+              help={`Sandboxes ${site.name} may start for its own child processes, 1 to ${BOXES_MAX} at a time. Leave both empty to turn boxes off.`}>
+              <Input id="set-boxes-max" mono inputMode="numeric" value={boxesMax} placeholder="None" spellCheck={false} autoComplete="off"
+                invalid={!!errors.boxesMax} disabled={offline} onChange={e => edit("boxesMax", e.target.value)} />
+            </Field>
+            <Field label="Memory for each box" htmlFor="set-boxes-memory" error={errors.boxesMemory}
+              help={`Like 1G or 512M, 64M to 16G. Each box has its own limit; it isn’t a share of ${site.name}’s.`}>
+              <Input id="set-boxes-memory" mono value={boxesMemory} placeholder="1G" spellCheck={false} autoComplete="off"
+                invalid={!!errors.boxesMemory} disabled={offline} onChange={e => edit("boxesMemory", e.target.value)} />
+            </Field>
+          </div>
+          {quota && !cfg.boxes?.wanted ? (
+            <p className="help">{site.name} can’t rent them yet: its candy.json also needs <code>"boxes": true</code>.</p>
+          ) : null}
+        </>
+      ) : null}
     </SettingsSection>
   )
 }

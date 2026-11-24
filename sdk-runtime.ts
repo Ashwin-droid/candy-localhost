@@ -111,6 +111,22 @@ export interface CandyRuntime {
   rejectSubClient(app: string, event?: string): Promise<SubClient[]>
   /** Take an approval back: the app gets no more of that event */
   revokeSubClient(app: string, event?: string): Promise<SubClient[]>
+  /**
+   * What this site may rent: `enabled` (the operator set a quota and candy.json has "boxes": true),
+   * `available` (a box could start now; `reason` says why not), `max` boxes at once of up to
+   * `memory` MB each, and how many it `held` right now.
+   */
+  boxQuota(): Promise<BoxQuotaInfo>
+  /** This site's boxes: running ones, and ones that exited recently */
+  listBoxes(): Promise<BoxInfo[]>
+  /**
+   * Run `cmd` in a box: a sandbox of its own (its own memory, CPU and task limits, a private PID
+   * namespace, only the folders in `grants`), as this site's user. It ends with the site. Throws
+   * with candy's reason when the request or the quota says no. Talk to it over `box.socket`.
+   */
+  rentBox(opts: RentBoxOptions): Promise<Box>
+  /** One of this site's boxes by id, or null when candy doesn't know it (never was, or long gone) */
+  getBox(id: string): Promise<Box | null>
   /** A token that tells `target` which app (and unix user) is calling. Cached until shortly before it expires. */
   serviceToken(target: string): Promise<string>
   /** `{ "Candy-Service-Token": <token> }` for a request to `target` */
@@ -122,6 +138,98 @@ export interface CandyRuntime {
 /** When an alarm goes off: a Date, ms since the epoch, an ISO date, `{ at }` with one of those, or `{ in }` ms from now */
 export type AlarmWhen = Date | number | string | { at: Date | number | string } | { in: number }
 export interface SetAlarmResult { alarm: { name: string; at: number; cron?: string; setAt: number }; replaced: boolean }
+
+// ---------------------------------------------------------------------------
+// Boxes. BoxExit and BoxExitCause are box.ts's, written out again here: this file is copied
+// next to the function shim, and box.ts is not.
+// ---------------------------------------------------------------------------
+
+export type BoxExitCause =
+  | "exit"          // the command exited: `code`
+  | "signal"        // a signal ended it: `signal`
+  | "oom"           // it ran past its memory limit
+  | "lease"         // its "seconds" ran out
+  | "released"      // the site stopped it
+  | "site-stopped"  // the site itself ended, and its boxes with it
+  | "stopped"       // candy or the operator stopped it
+  | "failed"        // it never ran: `detail` says why
+
+export interface BoxExit { cause: BoxExitCause; code: number | null; signal: string | null; detail: string | null; at: number }
+
+export interface BoxQuotaInfo {
+  /** The operator gave this site a quota and its candy.json has "boxes": true */
+  enabled: boolean
+  /** Whether a box could be rented right now */
+  available: boolean
+  /** Why not, when it can't */
+  reason: string | null
+  /** Boxes at once */
+  max: number
+  /** MB each box may have at most */
+  memory: number
+  /** Boxes this site holds now */
+  held: number
+}
+
+export interface BoxInfo {
+  id: string
+  site: string
+  user: string
+  /** Its systemd unit */
+  unit: string
+  label: string | null
+  /** Unix socket: the box's stdin and stdout as one byte stream */
+  socket: string
+  /** Its memory limit, MB */
+  memory: number
+  /** Bytes in use, when candy could read it */
+  memoryUsed: number | null
+  startedAt: number
+  state: "running" | "exited"
+  exit: BoxExit | null
+}
+
+export interface RentBoxOptions {
+  /** The command and its arguments; cmd[0] is an absolute path as the box sees it */
+  cmd: string[]
+  /** Where it starts (default "/"): somewhere the box sees, so usually inside a grant */
+  cwd?: string
+  /** Its whole environment besides what candy sets. Never on a command line. */
+  env?: Record<string, string>
+  /** Folders or files it may see; "rw" only where this site may write itself */
+  grants?: { path: string; mode: "ro" | "rw" }[]
+  /** MB, or "512M" / "2G"; at most the operator's per-box memory (the default) */
+  memory?: number | string
+  /** Percent of one core, e.g. 150 */
+  cpu?: number
+  /** Most processes and threads at once */
+  tasks?: number
+  /** The lease: stopped after this many seconds */
+  seconds?: number
+  /** Extra systemd isolation, "Name=value" lines (box.ts ISOLATION_PROPERTIES). Can only take away. */
+  isolation?: string[]
+  /** This site's own name for it, shown in lists and the portal */
+  label?: string
+}
+
+export interface Box {
+  id: string
+  /** Unix socket: the box's stdin and stdout as one byte stream. `Bun.connect({ unix: box.socket, socket: { ... } })` */
+  socket: string
+  /** As of the last call that asked candy */
+  info: BoxInfo
+  /** Ask candy again; also updates `info` */
+  refresh(): Promise<BoxInfo>
+  /** What the box wrote to stderr so far (candy keeps the tail) */
+  stderr(): Promise<string>
+  /** How it ended. One promise per Box, however often it's called; rejects only when candy doesn't know the box. */
+  exited(): Promise<BoxExit>
+  /** Stop it (TERM, then KILL after a few seconds). Whether it was still running. */
+  stop(): Promise<boolean>
+}
+
+/** The longest candy holds a "wait" before answering "still running" */
+const BOX_WAIT_MS = 8000
 
 // Who takes what comes over the event stream
 interface Listener { kind: "events" | "alarms"; handler: (event: CandyEvent) => unknown; opts: SubscribeOptions }
@@ -144,8 +252,50 @@ export const createRuntime = (record: RuntimeRecord | null, fetcher: typeof fetc
     const r = record ?? noRuntime()
     const res = await fetcher(`${r.url}${path}`, { method: "POST", headers: { [RUNTIME_HEADER]: r.token, "Content-Type": "application/json" }, body: JSON.stringify(body) })
     const answer = await res.json().catch(() => null) as (T & { error?: string }) | null
-    if (!res.ok) throw new Error(answer?.error ?? `candy answered ${res.status}`)
+    // `status` rides along so a caller can tell "no such thing" (404) from a refusal
+    if (!res.ok) throw Object.assign(new Error(answer?.error ?? `candy answered ${res.status}`), { status: res.status })
     return answer as T
+  }
+  const statusOf = (e: unknown): number | undefined => (e as { status?: unknown })?.status as number | undefined
+
+  const boxCall = <T>(body: Record<string, unknown>) => call<T>("/runtime/boxes", body)
+  const makeBox = (first: BoxInfo): Box => {
+    let ending: Promise<BoxExit> | null = null
+    const box: Box = {
+      id: first.id,
+      socket: first.socket,
+      info: first,
+      refresh: async () => (box.info = (await boxCall<{ box: BoxInfo }>({ action: "get", id: box.id })).box),
+      stderr: async () => {
+        const got = await boxCall<{ box: BoxInfo; stderr: string }>({ action: "get", id: box.id })
+        box.info = got.box
+        return got.stderr
+      },
+      exited: () => ending ??= (async () => {
+        let wait = 250
+        while (true) {
+          if (box.info.state === "exited" && box.info.exit) return box.info.exit
+          try {
+            const asked = Date.now()
+            box.info = (await boxCall<{ box: BoxInfo }>({ action: "wait", id: box.id, timeout: BOX_WAIT_MS })).box
+            wait = 250
+            // A "running" that came back at once (candy didn't hold the wait) must not become a busy loop
+            if (box.info.state === "exited" || Date.now() - asked >= 200) continue
+            await new Promise(done => setTimeout(done, 200))
+            continue
+          } catch (e) {
+            // Gone, or a refusal that asking again won't change (the site's token is gone, say):
+            // anything else (candy restarting, a dropped connection, a 5xx) is worth waiting out
+            const status = statusOf(e)
+            if (status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429) throw e
+          }
+          await new Promise(done => setTimeout(done, wait))
+          wait = Math.min(wait * 2, 5000)
+        }
+      })(),
+      stop: async () => (await boxCall<{ stopped: boolean }>({ action: "stop", id: box.id })).stopped,
+    }
+    return box
   }
   const tokens = new Map<string, { token: string; expiresAt: number }>()
 
@@ -235,6 +385,23 @@ export const createRuntime = (record: RuntimeRecord | null, fetcher: typeof fetc
     setCron: (name, schedule, data) => call("/runtime/alarms", { action: "set", name, cron: schedule, data: data ?? null }),
     cancelAlarm: async name => (await call<{ cancelled: boolean }>("/runtime/alarms", { action: "cancel", name })).cancelled,
     listAlarms: async () => (await call<{ alarms: Alarm[] }>("/runtime/alarms", { action: "list" })).alarms,
+    boxQuota: async () => (await boxCall<{ boxes: BoxQuotaInfo }>({ action: "quota" })).boxes,
+    listBoxes: async () => (await boxCall<{ boxes: BoxInfo[] }>({ action: "list" })).boxes,
+    rentBox: async opts => {
+      if (!opts || !Array.isArray(opts.cmd) || opts.cmd.length === 0) throw new Error("rentBox needs { cmd: [program, ...args] }")
+      // Only the keys the caller set: candy fills in the rest from the operator's quota
+      const { cmd, cwd, env, grants, memory, cpu, tasks, seconds, isolation, label } = opts
+      const given = Object.fromEntries(Object.entries({ cwd, env, grants, memory, cpu, tasks, seconds, isolation, label }).filter(([, v]) => v !== undefined))
+      return makeBox((await boxCall<{ box: BoxInfo }>({ action: "rent", cmd, ...given })).box)
+    },
+    getBox: async id => {
+      try {
+        return makeBox((await boxCall<{ box: BoxInfo }>({ action: "get", id })).box)
+      } catch (e) {
+        if (statusOf(e) === 404) return null
+        throw e
+      }
+    },
     reloadConfig: () => call<ReloadedConfig>("/runtime/reload-config", {}),
     subscriptions: async () => (await call<{ subscriptions: SubscriptionStatus[] }>("/runtime/subscriptions", {})).subscriptions,
     listSubClients: async () => (await call<{ clients: SubClient[] }>("/runtime/sub-clients", { action: "list" })).clients,

@@ -34,9 +34,14 @@ export interface ConfigInfo { id: string; cwd: string; cmd: string; user: string
   manifest: SiteManifestView | { error: string } | null; rw: string[]; count: number; variants: Variant[];
   lan: boolean; lanHttps: string | null; tsServe: string | null; fn?: FnSummary
   alarms?: AlarmView[]   // set by the app through the SDK (setAlarm / setCron), not candy.json
+  boxes?: BoxesView      // sandboxes the site rents for its own child processes
 }
 // cron: a soft cron's schedule (it goes off again after each run); null for a one-off alarm. Times in ms.
 export interface AlarmView { name: string; at: number; cron: string | null; setAt: number }
+// wanted: candy.json has "boxes": true. quota: what the operator allows (memory in MB per box); null = none.
+export interface BoxesView { wanted: boolean; quota: { max: number; memory: number } | null; held: BoxView[] }
+export interface BoxView { id: string; label: string | null; unit: string; memory: number /* MB limit */;
+  memoryUsed: number | null /* bytes */; startedAt: number /* ms */ }
 export interface ConfigsResponse { success: true; configs: Record<string, ConfigInfo> }
 export interface PortalInfo { port: number; url?: string }
 export type PortalsResponse = Record<string, PortalInfo>
@@ -86,6 +91,7 @@ export interface D1Response { results: Record<string, unknown>[]; success: true;
 export interface FnAddResponse { success: true; name: string; url: string | null; warnings: string[]; fn: FnSummary }
 export interface ReloadResponse { success: true; sites: { name: string; ok: boolean; error?: string; cron: string[]; url?: string | null }[] }
 export interface MemoryResponse { success: true; memory: number | null; limit: number; text: string; isDefault: boolean; applied: "now" | "next start"; sandboxed: boolean }
+export interface BoxesResponse { success: true; boxes: { max: number; memory: number } | null; text: string; wanted: boolean; sandboxed: boolean }
 export interface SandboxResponse { success: true; sandbox: boolean; active: boolean; rw: string[]; stateDir: string; message: string }
 export interface StartResponse { success: true; message?: string /* "already running" */; data: { name: string; status: ProcessStatus;
   port: number | null; pid: number | null; detectedPorts: number[]; configId: string; cwd: string; cmd: string } }

@@ -15,6 +15,8 @@
 //                           "pub": [{ "event": "wa:reply", "bind": "wa" }] on the sender (events.ts)
 //                           "candy:sub-request" is the daemon's own: an app waits for this site's approval
 //   "service": true         takes server-to-server tokens ("app x, running as user y, asks")
+//   "boxes": true           wants to rent boxes (box.ts) for its own child processes; how many and
+//                           how big is the operator's call (candy boxes), so this alone grants nothing
 //   "cron": [{ "tag": "cleanup", "schedule": "0 3 * * *" }]
 //                           scheduled runs; the run is told the tag (SDK cronJob(), or scheduled(controller).tag)
 //
@@ -26,7 +28,7 @@ import { ANY_SITE, BUILTIN_EVENTS, BUILTIN_SITE, EVENT_NAME, MAX_AUTH_USERS, MAX
 
 export const MANIFEST_FILE = "candy.json"
 // Keys every kind of site may set. fn-config.ts skips these without a warning.
-export const MANIFEST_KEYS = ["auth", "depends", "publish", "idle", "pub", "sub", "service", "cron"] as const
+export const MANIFEST_KEYS = ["auth", "depends", "publish", "idle", "pub", "sub", "service", "boxes", "cron"] as const
 export const MAX_DEPENDS = 16
 const MAX_MANIFEST_BYTES = 256 * 1024
 // The same shape as a site name: a DNS label
@@ -49,6 +51,8 @@ export interface SiteManifest {
   unordered: string[]
   // Takes server-to-server tokens (its own key, apart from "auth")
   service: boolean
+  // Asks to rent boxes. Only a wish: the operator's quota (candy boxes) is what allows any
+  boxes: boolean
   // Scheduled runs, each named by its "tag" (CronJob.name)
   cron: CronJob[]
   warnings: string[]
@@ -56,7 +60,7 @@ export interface SiteManifest {
   source: string | null
 }
 
-export const emptyManifest = (): SiteManifest => ({ auth: false, depends: [], publish: false, idle: false, pub: [], sub: [], unordered: [], service: false, cron: [], warnings: [], source: null })
+export const emptyManifest = (): SiteManifest => ({ auth: false, depends: [], publish: false, idle: false, pub: [], sub: [], unordered: [], service: false, boxes: false, cron: [], warnings: [], source: null })
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v)
 
@@ -90,13 +94,14 @@ export const normalizeManifest = (raw: unknown): Omit<SiteManifest, "source"> =>
     publish = raw.publish
   }
 
-  const flag = (key: "idle" | "service"): boolean => {
+  const flag = (key: "idle" | "service" | "boxes"): boolean => {
     if (raw[key] === undefined) return false
     if (typeof raw[key] !== "boolean") throw new Error(`${MANIFEST_FILE}: "${key}" must be true or false`)
     return raw[key] as boolean
   }
   const idle = flag("idle")
   const service = flag("service")
+  const boxes = flag("boxes")
 
   const list = (key: "pub" | "sub" | "cron", max: number): unknown[] => {
     if (raw[key] === undefined) return []
@@ -184,7 +189,7 @@ export const normalizeManifest = (raw: unknown): Omit<SiteManifest, "source"> =>
     cron.push(v.job)
   }
 
-  return { auth, depends, publish, idle, pub, sub, unordered, service, cron, warnings }
+  return { auth, depends, publish, idle, pub, sub, unordered, service, boxes, cron, warnings }
 }
 
 /** Reads <dir>/candy.json. A folder without one gets the empty manifest. */
@@ -209,7 +214,7 @@ export const checkSiteManifest = (v: unknown): SiteManifest => {
   const cron = Array.isArray(v.cron) ? v.cron.map(j => isObject(j) ? { tag: j.name, schedule: j.schedule, args: j.args, ...(j.timeoutSec !== undefined ? { timeout: j.timeoutSec } : {}) } : j) : v.cron
   const unordered = Array.isArray(v.unordered) ? v.unordered : []
   const sub = Array.isArray(v.sub) ? v.sub.map(s => typeof s === "string" && unordered.includes(s) ? `${s}:${UNORDERED}` : s) : v.sub
-  const m = normalizeManifest({ auth: v.auth, depends: v.depends, publish: v.publish, idle: v.idle, pub, sub, service: v.service, cron })
+  const m = normalizeManifest({ auth: v.auth, depends: v.depends, publish: v.publish, idle: v.idle, pub, sub, service: v.service, boxes: v.boxes, cron })
   const clean = (s: string) => s.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 500)
   const warnings = Array.isArray(v.warnings) ? v.warnings.filter((w): w is string => typeof w === "string").slice(0, 32).map(clean) : []
   const source = typeof v.source === "string" && v.source.length <= 4096 && !/[\x00-\x1f\x7f]/.test(v.source) ? v.source : null

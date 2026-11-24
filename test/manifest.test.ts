@@ -15,7 +15,7 @@ const project = (files: Record<string, string>): string => {
 describe("candy.json", () => {
   it("a site without one asks for nothing", async () => {
     expect(await loadSiteManifest(project({}))).toEqual(emptyManifest())
-    expect(emptyManifest()).toEqual({ auth: false, depends: [], publish: false, idle: false, pub: [], sub: [], unordered: [], service: false, cron: [], warnings: [], source: null })
+    expect(emptyManifest()).toEqual({ auth: false, depends: [], publish: false, idle: false, pub: [], sub: [], unordered: [], service: false, boxes: false, cron: [], warnings: [], source: null })
   })
 
   it("reads auth and depends, comments and all", async () => {
@@ -26,7 +26,7 @@ describe("candy.json", () => {
       "publish": true,
     }` })
     const m = await loadSiteManifest(dir)
-    expect(m).toEqual({ auth: true, depends: ["db", "queue"], publish: true, idle: false, pub: [], sub: [], unordered: [], service: false, cron: [], warnings: [], source: join(dir, "candy.json") })
+    expect(m).toEqual({ auth: true, depends: ["db", "queue"], publish: true, idle: false, pub: [], sub: [], unordered: [], service: false, boxes: false, cron: [], warnings: [], source: join(dir, "candy.json") })
     expect(normalizeManifest({}).publish).toBe(false)
     expect(normalizeManifest({ depends: "db" }).depends).toEqual(["db"])
     expect(normalizeManifest({}).auth).toBe(false)
@@ -50,13 +50,23 @@ describe("candy.json", () => {
     }
   })
 
+  it("\"boxes\" is a flag like \"idle\", and survives the daemon's re-check", () => {
+    expect(normalizeManifest({}).boxes).toBe(false)
+    const m = normalizeManifest({ boxes: true })
+    expect(m.boxes).toBe(true)
+    expect(checkSiteManifest({ ...m, source: null }).boxes).toBe(true)
+    expect(checkSiteManifest({ ...normalizeManifest({}), source: null }).boxes).toBe(false)
+    for (const bad of [{ boxes: "yes" }, { boxes: 1 }, { boxes: { max: 2 } }]) expect(() => normalizeManifest(bad)).toThrow(/"boxes" must be true or false/)
+    expect(() => checkSiteManifest({ auth: false, depends: [], boxes: "true" })).toThrow()
+  })
+
   it("names the file when it doesn't parse", async () => {
     await expect(loadSiteManifest(project({ "candy.json": `{ "auth": ` }))).rejects.toThrow(/^candy\.json: /)
   })
 
   it("what another process says a manifest is gets checked again", () => {
     expect(checkSiteManifest({ auth: true, depends: ["db"], warnings: ["a\u001b[31mb"], source: "/srv/x/candy.json", extra: 1 }))
-      .toEqual({ auth: true, depends: ["db"], publish: false, idle: false, pub: [], sub: [], unordered: [], service: false, cron: [], warnings: ["a [31mb"], source: "/srv/x/candy.json" })
+      .toEqual({ auth: true, depends: ["db"], publish: false, idle: false, pub: [], sub: [], unordered: [], service: false, boxes: false, cron: [], warnings: ["a [31mb"], source: "/srv/x/candy.json" })
     expect(checkSiteManifest({ auth: false, depends: [], publish: true }).publish).toBe(true)
     expect(() => checkSiteManifest({ auth: false, depends: [], publish: 1 })).toThrow()
     expect(() => checkSiteManifest({ auth: "true", depends: [] })).toThrow()

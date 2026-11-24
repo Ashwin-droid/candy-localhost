@@ -201,6 +201,7 @@ A site runs without any config file of its own: register it and candy starts it,
   "pub": ["built"],           // events this site may publish (each can say who may subscribe)
   "sub": ["ci:built"],        // events of other sites it gets: "<site>:<event>"
   "service": true,            // takes server-to-server tokens (which app is calling)
+  "boxes": true,              // wants to rent boxes for its child processes (the operator sets how many)
   "cron": [{ "tag": "sync", "schedule": "*/15 * * * *" }]  // scheduled runs, each with a tag
 }
 ```
@@ -457,6 +458,57 @@ candy sandbox myapp on
 ```
 
 Changes apply at the next start. An app that fails with "Read-only file system" is writing outside those places: move that data to `CANDY_STATE_DIR`, or add the folder with `--rw`. Started by hand or as a normal user, the daemon doesn't sandbox anything.
+
+### Boxes
+
+A sandboxed server can rent **boxes** from candy for its own child processes: one process tree per box, each its own systemd unit (`candy-box-<name>-<id>.service`) with its own limits. Running out of memory in a box ends that box and nothing else. A box runs as the site's user and is bound to the site's unit, so it is gone when the site stops, crashes, restarts or idles out. It never keeps the site up.
+
+Three parties decide:
+
+| Who | What | Where |
+|---|---|---|
+| The site | That it wants boxes at all | `"boxes": true` in candy.json |
+| The operator | How many it may hold at once, and how much memory each may have | `candy boxes <name> <max> <memory>` |
+| The site, per box | Command, folders, limits within the operator's, extra isolation | SDK `rentBox()` |
+
+A box's memory is its own, not a share of the site's: a site limited to 512M can rent 4G boxes if its operator allows that.
+
+```bash
+candy boxes social-plane 12 4G   # up to 12 boxes, 4G each
+candy boxes social-plane         # the setting, and the boxes it holds with their memory use
+candy boxes social-plane off
+```
+
+```ts
+import { boxQuota, rentBox } from "candy-localhost/sdk"
+
+const quota = await boxQuota()   // { enabled, available, reason, max, memory, held }
+const box = await rentBox({
+  cmd: ["/home/me/.bun/bin/bun", "agent.ts"],   // an absolute path, as the box sees it
+  cwd: "/home/me/app/chats/42",
+  env: { ANTHROPIC_API_KEY: key },
+  grants: [
+    { path: "/home/me/app/chats/42", mode: "rw" },
+    { path: "/home/me/.bun", mode: "ro" },
+  ],
+  memory: "1G", cpu: 100, tasks: 256,           // cpu: percent of one core
+  isolation: ["IPAddressDeny=any", "IPAddressAllow=localhost 203.0.113.0/24"],
+  label: "chat 42",
+})
+const io = await Bun.connect({ unix: box.socket, socket: { data(_, bytes) { /* the box's stdout */ } } })
+io.write('{"jsonrpc":"2.0", ...}\n')             // the box's stdin
+const exit = await box.exited()                 // { cause, code, signal, detail }
+```
+
+- **Folders.** A box sees the system folders read-only, like its site, but nothing of `/home`, other sites' state or `/mnt`, `/media`, `/srv`: only its `grants`. A grant can't be more than the site has: read-write only inside what the site may write (its code folder, state folder and `--rw` paths), read-only anywhere the site's user can read. Anything else is refused. A box has its own private `/tmp`.
+- **Processes.** A box has its own PID namespace: it sees its own processes and no one else's.
+- **Isolation.** A box starts with everything its site's sandbox has, and none of that can be turned off. `isolation` adds systemd settings on top, from a fixed list: network (`PrivateNetwork`, `IPAddressDeny`, `IPAddressAllow`, `RestrictAddressFamilies`, `SocketBindDeny`, `SocketBindAllow`), system calls (`SystemCallFilter`, `SystemCallErrorNumber`, `RestrictNamespaces`, `MemoryDenyWriteExecute`), files (`InaccessiblePaths`, `ReadOnlyPaths`, `NoExecPaths`, `ExecPaths`, `RestrictFileSystems`), and `PrivateIPC`, `RemoveIPC`, `ProtectProc`, `ProcSubset`, `UMask`. A line naming anything else is refused with an error, never dropped. The address lists take addresses, not host names.
+- **stdin and stdout** are one unix socket (`box.socket`) that only the site's user can open. Disconnecting doesn't end the box: its output waits until you connect again. `box.stderr()` is the last 64 KB of its stderr.
+- **How it ended** (`box.exited()`): `exit` (with `code`), `signal`, `oom`, `lease` (its `seconds` ran out), `released` (you called `box.stop()`), `site-stopped`, `stopped` (candy or the operator), or `failed` (it never ran; `detail` says why).
+- **Quota.** Renting past the limit fails with an error; nothing is queued. `listBoxes()` shows what the site holds.
+- The audit log has a `BOX_RENT` line (grants, limits, isolation; never the environment or arguments) and a `BOX_RELEASE` line with the cause for every box.
+
+Boxes need the root daemon and a site that runs in the sandbox. Anywhere else `boxQuota()` says `available: false` with the reason.
 
 ### Variant Configs
 
@@ -749,6 +801,7 @@ candy dev <cmd> --name <name>  Register and run with custom route name
 candy dev <cmd> --api          Register in API mode (hold the first request while starting, then forward it)
 candy api <name> [on|off]      Turn API mode on or off
 candy mem <name> <size|off>    Memory limit for a site (default 2G, at most 16G)
+candy boxes <name> [<max> <memory>|off]   Boxes a site may rent, or show the ones it holds
 candy stop [name]              Stop server (current directory or by name)
 candy status                   Show daemon status and all servers
 candy logs [name]              Tail logs via SSE

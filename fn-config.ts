@@ -41,7 +41,7 @@ const WRANGLER_KEYS = new Set(["main", "vars", "kv_namespaces", "d1_databases", 
 // Short forms too.
 const CANDY_KEYS = new Set([...WRANGLER_KEYS, "kv", "d1", "crons", "handlers"])
 // The manifest's shared keys (MANIFEST_KEYS in manifest.ts): read there, not a function's business
-const SHARED_KEYS = new Set(["auth", "depends", "publish", "idle", "pub", "sub", "service", "cron"])
+const SHARED_KEYS = new Set(["auth", "depends", "publish", "idle", "pub", "sub", "service", "boxes", "cron"])
 
 const MAX_VAR_BYTES = 64 * 1024
 

@@ -538,7 +538,44 @@ async function cmdStatus(args: string[]) {
     if (config.fn) for (const [k, v] of fnInfoRows(config.fn)) console.log(`  ${c.dim}${k}:${c.reset} ${v}`)
     else console.log(`  ${c.dim}cmd:${c.reset} ${config.cmd}`)
     console.log(`  ${c.dim}cwd:${c.reset} ${config.cwd}`)
+    // Already in /configs: no extra request per site
+    const held = config.boxes?.held
+    if (Array.isArray(held) && held.length) console.log(`  ${c.dim}boxes:${c.reset} ${held.length}${config.boxes.quota ? ` ${c.dim}of ${config.boxes.quota.max}${c.reset}` : ''}`)
     console.log()
+  }
+}
+
+// Memory as people write it: MB in, "512M" / "4G" out
+const fmtMb = (mb: unknown) => typeof mb !== 'number' ? '-' : mb >= 1024 && mb % 1024 === 0 ? `${mb / 1024}G` : mb >= 1024 ? `${(mb / 1024).toFixed(1)}G` : `${mb}M`
+const fmtUsed = (bytes: unknown) => {
+  if (typeof bytes !== 'number') return '?'
+  const mb = bytes / 1048576
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)}G` : mb >= 1 ? `${Math.round(mb)}M` : `${Math.max(1, Math.round(bytes / 1024))}K`
+}
+
+// candy boxes <name>: what the site may rent and what it holds
+async function showBoxes(name: string) {
+  const res = await apiGet('/configs')
+  const config = res?.configs?.[name]
+  if (!config) {
+    console.error(`${c.red}${res?.error || `No site named ${name}`}${c.reset}`)
+    process.exit(1)
+  }
+  const boxes = config.boxes
+  if (!boxes) {
+    console.log(`${c.dim}${name}: this daemon doesn't report boxes (is it older than this CLI?)${c.reset}`)
+    return
+  }
+  const quota = boxes.quota
+  const held: any[] = Array.isArray(boxes.held) ? boxes.held : []
+  if (quota) console.log(`${name}: ${c.cyan}${quota.max} box${quota.max === 1 ? '' : 'es'} of up to ${fmtMb(quota.memory)} each${c.reset}, ${held.length} held`)
+  else console.log(`${name}: ${c.dim}no boxes allowed: set with candy boxes ${name} <max> <memory>${c.reset}`)
+  if (quota && !boxes.wanted) console.log(`${c.yellow}Its candy.json doesn't ask for boxes: it needs "boxes": true before it can rent any.${c.reset}`)
+  else if (!quota && boxes.wanted) console.log(`${c.yellow}Its candy.json asks for boxes ("boxes": true), but the operator hasn't allowed any.${c.reset}`)
+  else if (boxes.wanted) console.log(`${c.dim}Its candy.json asks for them ("boxes": true).${c.reset}`)
+  for (const b of held) {
+    const label = b.label ? ` ${b.label}` : ''
+    console.log(`  ${c.white}${b.id}${c.reset}${label}  ${fmtUsed(b.memoryUsed)} / ${fmtMb(b.memory)}  ${c.dim}${fmtAgo(b.startedAt)} old${c.reset}`)
   }
 }
 
@@ -1740,6 +1777,7 @@ function printHelp() {
   console.log(`  ${c.cyan}candy reload${c.reset} [name]             Read candy.json again (all your sites, or one); nothing restarts`)
   console.log(`  ${c.cyan}candy ttl${c.reset} <name> <minutes|off>  Stop a site after that many idle minutes (default 60)`)
   console.log(`  ${c.cyan}candy mem${c.reset} <name> <size|off>     Memory limit for a site (default 2G, at most 16G)`)
+  console.log(`  ${c.cyan}candy boxes${c.reset} <name> [<max> <memory>|off]  Boxes a site may rent for its child processes (e.g. 12 4G); no args: show them`)
   console.log(`  ${c.cyan}candy env${c.reset} <name> <path|off>     Give a site its environment from a KEY=VALUE file`)
   console.log(`  ${c.cyan}candy route serve${c.reset} <name> <port|off>  https://<host>.ts.net:<port> on the tailnet (tailscale serve, run by candy)`)
   console.log(`  ${c.cyan}candy route entry${c.reset} <name> <port|off>  A local port that always reaches the site through candy`)
@@ -1892,6 +1930,30 @@ switch (command) {
     }
     console.log(`${name}: memory limit ${c.cyan}${res.text}${c.reset}${res.isDefault ? ' (the default)' : ''}, ${res.applied === 'now' ? 'applied to the running server' : 'from its next start'}`)
     if (!res.sandboxed) console.log(`${c.dim}The limit only applies to sandboxed servers; this one runs without the sandbox.${c.reset}`)
+    break
+  }
+  case 'boxes': {
+    // candy boxes <name> [<max> <memory-per-box> | off]: the boxes a site may rent (box.ts)
+    const [name, max, memory] = args.slice(1)
+    const usage = (): never => {
+      console.error(`${c.red}Usage: candy boxes <name> [<max> <memory-per-box> | off]   (e.g. candy boxes ${name || 'site'} 12 4G)${c.reset}`)
+      process.exit(1)
+    }
+    if (!name) usage()
+    if (max === undefined) { await showBoxes(name); break }
+    const off = max === 'off'
+    if (off ? memory !== undefined : !/^\d+$/.test(max) || !memory) usage()
+    const res = await apiPost('/config/boxes', off ? { name, off: true } : { name, max: Number(max), memory: /^\d+(\.\d+)?$/.test(memory) ? Number(memory) : memory })
+    if (!res || res.error) {
+      console.error(`${c.red}${res?.error || 'Daemon not running'}${c.reset}`)
+      process.exit(1)
+    }
+    if (!res.boxes) console.log(`${name}: ${c.cyan}no boxes allowed${c.reset}`)
+    else {
+      console.log(`${name}: ${c.cyan}${res.text}${c.reset}`)
+      if (!res.wanted) console.log(`${c.yellow}Its candy.json doesn't ask for boxes yet: it needs "boxes": true before it can rent any.${c.reset}`)
+      if (!res.sandboxed) console.log(`${c.dim}Boxes need the sandbox (a root service); this site runs without it.${c.reset}`)
+    }
     break
   }
   case 'env': {

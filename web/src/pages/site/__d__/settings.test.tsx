@@ -12,6 +12,7 @@ import { useDraftSet, visibility } from "../settings/common.tsx"
 import { tailscalePort } from "../settings/ReachSection.tsx"
 import { checkScaling } from "../settings/ScalingSection.tsx"
 import { checkIdle } from "../settings/StartupSection.tsx"
+import { checkBoxes } from "../../../lib/validate.ts"
 
 const HOSTILE = `<img src=x onerror=alert(1)>`
 
@@ -137,6 +138,25 @@ describe("visibility matrix (render)", () => {
     expect(has(offHtml, "set-memory")).toBe(false)
     expect(offHtml).toContain("Memory limit and writable folders apply only in the sandbox.")
   })
+  test("boxes it may rent: servers only, with the current quota and the candy.json hint", () => {
+    const none = render(SITES.server, { multiUser: true })
+    expect(has(none, "set-boxes-max")).toBe(true)
+    expect(has(none, "set-boxes-memory")).toBe(true)
+    expect(none).toContain("Boxes it may rent")
+    expect(none).toContain("Each box has its own limit; it isn’t a share of api’s.")
+    expect(none).not.toContain("needs <code>")
+    const fnHtml = render(SITES.fn, { multiUser: true })
+    expect(has(fnHtml, "sandbox")).toBe(true)
+    expect(has(fnHtml, "set-boxes-max")).toBe(false)
+    const quota = (wanted: boolean) => make("api", { config: config({ boxes: { wanted, quota: { max: 12, memory: 1536 }, held: [] } }) })
+    const unwanted = render(quota(false), { multiUser: true })
+    expect(unwanted).toMatch(/id="set-boxes-max"[^>]*value="12"|value="12"[^>]*id="set-boxes-max"/)
+    expect(unwanted).toMatch(/id="set-boxes-memory"[^>]*value="1.5G"|value="1.5G"[^>]*id="set-boxes-memory"/)
+    expect(unwanted).toContain("api can’t rent them yet: its candy.json also needs <code>&quot;boxes&quot;: true</code>.")
+    expect(render(quota(true), { multiUser: true })).not.toContain("can’t rent them yet")
+    const offSandbox = render(make("api", { config: config({ sandbox: false }) }), { multiUser: true })
+    expect(has(offSandbox, "set-boxes-max")).toBe(true)   // the quota is the operator's, whatever the site's own sandbox
+  })
   test("no public zone", () => {
     const html = render(SITES.server, {}, NO_ZONE)
     expect(html).toContain("No public zone is set up.")
@@ -188,6 +208,18 @@ describe("validation messages (01 §5, §13.1)", () => {
     expect(checkScaling({ hot: "0", max: "0", linger: "30" })?.text).toBe("Max must be at least 1")
     expect(checkScaling({ hot: "5", max: "4", linger: "30" })).toEqual({ key: "hot", text: "Hot can’t be more than max" })
     expect(checkScaling({ hot: "0", max: "4", linger: "601" })?.text).toBe("Linger must be 0 to 600 seconds")
+  })
+  test("boxes", () => {
+    expect(checkBoxes("", "")).toEqual({ off: true })
+    expect(checkBoxes(" 12 ", "4G")).toEqual({ off: false, max: 12, memory: 4096 })
+    expect(checkBoxes("1", "64M")).toEqual({ off: false, max: 1, memory: 64 })
+    expect(checkBoxes("64", "16G")).toEqual({ off: false, max: 64, memory: 16384 })
+    for (const bad of ["0", "65", "1.5", "x", "-1"]) expect(checkBoxes(bad, "1G")).toEqual({ field: "max", error: "Enter a number of boxes from 1 to 64" })
+    expect(checkBoxes("", "1G")).toEqual({ field: "max", error: "Enter a number of boxes from 1 to 64" })
+    expect(checkBoxes("4", "")).toEqual({ field: "memory", error: "Enter the memory for each box, like 1G or 512M" })
+    expect(checkBoxes("4", "32M")).toEqual({ field: "memory", error: "At least 64M" })
+    expect(checkBoxes("4", "17G")).toEqual({ field: "memory", error: "At most 16G" })
+    expect(checkBoxes("4", "lots")).toEqual({ field: "memory", error: "Enter a size like 4G or 512M" })
   })
   test("tailscale port from the serve URL", () => {
     expect(tailscalePort(null)).toBe("8443")

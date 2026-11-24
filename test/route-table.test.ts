@@ -124,7 +124,9 @@ describe("ROUTE_TABLE", () => {
   it("leaves only the login, discovery and secret exchange public", () => {
     const pub = table.filter(([, , c]) => c === "public").map(([m, p]) => `${m} ${p}`).sort()
     expect(pub).toEqual([
-      "* /candy-auth/check", "GET /app-auth/authorize", "GET /assets/*", "GET /auth/passkey/start", "GET /auth/users", "GET /candy/registry", "GET /favicon.svg", "GET /login",
+      "* /candy-auth/check", "GET /app-auth/authorize", "GET /assets/*", "GET /auth/passkey/start", "GET /auth/users",
+      // /candy/ca/root.crt: the network's root certificate, public by nature. /candy/tls-ask: loopback only (Caddy).
+      "GET /candy/ca/root.crt", "GET /candy/registry", "GET /candy/tls-ask", "GET /favicon.svg", "GET /login",
       // /runtime/*: no login, but a launched process's runtime token, on loopback and never through Caddy
       "GET /runtime/events",
       "POST /auth/login", "POST /auth/logout", "POST /auth/passkey/finish",

@@ -184,9 +184,16 @@ export const LOG_REDACTED_RESPONSE_HEADERS = ["Set-Cookie"] as const
  */
 export const LOG_REDACTED_QUERY_PARAMS = ["candy_token", "candy_stamp", "candy_code"] as const
 
-export const caddyGlobalBlock = (o: { adminSocket: string; accessLog: string }): string => {
+/** `tlsAsk`: the URL Caddy asks before it makes a certificate for a name on demand (tlsAskUrl) */
+export const caddyGlobalBlock = (o: { adminSocket: string; accessLog: string; tlsAsk?: string }): string => {
   if (!o.adminSocket.startsWith("/") || /[\s{}"'#|]/.test(o.adminSocket)) throw new Error(`bad admin socket path: ${o.adminSocket}`)
   if (!o.accessLog.startsWith("/") || /[\s{}"'#]/.test(o.accessLog)) throw new Error(`bad access log path: ${o.accessLog}`)
+  if (o.tlsAsk !== undefined && !/^http:\/\/localhost:\d{1,5}\/[A-Za-z0-9/_-]+$/.test(o.tlsAsk)) throw new Error(`bad tls ask url: ${o.tlsAsk}`)
+  const ask = o.tlsAsk ? `  # A certificate on demand only for a name this machine serves: the daemon says which
+  on_demand_tls {
+    ask ${o.tlsAsk}
+  }
+` : ""
   const drop = [
     ...LOG_REDACTED_REQUEST_HEADERS.map(h => `        request>headers>${h} delete`),
     ...LOG_REDACTED_RESPONSE_HEADERS.map(h => `        resp_headers>${h} delete`),
@@ -197,7 +204,14 @@ export const caddyGlobalBlock = (o: { adminSocket: string; accessLog: string }):
   return `{
   # Admin API on a 0600 unix socket: on localhost:2019 any local user could load a config into this root Caddy
   admin ${caddyAdminAddress(o.adminSocket)}
-  # The default logger, which every site's \`log\` uses: secrets in headers are
+  # Caddy's own CA. The intermediate outlives every certificate the candy network's hub hands
+  # out (HUB_CERT_LIFETIME); the root is untouched by this.
+  pki {
+    ca local {
+      intermediate_lifetime ${INTERMEDIATE_LIFETIME}
+    }
+  }
+${ask}  # The default logger, which every site's \`log\` uses: secrets in headers are
   # dropped before they're written, and the file is the daemon's alone
   log {
     output file ${o.accessLog} {
@@ -392,6 +406,96 @@ export const mergeLowerCase = <V>(entries: Iterable<[string, V]>): { kept: Map<s
 // Named blocks use it too: next to an on-demand wildcard, Caddy doesn't manage a certificate for a
 // name the wildcard covers ("wa.candy" under "*.candy"), and a plain `tls internal` there has none.
 export const TLS_PER_NAME = "tls internal {\n    on_demand\n  }"
+
+// ----------------------------------------------------------------------------
+// One root for the candy network. The machine "candy.candy" resolves to (the hub: it runs the
+// DNS, so it decides which machine a name belongs to) is the CA for every *.candy name. Its Caddy
+// runs an ACME server on its own CA; the other machines' Caddy ask it for their certificates.
+// The proof is ACME's tls-alpn-01: the hub connects to the name, which its own DNS sends to the
+// machine that registered it. So a machine gets a certificate only for a name that is its own.
+// *.localhost stays with each machine's own CA: nobody else can reach, or check, a loopback name.
+// ----------------------------------------------------------------------------
+
+export const INTERMEDIATE_LIFETIME = "30d"
+export const INTERMEDIATE_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000
+// A week: a peer keeps working that long with the hub away
+export const HUB_CERT_LIFETIME = "7d"
+export const HUB_HOST = "candy.candy"
+export const HUB_ACME_DIRECTORY = `https://${HUB_HOST}/acme/local/directory`
+const SHORTCUTS = ["kill", "k", "portal", "p"] as const
+
+/**
+ * The names the hub signs for, as its ACME server's "allow" list. A "*." there is one label deep
+ * (smallstep's rule), so every shape candy makes is listed: <name>.candy, the shortcuts
+ * (<name>.kill.candy), and both again under each machine's host label (<name>.<host>.candy).
+ */
+export const hubAllowedDomains = (hostLabels: Iterable<string>): string[] => {
+  const out = ["*.candy", ...SHORTCUTS.map(s => `*.${s}.candy`)]
+  for (const h of [...new Set([...hostLabels].map(l => l.trim().toLowerCase()))].filter(isDnsLabel).sort()) {
+    out.push(`*.${h}.candy`, ...SHORTCUTS.map(s => `*.${s}.${h}.candy`))
+  }
+  return out
+}
+
+/** The hub's own block for candy.candy: the ACME server under /acme/, everything else to the daemon */
+export const hubSiteBlock = (o: { bind: string; hostLabels: Iterable<string>; mark: string }): string => {
+  if (!isIpOrCidr(o.bind) || o.bind.includes("/")) throw new Error(`bad bind address: ${o.bind}`)
+  return `${o.mark}
+${HUB_HOST} {
+  bind ${o.bind}
+  ${TLS_PER_NAME}
+  handle /acme/* {
+    acme_server {
+      lifetime ${HUB_CERT_LIFETIME}
+      challenges tls-alpn-01
+      allow {
+        domains ${hubAllowedDomains(o.hostLabels).join(" ")}
+      }
+    }
+  }
+  handle {
+    reverse_proxy localhost:9999
+  }
+  log
+}
+
+`
+}
+
+/**
+ * `tls` for a *.candy block on a machine that isn't the hub: a certificate per name from the hub,
+ * whose root is the file `root` (fetched and pinned by the daemon). With the hub away or the name
+ * not this machine's in the hub's DNS, Caddy falls back to its own CA, as before there was a hub.
+ */
+export const tlsFromHub = (root: string): string => {
+  if (!root.startsWith("/") || /[\s{}"'#]/.test(root)) throw new Error(`bad root certificate path: ${root}`)
+  return `tls {
+    on_demand
+    issuer acme {
+      dir ${HUB_ACME_DIRECTORY}
+      trusted_roots ${root}
+      disable_http_challenge
+    }
+    issuer internal
+  }`
+}
+
+/**
+ * Does this machine serve `host`? Caddy asks before it makes a certificate on demand (tlsAsk).
+ * Any *.localhost (loopback only). Of *.candy: a site of its own or a reserved name, alone or under
+ * the machine's host label, and those sites' shortcuts (<name>.kill.candy, <name>.k.<host>.candy).
+ */
+export const servesHost = (host: string, names: Iterable<string>, hostLabel: string | null, reserved: Iterable<string>): boolean => {
+  const h = host.trim().toLowerCase().replace(/\.$/, "")
+  if (h === "localhost" || h.endsWith(".localhost")) return true
+  if (!h.endsWith(".candy")) return false
+  const sites = new Set([...names].map(n => n.toLowerCase()))
+  const known = new Set([...sites, ...[...reserved].map(n => n.toLowerCase())])
+  const label = hostLabel?.trim().toLowerCase()
+  const bases = [h.slice(0, -".candy".length)]
+  if (label && bases[0].endsWith(`.${label}`)) bases.push(bases[0].slice(0, -(label.length + 1)))
+  return bases.some(b => known.has(b) || SHORTCUTS.some(s => b.endsWith(`.${s}`) && sites.has(b.slice(0, -(s.length + 1)))))
+}
 
 /**
  * Is this stored certificate (its folder under certificates/local, and "sans" from its .json) one

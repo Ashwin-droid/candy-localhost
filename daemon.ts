@@ -9,7 +9,7 @@ import { $, spawn, type Subprocess } from "bun"
 import { chmodSync, closeSync, existsSync, openSync, readFileSync, statSync, watch, type FSWatcher } from "node:fs"
 import { appendFile, chmod, chown, lchown, lstat, mkdir, readdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
-import { randomBytes, timingSafeEqual } from "node:crypto"
+import { randomBytes, timingSafeEqual, X509Certificate } from "node:crypto"
 import { networkInterfaces, userInfo } from "node:os"
 import { SHARED_GROUP, SHARED_SECRET_FILE } from "./secret.ts"
 import { AccessLogTail, activityFromAccessLog, countEstablished, idleVerdict, IDLE_TIMEOUT_MS, listeningPortsOf, localNameCandidates, readMemoryState, tailscaleServeTargets, validateTtlMinutes, type MemoryState } from "./activity.ts"
@@ -40,7 +40,7 @@ import { apiHoldSeconds, createApiModeGate } from "./api-mode.ts"
 import { SystemMonitor, SIGNALS, isUnitName, killProblem, unitActionProblem } from "./sysmon.ts"
 import { PortalSessions, readSessionCookie, sessionCookieHeader, clearSessionCookieHeader } from "./portal-session.ts"
 import { attemptLogin, loginKeys, auditActor, auditSafe, cachedList, classifyRoute, clientIp, guardRequest, isPortalOrigin, LoginSlots, mayActOn, PageTokens, parseShortcutHost, safeNext, sameOrigin, shortcutConfirmUrl, SiteTokens, SoftLockout, SESSION_HEADER, userScopedFetch, wantsHtml, logSafe, type RequestAuth, type RouteRule, type ShortcutAction } from "./portal-auth.ts"
-import { candyHostFor, CANDY_SUBDOMAIN, coalesced, caddyGlobalBlock, checkBindings, cloudflaredYaml, dedupeSiteAddresses, isCaddyUpstream, isCredentialsPath, isDnsLabel, isHostName, isIpOrCidr, isSharedCert, isQuickTunnelUrl, isTunnelId, isTunnelName, isZoneId, isZoneName, loopbackBind, lowerName, mergeLowerCase, newNameProblem, PROXY_TAG_HEADER, stripProxyHeaders, SYSTEM_BLOCK_MARK, tagDaemonUpstreams, TLS_PER_NAME, TUNNEL_TAG_HEADER, tunnelSiteBlock } from "./caddy-config.ts"
+import { candyHostFor, CANDY_SUBDOMAIN, coalesced, caddyGlobalBlock, checkBindings, cloudflaredYaml, dedupeSiteAddresses, isCaddyUpstream, isCredentialsPath, isDnsLabel, isHostName, isIpOrCidr, isSharedCert, isQuickTunnelUrl, isTunnelId, isTunnelName, isZoneId, isZoneName, loopbackBind, lowerName, mergeLowerCase, newNameProblem, PROXY_TAG_HEADER, stripProxyHeaders, SYSTEM_BLOCK_MARK, tagDaemonUpstreams, TLS_PER_NAME, tlsFromHub, hubSiteBlock, servesHost, INTERMEDIATE_LIFETIME, INTERMEDIATE_LIFETIME_MS, TUNNEL_TAG_HEADER, tunnelSiteBlock } from "./caddy-config.ts"
 import { verifyPassword, pamAvailable, checkAccount } from "./pam.ts"
 import { isSuperuser, loginUsers } from "./superuser.ts"
 import { AppKeyStore, ConsentStore, PendingRequests, issuersFor, type SiteLookup } from "./app-auth.ts"
@@ -2366,6 +2366,61 @@ const saveAdvertisements = async () => {
 }
 
 // Client-side: advertise local routes to the DNS hub
+// Caddy asks here before it makes a certificate on demand (servesHost)
+const TLS_ASK_URL = "http://localhost:9999/candy/tls-ask"
+
+// ---- one root for the candy network (caddy-config.ts, "One root") ----
+// hub: candy.candy resolves to this machine, so its Caddy signs for every *.candy name.
+// peer: it resolves to another machine; this one's *.candy certificates come from there, once
+//       that machine's root is pinned in HUB_ROOT_FILE. none: no tailnet, or no hub found.
+type HubRole = { role: 'hub' } | { role: 'peer'; ip: string } | { role: 'none' }
+let candyHub: HubRole = { role: 'none' }
+const HUB_ROOT_FILE = `${CANDY_CONFIG_DIR}/hub-root.crt`
+let hubRootPinned = existsSync(HUB_ROOT_FILE)
+const isCaCertPem = (pem: string): boolean => {
+  try { return new X509Certificate(pem).ca } catch { return false }
+}
+const rootFingerprint = (pem: string): string => new X509Certificate(pem).fingerprint256
+
+// The hub's root, taken once over the tailnet (WireGuard says who answered) and kept. A hub that
+// later shows a different root is not believed: the pinned one stays until someone removes the file.
+const pinHubRoot = async (hubIp: string): Promise<void> => {
+  let pem: string
+  try {
+    const res = await fetch(`http://${hubIp}:9999/candy/ca/root.crt`, { signal: AbortSignal.timeout(5000), redirect: "manual" })
+    if (!res.ok) return   // a hub from before it handed out certificates
+    pem = await res.text()
+  } catch { return }
+  if (pem.length > 16_384 || !isCaCertPem(pem)) return
+  const have = await readFile(HUB_ROOT_FILE, "utf8").catch(() => null)
+  if (have && isCaCertPem(have)) {
+    if (rootFingerprint(have) !== rootFingerprint(pem)) {
+      auditLog('HUB_ROOT_CHANGED', `the hub at ${hubIp} now shows root ${rootFingerprint(pem)}, not the pinned ${rootFingerprint(have)}: keeping the pinned one. If the hub really changed, remove ${HUB_ROOT_FILE}`, 'System')
+    }
+    hubRootPinned = true
+    return
+  }
+  await mkdir(CANDY_CONFIG_DIR, { recursive: true }).catch(() => {})
+  await writeFile(`${HUB_ROOT_FILE}.tmp`, pem, { mode: 0o644 })
+  await rename(`${HUB_ROOT_FILE}.tmp`, HUB_ROOT_FILE)
+  hubRootPinned = true
+  auditLog('HUB_ROOT_PINNED', `root ${rootFingerprint(pem)} from the hub at ${hubIp}: *.candy certificates now come from it`, 'System')
+}
+
+// What this machine is to the candy network now. A change rewrites the Caddyfile.
+const setHubRole = async (next: HubRole) => {
+  const pinnedBefore = hubRootPinned
+  if (next.role === 'peer') await pinHubRoot(next.ip)
+  const changed = next.role !== candyHub.role || (next.role === 'peer' && candyHub.role === 'peer' && next.ip !== candyHub.ip) || pinnedBefore !== hubRootPinned
+  candyHub = next
+  if (!changed) return
+  auditLog('HUB_ROLE', next.role === 'hub' ? 'this machine is the hub: it signs *.candy certificates for the network' : next.role === 'peer' ? `the hub is ${next.ip}${hubRootPinned ? '' : ' (no root from it yet: certificates stay local)'}` : 'no hub: certificates stay local', 'System')
+  syncCaddy().catch(() => {})
+}
+// The host labels the hub signs under: its own and every machine that advertised
+const hubHostLabels = (): string[] => [...new Set([getLocalCandyHostLabel(), ...[...remoteRecords.values()].map(r => r.hostLabel)].filter((l): l is string => !!l))].sort()
+let hubLabelsWritten = ''
+
 const advertiseToHub = async () => {
   // Retry Tailscale discovery if it wasn't available at startup
   if (!tailscaleIp) {
@@ -2379,11 +2434,13 @@ const advertiseToHub = async () => {
   }
   try {
     const dns = await import("node:dns")
-    const addrs = await dns.promises.resolve4("candy.candy")
-    if (!addrs.length) return
+    const addrs = await dns.promises.resolve4("candy.candy").catch(() => [] as string[])
+    if (!addrs.length) { await setHubRole({ role: 'none' }); return }
     const hubIp = addrs[0]
     // If candy.candy resolves to us, we ARE the hub - skip
-    if (hubIp === tailscaleIp) return
+    if (hubIp === tailscaleIp) { await setHubRole({ role: 'hub' }); return }
+    if (!isTailscaleIp(hubIp)) { await setHubRole({ role: 'none' }); return }
+    await setHubRole({ role: 'peer', ip: hubIp })
 
     const myRoutes = [...new Set([...routes.keys(), ...serverConfigs.keys()])]
     if (myRoutes.length === 0) return
@@ -5484,8 +5541,29 @@ const getPidOwnedRoutePort = async (name: string, pid: number): Promise<number |
 // Certificates from Caddy's own CA that several names share (a "*.candy" from before TLS_PER_NAME,
 // a multi-name one) are removed before Caddy starts: a stored wildcard is served for every name it
 // covers, so no per-name one would ever be issued. Only leaf certificates; never the CA (pki/).
+// Where this Caddy (started by us, with our environment) keeps its CA and certificates
+const caddyDataDir = (): string | null => process.env.XDG_DATA_HOME ? `${process.env.XDG_DATA_HOME}/caddy` : process.env.HOME ? `${process.env.HOME}/.local/share/caddy` : null
+const caddyRootCertPath = (): string | null => { const d = caddyDataDir(); return d ? `${d}/pki/authorities/local/root.crt` : null }
+
+// The intermediate has to outlive what the hub signs (HUB_CERT_LIFETIME), and Caddy keeps the one
+// it has until it is nearly over whatever the config says. One made for a shorter life is removed
+// before Caddy starts, which makes a new one under the same root. The root is never touched.
+const refreshShortIntermediate = async () => {
+  const data = caddyDataDir()
+  if (!data) return
+  const base = `${data}/pki/authorities/local/intermediate`
+  try {
+    const cert = new X509Certificate(await readFile(`${base}.crt`))
+    const life = new Date(cert.validTo).getTime() - new Date(cert.validFrom).getTime()
+    if (life >= INTERMEDIATE_LIFETIME_MS - 24 * 60 * 60 * 1000) return
+    await rm(`${base}.crt`, { force: true })
+    await rm(`${base}.key`, { force: true })
+    auditLog('CADDY_INTERMEDIATE_RENEW', `the CA's intermediate was made for ${Math.round(life / 86_400_000)} days: Caddy makes a ${INTERMEDIATE_LIFETIME} one under the same root`, 'System')
+  } catch {}   // none yet: Caddy makes it
+}
+
 const purgeSharedCerts = async () => {
-  const data = process.env.XDG_DATA_HOME ? `${process.env.XDG_DATA_HOME}/caddy` : process.env.HOME ? `${process.env.HOME}/.local/share/caddy` : null
+  const data = caddyDataDir()
   if (!data) return
   const dir = `${data}/certificates/local`
   const gone: string[] = []
@@ -5537,6 +5615,7 @@ const startCaddy = async () => {
     }
   } catch {}
 
+  await refreshShortIntermediate()
   await purgeSharedCerts()
 
   try {
@@ -5900,10 +5979,13 @@ const syncCaddyNow = async () => {
   let content = `# candy-localhost routes
 # managed by candy-localhost - do not edit manually
 
-${caddyGlobalBlock({ adminSocket: CADDY_ADMIN_SOCKET, accessLog: CADDY_LOG.replace(/\\/g, "/") })}
+${caddyGlobalBlock({ adminSocket: CADDY_ADMIN_SOCKET, accessLog: CADDY_LOG.replace(/\\/g, "/"), tlsAsk: TLS_ASK_URL })}
 `
   // *.localhost sites answer this machine only: the LAN and the tailnet can't reach them with --resolve
   const localBind = loopbackBind(hasIpv6Loopback())
+  // *.candy certificates: from the hub when this machine is a peer with the hub's root pinned,
+  // else from this Caddy's own CA (which, on the hub, is the network's)
+  const candyTls = candyHub.role === 'peer' && hubRootPinned ? tlsFromHub(HUB_ROOT_FILE) : TLS_PER_NAME
   // Everything below becomes Caddyfile tokens: names, upstreams and addresses that
   // aren't the shape they should be are left out (and said so), never written
   const skipped: string[] = []
@@ -5953,7 +6035,7 @@ ${caddyGlobalBlock({ adminSocket: CADDY_ADMIN_SOCKET, accessLog: CADDY_LOG.repla
     }
     content += `${candyHosts.filter(isHostName).join(", ")} {
   bind ${bindAddrs.join(" ")}
-  ${TLS_PER_NAME}
+  ${candyTls}
   reverse_proxy ${proxyTarget}
   log
 }
@@ -5985,7 +6067,7 @@ ${caddyGlobalBlock({ adminSocket: CADDY_ADMIN_SOCKET, accessLog: CADDY_LOG.repla
       if (hasAlias) candyHosts.push(`${alias}.candy`)
       content += `${candyHosts.filter(isHostName).join(", ")} {
   bind ${bindAddrs.join(" ")}
-  ${TLS_PER_NAME}
+  ${candyTls}
   reverse_proxy localhost:9999
   log
 }
@@ -6191,7 +6273,7 @@ ${body}
     content += `${SYSTEM_BLOCK_MARK}
 *.kill.candy, *.k.candy {
   bind ${tailscaleIp}
-  ${TLS_PER_NAME}
+  ${candyTls}
   reverse_proxy localhost:9999
   log
 }
@@ -6200,7 +6282,7 @@ ${body}
     content += `${SYSTEM_BLOCK_MARK}
 *.portal.candy, *.p.candy {
   bind ${tailscaleIp}
-  ${TLS_PER_NAME}
+  ${candyTls}
   reverse_proxy localhost:9999
   log
 }
@@ -6210,7 +6292,7 @@ ${body}
       content += `${SYSTEM_BLOCK_MARK}
 ${[...new Set(candyKillAliasHosts)].filter(isHostName).join(", ")} {
   bind ${tailscaleIp}
-  ${TLS_PER_NAME}
+  ${candyTls}
   reverse_proxy localhost:9999
   log
 }
@@ -6221,7 +6303,7 @@ ${[...new Set(candyKillAliasHosts)].filter(isHostName).join(", ")} {
       content += `${SYSTEM_BLOCK_MARK}
 ${[...new Set(candyPortalAliasHosts)].filter(isHostName).join(", ")} {
   bind ${tailscaleIp}
-  ${TLS_PER_NAME}
+  ${candyTls}
   reverse_proxy localhost:9999
   log
 }
@@ -6241,13 +6323,20 @@ ${[...new Set(candyPortalAliasHosts)].filter(isHostName).join(", ")} {
 
 `
 
+  // The hub's own name: its ACME server (the network's CA), and the network page from the daemon
+  if (candyHub.role === 'hub' && okIp(tailscaleIp) && !tailscaleIp.includes("/")) {
+    const labels = hubHostLabels()
+    hubLabelsWritten = labels.join(",")
+    content += hubSiteBlock({ bind: tailscaleIp, hostLabels: labels, mark: SYSTEM_BLOCK_MARK })
+  }
+
   // .candy catch-all (Tailscale) - portal UI, unregistered domains
   if (okIp(tailscaleIp)) {
     if (candyAliasHosts.length > 0) {
       content += `${SYSTEM_BLOCK_MARK}
 ${[...new Set(candyAliasHosts)].filter(isHostName).join(", ")} {
   bind ${tailscaleIp}
-  ${TLS_PER_NAME}
+  ${candyTls}
   reverse_proxy localhost:9999
   log
 }
@@ -6257,7 +6346,7 @@ ${[...new Set(candyAliasHosts)].filter(isHostName).join(", ")} {
     content += `${SYSTEM_BLOCK_MARK}
 *.candy {
   bind ${tailscaleIp}
-  ${TLS_PER_NAME}
+  ${candyTls}
   reverse_proxy localhost:9999
   log
 }
@@ -6629,6 +6718,8 @@ const ROUTE_TABLE: readonly RouteRule[] = [
   ["GET", "/favicon.svg", "public"],
   ["POST", "/mcp/auth", "public"],
   ["POST", "/candy/advertise", "public"],
+  ["GET", "/candy/tls-ask", "public"],
+  ["GET", "/candy/ca/root.crt", "public"],
   ["GET", "/candy/registry", "public"],
   ["*", "/candy-auth/check", "public"],
   ["POST", "/candy-auth/login", "public"],
@@ -6980,6 +7071,25 @@ async function controlFetch(req: Request): Promise<Response> {
     // Peers post to this machine's address and the portal reads the registry: never a site's host
     const isCandyApi = !siteHost && url.pathname.startsWith("/candy/")
     if (isCandyApi) {
+      // GET /candy/tls-ask?domain=<name> - Caddy, before a certificate on demand: 200 when this
+      // machine serves that name. Loopback only: it says which names exist here.
+      if (req.method === "GET" && url.pathname === "/candy/tls-ask") {
+        if (!isLoopback(normalizeIp(controlServer.requestIP(req)?.address || ""))) return new Response("no", { status: 403 })
+        const domain = url.searchParams.get("domain") ?? ""
+        const ok = domain.length <= 253 && servesHost(domain, [...routes.keys(), ...serverConfigs.keys()], getLocalCandyHostLabel(), RESERVED_NAMES)
+        if (!ok) auditLog('TLS_ASK_DENIED', domain.replace(/[^\x21-\x7e]/g, "?").slice(0, 120), 'System')
+        return new Response(ok ? "ok" : "no", { status: ok ? 200 : 403 })
+      }
+
+      // GET /candy/ca/root.crt - the network's root certificate, for peers to pin and for
+      // devices to install. Only the hub has it to give; a certificate is public by nature.
+      if (req.method === "GET" && url.pathname === "/candy/ca/root.crt") {
+        const path = caddyRootCertPath()
+        const pem = candyHub.role === 'hub' && path ? await readFile(path, "utf8").catch(() => null) : null
+        if (!pem || !isCaCertPem(pem)) return Response.json({ error: "This machine is not the candy network's hub." }, { status: 404, headers: corsHeaders })
+        return new Response(pem, { headers: { "Content-Type": "application/x-x509-ca-cert", "Content-Disposition": 'attachment; filename="candy-root.crt"', "Cache-Control": "no-store" } })
+      }
+
       // POST /candy/advertise - register routes from a remote machine
       if (req.method === "POST" && url.pathname === "/candy/advertise") {
         if (!tailscaleIp) {
@@ -7040,6 +7150,8 @@ async function controlFetch(req: Request): Promise<Response> {
         if (accepted.length > 0) {
           await saveAdvertisements()
           await syncDnsConfig()
+          // A machine with a new host label: the hub's ACME server has to allow names under it
+          if (candyHub.role === 'hub' && hubHostLabels().join(",") !== hubLabelsWritten) syncCaddy().catch(() => {})
           const ownerLabel = callerIdentity.hostLabel || callerIdentity.hostName || callerIp
           auditLog('ADS_ACCEPTED', `${ownerLabel} (${callerIp}): ${accepted.join(", ")}`, 'Network')
         }

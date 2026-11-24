@@ -1002,6 +1002,19 @@ When Tailscale is installed and connected, candy automatically detects the machi
 
 If Tailscale is not installed or not connected, candy runs normally with `.localhost` only. No configuration needed — detection is automatic.
 
+### One root certificate for the network
+
+With several machines running candy, each Caddy used to sign with its own private CA, so a device had to trust one root per machine. Now one machine signs for all of `.candy`: the **hub**, which is whichever machine `candy.candy` resolves to. It already runs the DNS, so it already decides which machine a name belongs to.
+
+- **The hub is the CA.** Its Caddy runs an ACME server on its own CA at `https://candy.candy/acme/local/directory`, on the tailnet only. It signs `<name>.candy`, the shortcut names, and both again under each machine's host label (`<name>.pop-os.candy`), and refuses everything else. Its root doesn't change, so devices that already trust it keep working.
+- **The other machines ask it.** Their `.candy` certificates come from the hub, one per name, valid 7 days. Nothing to set up: a daemon that finds a hub fetches its root once over the tailnet, pins it in `~/.config/candy/hub-root.crt`, and switches its `.candy` blocks over.
+- **No TXT record, no token.** The proof is ACME's own: the hub connects to the name and expects the requester to answer. Its DNS sends that name to the machine that registered it, so a machine gets a certificate only for a name that is its own.
+- **One root to install on a device:** `http://<hub tailnet IP>:9999/candy/ca/root.crt` (only the hub serves it).
+- **`.localhost` stays local.** Nobody else can reach or check a loopback name, so each machine keeps its own CA for `*.localhost`.
+- **Hub away:** certificates already issued keep working until they expire. For a new name, Caddy falls back to the machine's own CA, as before there was a hub. The same happens for a name the hub's DNS gives to another machine.
+- **A hub that shows a different root later is not believed.** The pinned root stays (`HUB_ROOT_CHANGED` in the audit log). If the hub really moved or was reinstalled, remove `hub-root.crt` and the daemon pins the new one. Moving the hub without changing the root means moving Caddy's `pki/authorities/local` folder with it.
+- **Certificates only for names a machine serves.** Caddy asks the daemon before it makes any certificate on demand: any `*.localhost`, and of `*.candy` only this machine's sites, their shortcuts and candy's own names. An unknown `.candy` name now fails the TLS handshake instead of reaching a "not registered" page (`TLS_ASK_DENIED` in the audit log).
+
 ### DNS Daemon (`candy-dns.ts`)
 
 A companion DNS daemon resolves `*.candy` queries to your Tailscale IP so the `.candy` TLD works from other devices:

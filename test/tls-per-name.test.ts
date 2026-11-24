@@ -15,7 +15,8 @@ it("every wildcard and alias-list block the daemon writes asks for a certificate
   expect(openers.length).toBe(9)
   for (const { l, i } of openers) {
     const body = lines.slice(i + 1, i + 6).join("\n")
-    expect(`${l}\n${body}`).toContain("${TLS_PER_NAME}")
+    // *.candy blocks take candyTls: TLS_PER_NAME, or on a peer the same thing from the hub (tlsFromHub)
+    expect(`${l}\n${body}`).toMatch(l.includes(".localhost") ? /\$\{TLS_PER_NAME\}/ : /\$\{candyTls\}/)
     expect(body).not.toMatch(/^\s*tls internal\s*$/m)
   }
 })

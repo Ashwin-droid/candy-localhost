@@ -51,3 +51,8 @@ it("the audit line for a rent never has the environment or arguments", () => {
   expect(rent).toMatch(/auditLog\('BOX_RENT', `.*\$\{boxAuditLine\(request\)\}`, 'System'\)/)
   expect(rent.match(/auditLog\([^\n]*/g)!.join("\n")).not.toMatch(/request\.env|request\.cmd/)
 })
+
+it("a site's user can reach its socket folder: the folder above is passable, its own is group-readable", () => {
+  expect(rent).toMatch(/mkdir\(BOX_RUN_DIR, \{ recursive: true, mode: 0o711 \}\)\n\s*await chmod\(BOX_RUN_DIR, 0o711\)/)
+  expect(rent).toMatch(/await chown\(dir, 0, account\.gid\)\n\s*await chmod\(dir, 0o750\)/)
+})

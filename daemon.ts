@@ -3719,6 +3719,9 @@ const rentBox = async (grant: RuntimeGrant, config: ServerConfig, body: unknown)
 
     // The folder the socket is in: the site's user may look inside, only root may add to it
     const dir = `${BOX_RUN_DIR}/${fnFileName(grant.name)}`
+    // The folder above is passed through by every site's user, and lists nothing to them
+    await mkdir(BOX_RUN_DIR, { recursive: true, mode: 0o711 })
+    await chmod(BOX_RUN_DIR, 0o711)
     await mkdir(dir, { recursive: true, mode: 0o750 })
     await chown(dir, 0, account.gid)
     await chmod(dir, 0o750)

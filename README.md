@@ -480,7 +480,7 @@ candy boxes social-plane off
 ```
 
 ```ts
-import { boxQuota, rentBox } from "candy-localhost/sdk"
+import { boxQuota, rentBox } from "candy-localhost"
 
 const quota = await boxQuota()   // { enabled, available, reason, max, memory, held }
 const box = await rentBox({

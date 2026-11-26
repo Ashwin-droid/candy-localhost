@@ -69,10 +69,20 @@ async function getHeaders(): Promise<Record<string, string>> {
   return { 'X-Candy-API-Key': cachedApiKey }
 }
 
+// From inside something candy runs the daemon refuses the CLI on every route: say so once, plainly
+async function answer(res: Response) {
+  const body = await res.json()
+  if (res.status === 403 && typeof body?.error === 'string' && body.error.includes("can't use the candy CLI")) {
+    console.error(`${c.red}${body.error}${c.reset}`)
+    process.exit(1)
+  }
+  return body
+}
+
 async function apiGet(path: string) {
   const headers = await getHeaders()
   const res = await fetch(`${API}${path}`, { headers })
-  return res.json()
+  return answer(res)
 }
 
 async function apiPost(path: string, body?: any) {
@@ -82,7 +92,7 @@ async function apiPost(path: string, body?: any) {
     headers: { ...headers, 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   })
-  return res.json()
+  return answer(res)
 }
 
 // Daemon-wide settings take a superuser, and superuser exists only in a portal

@@ -13,6 +13,7 @@ import { randomBytes, timingSafeEqual, X509Certificate } from "node:crypto"
 import { networkInterfaces, userInfo } from "node:os"
 import { SHARED_GROUP, SHARED_SECRET_FILE } from "./secret.ts"
 import { AccessLogTail, activityFromAccessLog, countEstablished, idleVerdict, IDLE_TIMEOUT_MS, listeningPortsOf, localNameCandidates, readMemoryState, tailscaleServeTargets, validateTtlMinutes, type MemoryState } from "./activity.ts"
+import { callerOf, pidsUnder } from "./caller.ts"
 import { findCodeDir, parseEnvFile, stateDirPath, systemdRunCommand, unitName, unitOfCgroup, userEnvDir, validateEnvFilePath, validateRwPath, MAX_RW_PATHS, SANDBOX_SLICE, STATE_ROOT, DEFAULT_MEMORY_MB, MAX_MEMORY_MB, MIN_MEMORY_MB, formatMemory, memoryLimitMb, memoryProperties, validateMemoryMb } from "./sandbox.ts"
 import { OAuthServer, type OAuthPersisted } from "./mcp-oauth.ts"
 import { handlePublicRequest as handlePublicMcpRequest } from "./mcp.ts"
@@ -1597,6 +1598,10 @@ if (RUNNING_AS_ROOT && !OWNER) {
   process.exit(1)
 }
 const USER_SECRETS_DIR = `${dirname(SHARED_SECRET_FILE)}/users`
+// Where the bootstrap secret is kept. A site reads it (its SDK's /sdk/* calls go by API
+// key), and what that key may do from a candy-run process is cut down in
+// cliCredentialRefusal. A box has no SDK: these are never granted to one.
+const CLI_SECRET_PATHS = [CANDY_CONFIG_DIR, USER_SECRETS_DIR, SHARED_SECRET_FILE]
 const secretUsers = new Map<string, string>()   // bootstrap secret -> user
 const mcpApiKeys = new Map<string, string>()    // API key -> user
 const TAILSCALE_STATUS_CACHE_MS = 15 * 1000
@@ -3721,7 +3726,7 @@ const rentBox = async (grant: RuntimeGrant, config: ServerConfig, body: unknown)
       const st = fstatSync(fd, { bigint: true })
       if (!st.isDirectory() && !st.isFile()) return refuse(`${g.path} is neither a folder nor a file`, 403)
       // The real path goes into a systemd property too
-      const problem = boxPathProblem(source, `the real path of ${g.path}`) ?? grantProblem(source, g.mode, { writable, privateTmp: true }, userCanReach(source, account.uid, gids))
+      const problem = boxPathProblem(source, `the real path of ${g.path}`) ?? grantProblem(source, g.mode, { writable, privateTmp: true, secret: CLI_SECRET_PATHS }, userCanReach(source, account.uid, gids))
       if (problem) return refuse(problem, 403)
       grants.push({ path: g.path, mode: g.mode, source, check: `${st.dev}:${st.ino}` })
     }
@@ -7085,9 +7090,54 @@ const noFraming = (req: Request, res: Response): Response => {
   }
 }
 
+// The bootstrap secret, and the API key it buys, are a person's at a shell: the CLI, the
+// local MCP server, a script. Whatever candy runs (a site, a cron run, a function, a box)
+// gets the SDK's own calls with it (/sdk/*) and nothing else: no CLI. Through Caddy the
+// caller can't be told, so there the credential is refused outright. Null: go ahead.
+const CANDY_RUN_MAY = (method: string, path: string): boolean =>
+  (method === "POST" && path === "/mcp/auth") || path.startsWith("/sdk/")
+const CONTROL_PORT = 9999
+const ownCgroupDir = (): string | null => {
+  try {
+    const path = readFileSync("/proc/self/cgroup", "utf8").split("\n").find(l => l.startsWith("0::"))?.slice(3).trim()
+    return path && path !== "/" ? `/sys/fs/cgroup${path}` : null
+  } catch { return null }
+}
+// Everything candy runs: the units in its slice, plus what runs with no sandbox. As root that
+// is whatever shares the daemon's own cgroup (the daemon's helpers there are root's, and a
+// site never is); as a normal user, the process trees of what it started.
+const candyRunPids = async (): Promise<number[]> => {
+  const pids = pidsUnder(`/sys/fs/cgroup/${SANDBOX_SLICE}`)
+  if (RUNNING_AS_ROOT) {
+    const own = ownCgroupDir()
+    if (own) pids.push(...pidsUnder(own, 0))
+  } else {
+    for (const managed of processes.values()) {
+      const root = managed.pid ?? managed.proc?.pid
+      if (root && !managed.unit) pids.push(...await getProcessTreePids(root))
+    }
+  }
+  return pids.filter(pid => pid !== process.pid)
+}
+const cliCredentialRefusal = async (req: Request, url: URL): Promise<string | null> => {
+  const exchange = req.method === "POST" && url.pathname === "/mcp/auth"
+  if (!exchange && !mcpApiKeys.has(req.headers.get("X-Candy-API-Key") ?? "")) return null
+  const what = exchange ? "The candy secret" : "A candy API key"
+  if (viaOwnCaddy(req)) return `${what} only works straight to the daemon on this machine, not through a site address.`
+  const peerPort = controlServer.requestIP(req)?.port
+  if (!peerPort) return `${what} was refused: the daemon can't tell who is calling.`
+  const caller = await callerOf({ peerPort, serverPort: CONTROL_PORT, candidates: candyRunPids, neverUid: RUNNING_AS_ROOT ? 0 : null })
+  if (caller.is === "unknown" || caller.is === "outside") return null
+  if (caller.is === "gone") return `${what} was refused: the daemon can't tell who is calling.`
+  if (CANDY_RUN_MAY(req.method, url.pathname)) return null
+  const unit = unitOfCgroup(await Bun.file(`/proc/${caller.pid}/cgroup`).text().catch(() => ""))
+  auditLog('AUTH_REFUSED', `API key from a candy-run process (pid ${caller.pid}${unit ? `, ${unit}` : ''}): ${req.method} ${logSafe(url.pathname)}`, 'System')
+  return "Something candy runs can't use the candy CLI: from inside a site, an API key only works for the SDK's own calls."
+}
+
 // Control plane API server
 const controlServer = Bun.serve({
-  port: 9999,
+  port: CONTROL_PORT,
   async fetch(req) {
     return noFraming(req, await controlFetch(req))
   },
@@ -7136,6 +7186,9 @@ async function controlFetch(req: Request): Promise<Response> {
     // api-mode-gate
     const apiAnswer = await apiModeGate(req, url)
     if (apiAnswer) return apiAnswer
+    // The daemon's own routes from here on: who may bring the CLI's credential to them
+    const cliRefusal = await cliCredentialRefusal(req, url)
+    if (cliRefusal) return Response.json({ error: cliRefusal }, { status: 403, headers: corsHeaders })
 
     const hostHeader = req.headers.get("host") || ""
     const boundDomainMatch = resolveBindingFromHost(hostHeader)

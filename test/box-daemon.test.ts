@@ -26,7 +26,7 @@ it("the quota counts rents under way, so two at once can't both take the last bo
 it("every grant is checked on the file it holds open, as the site's user, and the box is told which file that was", () => {
   expect(rent).toMatch(/fd = openSync\(g\.path, O_PATH\)/)
   expect(rent).toMatch(/const source = readlinkSync\(`\/proc\/self\/fd\/\$\{fd\}`\)/)
-  expect(rent).toMatch(/boxPathProblem\(source, .*\) \?\? grantProblem\(source, g\.mode, \{ writable, privateTmp: true \}, userCanReach\(source, account\.uid, gids\)\)/)
+  expect(rent).toMatch(/boxPathProblem\(source, .*\) \?\? grantProblem\(source, g\.mode, \{ writable, privateTmp: true, secret: CLI_SECRET_PATHS \}, userCanReach\(source, account\.uid, gids\)\)/)
   expect(rent).toMatch(/grants\.push\(\{ path: g\.path, mode: g\.mode, source, check: `\$\{st\.dev\}:\$\{st\.ino\}` \}\)/)
   // held until the box is gone, released when a rent fails
   expect(rent).toContain("if (started) unpinBox(started)")

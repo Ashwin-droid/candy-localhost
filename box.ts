@@ -201,6 +201,8 @@ export interface BoxParent {
   writable: string[]
   /** False when the site runs without the sandbox: then its /tmp is the machine's */
   privateTmp: boolean
+  /** Where the CLI's credential is kept: never granted, on its own or inside a wider folder */
+  secret?: string[]
 }
 
 /**
@@ -211,6 +213,10 @@ export interface BoxParent {
 export const grantProblem = (real: string, mode: "ro" | "rw", parent: BoxParent, canRead: boolean): string | null => {
   if (GRANT_ROOTS.includes(real)) return `${real} is a whole tree: grant the folders inside it that the box needs`
   if (GRANT_NEVER_UNDER.some(root => isUnder(real, root))) return `${real} can't be granted to a box`
+  const secret = parent.secret?.find(s => isUnder(real, s) || isUnder(s, real))
+  if (secret) return real === secret || isUnder(real, secret)
+    ? `${real} can't be granted to a box: it holds candy's own credentials`
+    : `${real} can't be granted to a box as a whole: ${secret} is inside it and holds candy's own credentials. Grant the folders the box needs`
   const inWritable = parent.writable.some(w => isUnder(real, w))
   // The site's /tmp is its own private one: the machine's /tmp isn't something it has
   if (parent.privateTmp && (isUnder(real, "/tmp") || isUnder(real, "/var/tmp")) && !inWritable) return `${real} is in the machine's /tmp, which this site doesn't see (it has a private one)`

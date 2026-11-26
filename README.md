@@ -935,7 +935,7 @@ Base URL: `http://localhost:9999`
 Two auth modes:
 
 - **Portal login** (`candy_portal` cookie, on `portal.localhost` / `portal.candy` only), plus the page's rolling token (`X-Candy-Token`) on every request that changes something. See [Portal login](#portal-login).
-- **API key** (`X-Candy-API-Key`): obtained via `POST /mcp/auth` with a bootstrap secret. Clients look in `$CANDY_SECRET_FILE`, `~/.config/candy/mcp-secret`, `/run/candy/users/<user>/secret`, then `/run/candy/secret`. Each API key belongs to the user whose secret it came from, and is always user-scoped.
+- **API key** (`X-Candy-API-Key`): obtained via `POST /mcp/auth` with a bootstrap secret. Clients look in `$CANDY_SECRET_FILE`, `~/.config/candy/mcp-secret`, `/run/candy/users/<user>/secret`, then `/run/candy/secret`. Each API key belongs to the user whose secret it came from, and is always user-scoped. It only works straight to the daemon on this machine (never through a site address), and from a process candy itself runs (a site, a cron run, a function, a box) it only works for the SDK's own calls (`/sdk/*`): such a process can't use the `candy` CLI. The secret's files are never granted to a box.
 
 Every control route is public, user or superuser (`ROUTE_TABLE` in daemon.ts); a route missing from that table is refused. User routes only show and change the caller's own sites, unless the caller is a superuser logged in to the portal. Without a login or key the API answers `401 {"error":"login required"}`; a superuser route answers `403` to everyone else, API keys included.
 

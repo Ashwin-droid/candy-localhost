@@ -258,6 +258,15 @@ describe("grantProblem", () => {
   const sandboxed: BoxParent = { writable: ["/home/u/proj", "/var/lib/candy/wa", "/tmp/demo"], privateTmp: true }
   const open: BoxParent = { writable: ["/"], privateTmp: false }
 
+  it("never grants where candy's own credentials are, alone or inside a wider folder", () => {
+    const parent = { writable: ["/"], privateTmp: false, secret: ["/home/dev/.config/candy", "/run/candy/users"] }
+    expect(grantProblem("/home/dev/.config/candy", "ro", parent, true)).toContain("candy's own credentials")
+    expect(grantProblem("/home/dev/.config/candy/mcp-secret", "ro", parent, true)).toContain("candy's own credentials")
+    expect(grantProblem("/home/dev/.config", "ro", parent, true)).toContain("as a whole")
+    expect(grantProblem("/home/dev", "rw", parent, true)).toContain("/home/dev/.config/candy is inside it")
+    expect(grantProblem("/home/dev/projects", "ro", parent, true)).toBeNull()
+    expect(grantProblem("/home/dev/.config/candy-other", "ro", parent, true)).toBeNull()
+  })
   it("refuses whole trees, whoever asks", () => {
     for (const p of ["/", "/home", "/root", "/etc", "/usr", "/var", "/run", "/proc", "/sys", "/dev", "/boot", "/var/lib/candy"]) {
       expect(grantProblem(p, "ro", open, true)).toContain("whole tree")
